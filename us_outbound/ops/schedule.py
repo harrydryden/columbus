@@ -74,7 +74,7 @@ SCHEDULE: tuple[ScheduledJob, ...] = (
     ScheduledJob("site_visits", "0 6 * * *", live=False, enabled=True, timeout_minutes=30, phase=1),
     ScheduledJob("verify_accounts", "30 4 * * 1-5", live=False, enabled=True, timeout_minutes=15, phase=1),
     # score runs inside settings_sync, verify_accounts, pick_contacts (at its start, W1-3a) and
-    # site_visits (SPEC 9); by hand: `us-outbound rescore`.
+    # site_visits (SPEC 9); by hand: `us-outbound run score`.
     ScheduledJob("score", "", live=True, enabled=True, timeout_minutes=30, phase=1),
     # On for the pilot from Mon 5 Oct 2026, ahead of enrol at 12:00. It writes only to the database
     # (its Apollo calls are reads), so it never needs --live; reveals spend credits within the budget.

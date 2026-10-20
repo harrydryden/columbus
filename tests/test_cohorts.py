@@ -463,14 +463,14 @@ def test_the_cli_prints_the_three_forms_and_posts_nothing(capsys):
     from tests.test_cli import Harness
 
     h = Harness()
-    assert h.run("cohorts") == 0
+    assert h.run("report", "cohorts") == 0  # the weekly table is `report cohorts` from W2-4
     assert "No contact has been enrolled yet." in capsys.readouterr().out
     h.store.insert("accounts", [{"account_id": "a1", "domain": "co1.com", "status": "enrolled", "tier": "Priority"}])
     h.store.insert("contacts", [{"contact_id": "c1", "account_id": "a1", "enrolled_at": datetime(2026, 10, 19, 15, tzinfo=UTC),
                                  "instantly_campaign": "US Outbound – Sam Jackson", "instantly_lead_id": "L1"}])
     h.store.insert("events", [{"event_id": "s1", "contact_id": "c1", "account_id": "a1", "type": "sent", "step": 1,
                                "occurred_at": datetime(2026, 10, 19, 15, tzinfo=UTC)}])
-    assert h.run("cohorts", "--cut", "tier", "--age", "7") == 0
+    assert h.run("report", "cohorts", "--cut", "tier", "--age", "7") == 0
     out = capsys.readouterr().out
     assert "Priority: 2026-W43 (19–25 Oct): 1 company enrolled (1 contact), 1 emailed, 1 delivered" in out
     assert "  7 days: 0 of 1 replied (too few to read)" in out and "14 days" not in out
@@ -487,9 +487,10 @@ def test_cohorts_parses():
     from us_outbound.ops import cli
 
     args = cli.build_parser().parse_args(["cohorts", "changes", "v1", "v2"])
-    assert (args.action, args.versions, args.cut, args.weeks) == ("changes", ["v1", "v2"], "all", 8)
-    assert cli.build_parser().parse_args(["cohorts"]).action is None
+    assert (args.action, args.versions) == ("changes", ["v1", "v2"])
+    args = cli.build_parser().parse_args(["report", "cohorts"])
+    assert (args.name, args.cut, args.weeks) == ("cohorts", "all", 8)
     with pytest.raises(SystemExit):
-        cli.build_parser().parse_args(["cohorts", "--cut", "colour"])
-    assert tuple(cli.build_parser()._subparsers._group_actions[0].choices["cohorts"]._option_string_actions[
+        cli.build_parser().parse_args(["report", "cohorts", "--cut", "colour"])
+    assert tuple(cli.build_parser()._subparsers._group_actions[0].choices["report"]._option_string_actions[
         "--cut"].choices) == cohorts.CUTS

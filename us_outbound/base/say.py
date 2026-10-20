@@ -68,6 +68,7 @@ JOB_NAMES: dict[str, str] = {
     "hand_check_draw": "the weekly hand-check",
     "retention": "deleting old personal data",
     "label_sample_monthly": "the monthly industry label check",
+    "follow_up": "following up replies that said “not now”",  # W2-4, 20 Oct 2026 (replies/follow_up.py)
     "unenrol": "removing people from the campaign",
     "stop": "the emergency stop",
 }

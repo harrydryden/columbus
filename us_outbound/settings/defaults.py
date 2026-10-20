@@ -213,7 +213,7 @@ _GENERAL: list[tuple[str, str, str]] = [
         "0.5",
         "Share of companies whose email 1 uses email1_subject instead of the Copy row's s1_subject, chosen by a "
         "hash of the account id (independent of the opener holdout), so replies can compare the two "
-        "(contacts.subject_arm; `us-outbound signals review`). 0: every email 1 keeps the Copy row's subject. "
+        "(contacts.subject_arm; `us-outbound report signals`). 0: every email 1 keeps the Copy row's subject. "
         "Added by the build (Harry, 5 Oct 2026).",
     ),
 ]
@@ -492,7 +492,7 @@ _SIGNALS: list[tuple[str, str, str, str, str, str, str, str, str, str, str, str]
         "standard_threshold, and on 5 Oct Control held 300 of 432 open accounts. So a close lookalike with no "
         "observed signal is Standard now, and Control holds the accounts that fit less well. On 5 Oct any weight "
         "from +5 to +15 gave the same tiers (Standard 163 of 421, 39%), and +10 leaves room for observed signals "
-        "to order them. `us-outbound lookalikes fit` shows the fits and the tier mix these rows give.",
+        "to order them. `us-outbound report lookalikes` shows the top cells and what the signal scores.",
     ),
     (
         "Some match to Spill's customers", "lookalike", "lookalike_fit >= 45 AND lookalike_fit < 70",

@@ -1,6 +1,6 @@
 """Which signals predict replies: the evidence for reweighting the Signals tab (Harry, 5 Oct 2026).
 
-`us-outbound signals review` is read-only. For each active Score signal on the Signals tab it takes the
+`us-outbound report signals` is read-only. For each active Score signal on the Signals tab it takes the
 companies emailed (step 1 delivered) and splits them by whether they showed the signal when their contact
 was enrolled (contacts.signals_at_enrol, written by enrol._record_enrolled; for a contact enrolled before
 that column existed, the account's current matches). It compares the two groups' human-reply rates within
@@ -228,4 +228,4 @@ def ready(ctx: Context) -> str:
     if len(companies) < READY_DELIVERED or ctx.now - companies[0].step1_at < timedelta(days=READY_DAYS):
         return ""
     return (f"  Signal review: {len(companies)} companies emailed ({closed} reply windows closed). "
-            "`us-outbound signals review` shows which signals predict replies, to reweight the Signals tab.")
+            "`us-outbound report signals` shows which signals predict replies, to reweight the Signals tab.")

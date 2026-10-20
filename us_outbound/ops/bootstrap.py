@@ -83,7 +83,7 @@ class SettingsUnusable(Exception):
         self.store = store
         tabs = ", ".join(self.errors) or "unknown"
         super().__init__(
-            f"settings are unusable ({tabs}); fix the sheet, then run `us-outbound settings sync`"
+            f"settings are unusable ({tabs}); fix the sheet, then run `us-outbound sync`"
         )
 
 

@@ -122,17 +122,70 @@ def test_skips_are_recorded_as_skipped():
 
 
 def test_a_second_run_while_one_is_going_is_skipped():
+    """The overlap lock lasts the job's own timeout (W2-4; code-platform-ops B9): poll_approvals has 4 minutes, so a
+    run left "running" 3 minutes ago refuses the next, and one left 5 minutes ago (killed at its timeout) no longer
+    does. It held the next run off for 60 minutes before. A job with no timeout of its own keeps 60."""
+    assert hb.lock_minutes("poll_approvals") == 4 and hb.lock_minutes("enrol") == 15
+    assert hb.lock_minutes("no_such_job") == hb.OVERLAP_MINUTES == 60
     ctx = ctx_at(MON_NOON, job="poll_approvals")
     beat(ctx.store, "poll_approvals", MON_NOON - timedelta(minutes=3), status="running", finished=None, run_id="r0")
     ctx.store.tables["heartbeats"][0]["finished_at"] = None
     ran = []
     out = hb.run_job(ctx, lambda c: ran.append(1) or {})
     assert not ran and out["reason"] == hb.OVERLAP_REASON == "previous run still going" and out["other_run_id"] == "r0"
-    # A run that died more than an hour ago no longer blocks.
-    ctx.store.tables["heartbeats"][0]["started_at"] = MON_NOON - timedelta(minutes=61)
+    # 5 minutes on, past the 4-minute timeout: the run left "running" no longer blocks.
+    ctx.store.tables["heartbeats"][0]["started_at"] = MON_NOON - timedelta(minutes=5)
     ctx2 = ctx_at(MON_NOON, job="poll_approvals", store=ctx.store)
     hb.run_job(ctx2, lambda c: ran.append(1) or {})
     assert ran == [1]
+
+
+def test_a_run_records_its_duration_and_exit_code_on_their_columns():
+    """W2-4: duration_s and exit_code persist on the row (the logs expire in 7 days): 0 for ok and skipped, 1 for an
+    error, 3 for a guardrail, 143 for SIGTERM; a JobResult is stored as its own status."""
+    store = None
+    for fn, code, status in ((lambda c: {}, 0, "ok"), (lambda c: {"skipped": True, "reason": "x"}, 0, "skipped"),
+                             (lambda c: hb.JobResult(status="error", reason="no mailbox answered"), 1, "error")):
+        ctx = ctx_at(MON_NOON, job="kill_rules", store=store)
+        store = ctx.store
+        hb.run_job(ctx, fn)
+        row = store.get("heartbeats", run_id=ctx.run_id)
+        assert (row["status"], row["exit_code"]) == (status, code) and row["duration_s"] >= 0
+    assert row["error"] == "no mailbox answered" and row["detail"]["reason"] == "no mailbox answered"
+    for exc, code in ((GuardViolation("no"), 3), (hb.Terminated("SIGTERM"), 143), (RuntimeError("x"), 1)):
+        ctx = ctx_at(MON_NOON, job="kill_rules", store=store)
+
+        def boom(c, exc=exc):
+            raise exc
+
+        with pytest.raises(type(exc)):
+            hb.run_job(ctx, boom)
+        assert store.get("heartbeats", run_id=ctx.run_id)["exit_code"] == code
+    with pytest.raises(ValueError):
+        hb.JobResult(status="fine").summary()
+
+
+def test_two_starts_for_one_due_minute_run_once():
+    """W2-4 (RS P0-4): a scheduled start carries its due minute and claims "<job>:<due minute UTC>". Two starts for
+    (enrol, 2026-10-20T11:00) (two schedulers over a deploy, or a catch-up of a run already begun): one row, one run;
+    the second returns "previous run still going" and writes nothing."""
+    when = datetime(2026, 10, 20, 11, 0, tzinfo=UTC)  # 12:00 BST
+    ran = []
+    ctx = ctx_at(when, job="enrol")
+    ctx.due, ctx.run_id = when, hb.due_run_id("enrol", when)
+    assert ctx.run_id == "enrol:2026-10-20T11:00"
+    hb.run_job(ctx, lambda c: ran.append("first") or {"enrolled": 0})
+    ctx2 = ctx_at(when + timedelta(seconds=5), job="enrol", store=ctx.store)
+    ctx2.due, ctx2.run_id = when, hb.due_run_id("enrol", when)
+    out = hb.run_job(ctx2, lambda c: ran.append("second") or {})
+    assert ran == ["first"] and out["reason"] == hb.OVERLAP_REASON and out["claimed"] == "enrol:2026-10-20T11:00"
+    [row] = ctx.store.tables["heartbeats"]
+    assert row["run_id"] == "enrol:2026-10-20T11:00" and row["status"] == "ok"
+    # The next minute is its own claim: the claim is per due minute, not per job.
+    ctx3 = ctx_at(when + timedelta(days=1), job="enrol", store=ctx.store)
+    ctx3.due, ctx3.run_id = when + timedelta(days=1), hb.due_run_id("enrol", when + timedelta(days=1))
+    hb.run_job(ctx3, lambda c: ran.append("tomorrow") or {})
+    assert ran == ["first", "tomorrow"] and len(ctx.store.tables["heartbeats"]) == 2
 
 
 def test_non_dict_results_are_wrapped():
@@ -146,7 +199,9 @@ def test_non_dict_results_are_wrapped():
 def test_expected_matches_the_spec9_schedules():
     assert hb.EXPECTED["poll_replies"] == 45
     assert hb.EXPECTED["poll_approvals"] == 20
-    assert hb.EXPECTED["kill_rules"] == 150
+    assert hb.EXPECTED["kill_rules"] == 150  # hourly, unchanged (RS P0-7)
+    # W2-4 (RS §2 W2-4): hubspot_readback hourly at :00, sync_outcomes hourly at :07 outside the ET send window.
+    assert (hb.EXPECTED["hubspot_readback"], hb.EXPECTED["sync_outcomes"]) == (150, 75)
     assert hb.EXPECTED["settings_sync"] == hb.EXPECTED["mailbox_health"] == 26 * 60
     # Tuesday to Saturday (19 Oct 2026): Saturday 09:00 to Tuesday 09:00 is 72 hours, 73 when the clocks go back on
     # the Sunday between; in wall time, as the job runs on Saturdays.
@@ -214,9 +269,11 @@ def test_the_missed_message_names_the_jobs_in_one_sentence_says_what_stopped_and
 def test_unusable_settings_are_the_cause_said_once_with_the_tab_its_errors_and_the_fix():
     t = slack_transport()
     ctx = ctx_at(MON_NOON, job="heartbeat_check", transport=t)
-    refused = "settings are unusable (Industries); fix the sheet, then run `us-outbound settings sync`"
+    refused = "settings are unusable (Industries); fix the sheet, then run `us-outbound sync`"
     for job in ("poll_replies", "poll_approvals", "hubspot_readback"):
-        beat(ctx.store, job, MON_NOON - timedelta(minutes=60), run_id=f"{job}-ok")
+        # hubspot_readback is hourly from W2-4 (EXPECTED 150 minutes): its last good run three hours ago is missed.
+        ago = 180 if job == "hubspot_readback" else 60
+        beat(ctx.store, job, MON_NOON - timedelta(minutes=ago), run_id=f"{job}-ok")
         beat(ctx.store, job, MON_NOON - timedelta(minutes=5), status="error", error=refused)
     assert hb.check_heartbeats(ctx, jobs=["poll_replies", "poll_approvals", "hubspot_readback"])
     [post] = posts(t)

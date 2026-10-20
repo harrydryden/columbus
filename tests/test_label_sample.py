@@ -10,7 +10,7 @@ import pytest
 from tests.fakes import make_context
 from tests.test_copy_desk import Sheet
 from tests.test_labels import DEFAULT
-from us_outbound.ops import cli, label_sample as ls
+from us_outbound.ops import label_sample as ls
 
 AT = datetime(2026, 10, 10, 18, 0, tzinfo=UTC)
 TECH = "Technology & Startups"
@@ -217,21 +217,15 @@ def test_the_wilson_interval(k, n, lo, hi):
     assert got[0] == pytest.approx(lo, abs=0.01) and got[1] == pytest.approx(hi, abs=0.01)
 
 
-def test_the_score_needs_the_tab_and_the_reports_print(capsys):
-    ctx = world()
-    with pytest.raises(LookupError):
-        ls.run_score(ctx)
+def test_ten_right_verdicts_of_fifty_score_ten_of_ten():
+    """The score of a batch with 10 of its 50 rows judged right: 10 judged, 10 right (the `labels sample --score`
+    command went in W2-4; the monthly job scores each batch with score())."""
     live = world(live=True)
     ls.run(live)
     for r in live.clients.sheets.tabs[ls.TAB][:10]:
         r["your_verdict"] = "right"
-    out = ls.run_score(live)
+    out = ls.score(live.clients.sheets.tabs[ls.TAB], live.settings)
     assert (out["judged"], out["label_right"]) == (10, 10)
-    capsys.readouterr()
-    cli._score_report(out)
-    text = capsys.readouterr().out
-    assert "10 of 50 companies judged." in text
-    assert "Label right: 10 of 10 (100%; 95% interval 72% to 100%)" in text
 
 
 def test_the_judged_companies_join_the_eval_with_their_facts_and_home_page():

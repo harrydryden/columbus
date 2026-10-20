@@ -145,29 +145,22 @@ def test_three_read_only_visitor_searches_for_the_tracked_domain():
     assert [r["credits"] for r in ledger(ctx)] == [0.0, 0.0, 0.0]  # recorded all the same (the quiet-run count)
 
 
-def test_the_general_keys_choose_the_domain_and_the_pages():
-    g = dataclasses.replace(BASE.general, site_visit_domain="spill.chat", site_visit_us_paths=("/us/", "/en-us"),
-                            site_visit_intent_paths=())
-    ctx, _, fake = make(settings=dataclasses.replace(BASE, general=g))
+def test_the_constants_choose_the_domain_and_the_pages(monkeypatch):
+    """The domain and pages are constants in code since W2-4 (settings/model.SITE_VISIT_*, at the live sheet's
+    values); the three searches follow them, and no intent paths means no intent search."""
+    assert (sv.SITE_VISIT_DOMAIN, sv.SITE_VISIT_US_PATHS, sv.SITE_VISIT_INTENT_PATHS) == (
+        "spill.chat", ("/us",), ("/us/pricing", "/us/demo", "/us/book"))
+    for path in sv.SITE_VISIT_US_PATHS + sv.SITE_VISIT_INTENT_PATHS:
+        assert path.startswith("/")  # what the sheet checked while they were General keys
+    monkeypatch.setattr(sv, "SITE_VISIT_US_PATHS", ("/us/", "/en-us"))
+    monkeypatch.setattr(sv, "SITE_VISIT_INTENT_PATHS", ())
+    ctx, _, fake = make()
     sv.run(ctx)
     assert [b["website_visitors_domain_pages"] for b in fake.visitor_searches] == [["/us/", "/en-us"]] * 2  # no intent search
-    ctx, _, fake = make(settings=dataclasses.replace(BASE, general=dataclasses.replace(g, site_visit_domain="")))
+    monkeypatch.setattr(sv, "SITE_VISIT_DOMAIN", "")
+    ctx, _, fake = make()
     out = sv.run(ctx)
-    assert out["skipped"] and "site_visit_domain is blank" in out["reason"] and fake.bodies == []
-
-
-def test_the_sheet_checks_the_new_general_keys():
-    tabs = default_tabs()
-    for key, value, wanted in (("site_visit_domain", "https://spill.chat/us", "bare domain"),
-                               ("site_visit_us_paths", "us, /us/pricing", "starts with /"),
-                               ("site_visit_intent_paths", "/us/pricing, pricing", "starts with /")):
-        t = default_tabs()
-        next(r for r in t["General"] if r["key"] == key)["value"] = value
-        _, errors = validate_all(t)
-        assert any(wanted in e.message for e in errors["General"]), (key, errors["General"])
-    next(r for r in tabs["General"] if r["key"] == "site_visit_intent_paths")["value"] = ""
-    settings, errors = validate_all(tabs)
-    assert settings is not None and settings.general.site_visit_intent_paths == () and not errors["General"]
+    assert out["skipped"] and "SITE_VISIT_DOMAIN is blank" in out["reason"] and fake.bodies == []
 
 
 # -- matching, facts, events and the score ------------------------------------------------------------

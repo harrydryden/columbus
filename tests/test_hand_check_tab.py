@@ -17,7 +17,7 @@ from us_outbound.clients.http import ApiError
 from us_outbound.enrol import enrol, hand_check
 from us_outbound.enrol import hand_check_tab as tab
 from us_outbound.ops import health
-from us_outbound.replies import desk
+from us_outbound.replies import poll_desk
 
 
 class Sheet(MemorySheet):
@@ -109,7 +109,7 @@ def test_ten_decisions_make_ten_facts_and_a_changed_one_is_applied_again(monkeyp
     for x in d[7:9]:
         decide(ctx, x, "leave out", reason="media publisher")  # words with a space count as the code
     decide(ctx, d[9], "wrong industry", right_label="Fintech")
-    out = desk.poll_desk(ctx)["hand_check"]
+    out = poll_desk.poll_desk(ctx)["hand_check"]
     assert sorted(out["applied"]) == sorted(tab.row_id(WEEK, x) for x in d) and out["hand_check_errors"] == []
     assert len(judgements(ctx)) == 10
     for x in d[7:9]:

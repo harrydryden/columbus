@@ -13,8 +13,8 @@ pilot's samples are small, so even that is a lead to follow, not proof. SPEC 12'
 200 accounts, when its accounts reply less than the Control tier's.
 
 Nothing re-weights itself: Harry changes weights on the Signals tab, then `us-outbound sync`.
-`us-outbound signals value` prints the table; the Monday readout shows its headline (learn/readout.py).
-`us-outbound signals review` asks the same question of the events directly, with the tiers and email 1's subject.
+The Monday readout shows its headline (learn/readout.py); the whole table's command went in W2-4.
+`us-outbound report signals` asks the same question of the events directly, with the tiers and email 1's subject.
 """
 
 from __future__ import annotations
@@ -90,7 +90,7 @@ def line(row: Mapping[str, Any]) -> str:
 
 
 def table_lines(table: Sequence[Mapping[str, Any]] | None) -> list[str]:
-    """`us-outbound signals value`: every active signal with an enrolled account, then the rest in one line."""
+    """Every active signal with an enrolled account, then the rest in one line (the table's command went in W2-4)."""
     if table is None:
         return ["The signal table reads the database's views, which this store does not have."]
     seen = [r for r in table if _n(r, "accounts_enrolled") or _n(r, "accounts_sent")]
@@ -123,7 +123,7 @@ def flagged(table: Sequence[Mapping[str, Any]] | None) -> list[str]:
 
 def headline(table: Sequence[Mapping[str, Any]] | None, *, signals_tab: str = "Signals tab") -> list[str]:
     """The Monday readout's lines: the signals that can be read, else the ones closest to it, and the flagged ones
-    with what to do (`us-outbound signals value` has the whole table). signals_tab: a link to the tab
+    with what to do. signals_tab: a link to the tab
     (say.sheet_link), or its name."""
     if table is None:
         return ["  The signal table needs the database's views (v_signal_value), which this store does not have."]

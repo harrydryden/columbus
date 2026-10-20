@@ -1,6 +1,7 @@
 """The scheduler (ops/scheduler.py) and its table (ops/schedule.py): the cron matcher, the UK
-clock changes of 2026, no overlap, the parallel limit, timeouts, SIGTERM, no backfill, the
-live gate, and the table against the job registry and the heartbeat check."""
+clock changes of 2026, no overlap, the parallel limit, timeouts, SIGTERM, no backfill of frequent jobs, the
+catch-up of daily ones, the scheduler lock, the live gate, and the table against the job registry and the
+heartbeat check."""
 
 from __future__ import annotations
 
@@ -85,17 +86,20 @@ class FakeProc:
 
 
 class Launcher:
-    """Starts FakeProcs and checks that no job is ever started while its last run is alive."""
+    """Starts FakeProcs and checks that no job is ever started while its last run is alive. dues: the due minute
+    each start was given (`run --due`), None for an AT_START run."""
 
     def __init__(self, clock: FakeClock, seconds: float | None = 30, obeys_term: bool = True):
         self.clock, self.seconds, self.obeys_term = clock, seconds, obeys_term
         self.started: list[tuple[str, datetime]] = []
+        self.dues: list[tuple[str, datetime | None]] = []
         self.procs: dict[str, list[FakeProc]] = {}
 
-    def __call__(self, j: ScheduledJob) -> FakeProc:
+    def __call__(self, j: ScheduledJob, due: datetime | None = None) -> FakeProc:
         assert all(p.poll() is not None for p in self.procs.get(j.name, [])), f"{j.name} overlapped"
         p = FakeProc(self.clock, self.seconds, self.obeys_term)
         self.started.append((j.name, self.clock()))
+        self.dues.append((j.name, due))
         self.procs.setdefault(j.name, []).append(p)
         return p
 
@@ -115,11 +119,13 @@ def ends(text: str) -> list[dict]:
     return out
 
 
-def drive(table, start: datetime, until: datetime, *, seconds=30, max_parallel=2, jump=None, at_start=()):
+def drive(table, start: datetime, until: datetime, *, seconds=30, max_parallel=2, jump=None, at_start=(),
+          store_factory=None, lock=None, fail=None):
     """Run the real loop on a fake clock from start until `until`; jump=(at, by) stalls the loop once."""
     clock = FakeClock(start)
     launcher = Launcher(clock, seconds)
-    s = sch.Scheduler(table, max_parallel=max_parallel, clock=clock, launch=launcher, at_start=at_start)
+    s = sch.Scheduler(table, max_parallel=max_parallel, clock=clock, launch=launcher, at_start=at_start,
+                      store_factory=store_factory, lock=lock, fail=fail)
     jumped = []
 
     def sleep(seconds_: float) -> None:
@@ -283,14 +289,14 @@ def test_at_most_max_parallel_jobs_run_and_the_rest_wait_in_order():
     s = sch.Scheduler(jobs, max_parallel=2, clock=clock, sleep=clock.sleep, launch=launcher)
     assert s.tick(clock()) == ["j0", "j1", "j2", "j3"]
     s.poll(clock())
-    assert sorted(s.running) == ["j0", "j1"] and [j.name for j, _ in s.pending] == ["j2", "j3"]
+    assert sorted(s.running) == ["j0", "j1"] and [j.name for j, _, _ in s.pending] == ["j2", "j3"]
     launcher.procs["j1"][0].code = 0
     clock.t += 10 * SEC
     s.poll(clock())
-    assert sorted(s.running) == ["j0", "j2"] and [j.name for j, _ in s.pending] == ["j3"]
+    assert sorted(s.running) == ["j0", "j2"] and [j.name for j, _, _ in s.pending] == ["j3"]
     # Due again: the running and the waiting are skipped; only j1 (finished) queues again.
     assert s.tick(utc(2026, 10, 6, 10, 0)) == ["j1"]
-    assert [j.name for j, _ in s.pending] == ["j3", "j1"]
+    assert [j.name for j, _, _ in s.pending] == ["j3", "j1"]
     assert [n for n, _ in launcher.started] == ["j0", "j1", "j2"]
 
 
@@ -315,7 +321,7 @@ def test_a_run_past_its_timeout_is_terminated_real_subprocess(capsys):
     clock = FakeClock(utc(2026, 10, 6, 9, 0))
     procs = []
 
-    def launch(j):
+    def launch(j, due=None):
         procs.append(subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"]))
         return procs[-1]
 
@@ -338,7 +344,7 @@ def test_a_run_that_ignores_sigterm_is_killed_real_subprocess(capsys):
     code = "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); print('ready', flush=True); time.sleep(60)"
     procs = []
 
-    def launch(j):
+    def launch(j, due=None):
         procs.append(subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True))
         assert procs[-1].stdout.readline().strip() == "ready"  # SIGTERM is ignored from here on
         return procs[-1]
@@ -390,7 +396,7 @@ def test_a_run_that_dies_before_its_row_and_one_killed_at_its_timeout_both_leave
     stubborn = "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); print('ready', flush=True); time.sleep(60)"
     procs = []
 
-    def launch(j):
+    def launch(j, due=None):
         if j.name == "enrol":  # an import error, say: exit 1 and no heartbeat row
             procs.append(subprocess.Popen([sys.executable, "-c", "import sys; sys.exit(1)"]))
         else:  # mailbox_health: run_job's "running" row, then a process that ignores SIGTERM
@@ -432,12 +438,21 @@ def test_a_row_the_job_finished_itself_is_left_as_it_is():
     start = utc(2026, 10, 6, 9, 0)
     store.upsert("heartbeats", [{"run_id": "r1", "job": "enrol", "started_at": start + SEC, "finished_at": start + MIN,
                                  "status": "error", "dry_run": False, "detail": None, "error": "Terminated: by SIGTERM"}])
-    assert sch.record_failed_run(store, "enrol", start, start + MIN, 143, "terminated", 60.0) == "left"
+    assert hb.record_failed_run(store, "enrol", start, start + MIN, 143, "terminated", 60.0) == "left"
     [row] = _beats(store, "enrol")
     assert row["error"] == "Terminated: by SIGTERM" and row["detail"] is None
     # An older run's row (started before this launch) is never taken for this one.
-    assert sch.record_failed_run(store, "enrol", start + 2 * MIN, start + 3 * MIN, 1, "error", 60.0) == "written"
+    assert hb.record_failed_run(store, "enrol", start + 2 * MIN, start + 3 * MIN, 1, "error", 60.0) == "written"
     assert len(_beats(store, "enrol")) == 2
+    # A claimed start (W2-4) that died: its claim row, written before the launch time was read, is the one set to
+    # error, with the exit code and duration persisted on their columns.
+    store.upsert("heartbeats", [{"run_id": "enrol:2026-10-06T11:00", "job": "enrol", "started_at": start + 4 * MIN - SEC,
+                                 "finished_at": None, "status": "running", "dry_run": None, "detail": None,
+                                 "error": None}])
+    assert hb.record_failed_run(store, "enrol", start + 4 * MIN, start + 5 * MIN, 143, "timeout", 60.0,
+                                run_id="enrol:2026-10-06T11:00") == "updated"
+    row = store.get("heartbeats", run_id="enrol:2026-10-06T11:00")
+    assert (row["status"], row["exit_code"], row["duration_s"]) == ("error", 143, 60.0) and len(_beats(store, "enrol")) == 3
 
 
 def test_a_store_that_fails_inside_reap_never_stops_the_loop(capsys):
@@ -465,10 +480,10 @@ def test_a_launch_failure_is_logged_and_the_others_still_start(capsys):
     clock = FakeClock(utc(2026, 10, 6, 9, 0))
     launcher = Launcher(clock)
 
-    def launch(j):
+    def launch(j, due=None):
         if j.name == "broken":
             raise OSError("no such file")
-        return launcher(j)
+        return launcher(j, due)
 
     s = sch.Scheduler([job("broken"), job("fine")], clock=clock, sleep=clock.sleep, launch=launch)
     s.tick(clock())
@@ -496,6 +511,196 @@ def test_the_at_start_jobs_run_once_as_the_scheduler_starts_then_on_their_schedu
     assert [t.replace(second=0) for t in launcher.starts("every")] == [start.replace(second=0) + MIN,
                                                                       start.replace(second=0) + 2 * MIN,
                                                                       start.replace(second=0) + 3 * MIN]
+
+
+# -- the catch-up of daily jobs (W2-4; code-platform-ops B7) ------------------------------------------------------
+
+
+class Stores:
+    """A MemoryStore the loop opens through store_factory (catch-up reads, failed-run writes); close() is counted."""
+
+    def __init__(self):
+        from us_outbound.clients.db import MemoryStore
+        from us_outbound.clients.guard import Guard
+
+        self.store = MemoryStore(Guard())
+        self.opened = 0
+
+    def __call__(self):
+        self.opened += 1
+        return self
+
+    def select(self, *a, **kw):
+        return self.store.select(*a, **kw)
+
+    def upsert(self, *a, **kw):
+        return self.store.upsert(*a, **kw)
+
+    def close(self):
+        pass
+
+
+def test_a_daily_job_missed_by_a_restart_is_caught_up_once_within_90_minutes(capsys):
+    """Started at 12:03 BST on Tue 20 Oct with no enrol row today: enrol (12:00) runs once, for its 12:00 minute
+    (11:00 UTC), as a claimed start; poll_replies (every 15 minutes) is not caught up, its next run is minutes away.
+    Started at 13:40 (100 minutes after, past CATCH_UP_MINUTES = 90): not. With a row since 12:00 (the old container
+    ran it): not."""
+    table = [by_name()["enrol"], by_name()["poll_replies"]]
+    stores = Stores()
+    start = utc(2026, 10, 20, 11, 3, 20)  # 12:03:20 BST
+    s, launcher = drive(table, start, start + 13 * MIN, store_factory=stores)
+    assert launcher.starts("enrol") == [start] and launcher.dues[0] == ("enrol", utc(2026, 10, 20, 11, 0))
+    # poll_replies' 12:00 run was missed too, but its next is at 12:15 BST: only that one runs.
+    assert [t.replace(second=0) for t in launcher.starts("poll_replies")] == [utc(2026, 10, 20, 11, 15)]
+    assert '"scheduler_catch_up"' in capsys.readouterr().out
+    s, launcher = drive(table, utc(2026, 10, 20, 12, 40, 20), utc(2026, 10, 20, 12, 44), store_factory=Stores())
+    assert launcher.starts("enrol") == []
+    ran = Stores()
+    ran.store.upsert("heartbeats", [{"run_id": "old", "job": "enrol", "started_at": utc(2026, 10, 20, 11, 0, 2),
+                                     "status": "running", "finished_at": None}])
+    s, launcher = drive(table, start, start + 2 * MIN, store_factory=ran)
+    assert launcher.starts("enrol") == []
+    # Without a store (the loop's own tests) nothing is caught up, and a start from the table carries its minute.
+    s, launcher = drive([job("every")], start, start + 2 * MIN)
+    assert launcher.dues == [("every", utc(2026, 10, 20, 11, 4)), ("every", utc(2026, 10, 20, 11, 5))]
+
+
+def test_a_catch_up_that_cannot_read_the_database_runs_nothing_and_the_loop_goes_on(capsys):
+    def broken():
+        raise ConnectionError("Postgres is down")
+
+    start = utc(2026, 10, 20, 11, 3, 20)
+    s, launcher = drive([by_name()["enrol"], job("every")], start, start + 2 * MIN, store_factory=broken)
+    assert launcher.starts("enrol") == [] and len(launcher.starts("every")) == 2
+    assert '"scheduler_catch_up_failed"' in capsys.readouterr().out
+
+
+# -- the scheduler lock (W2-4; RS P0-4) ---------------------------------------------------------------------------
+
+
+class FakeLock:
+    """try_acquire answers from `answers` (True, False, or an exception to raise), then True for good; held() is True
+    once acquired until `drop()`."""
+
+    def __init__(self, answers=()):
+        self.answers = list(answers)
+        self.tries = 0
+        self._held = False
+        self.closed = 0
+
+    def try_acquire(self):
+        self.tries += 1
+        a = self.answers.pop(0) if self.answers else True
+        if isinstance(a, Exception):
+            raise a
+        self._held = bool(a)
+        return self._held
+
+    def held(self):
+        return self._held
+
+    def drop(self):
+        self._held = False
+
+    def close(self):
+        self.closed += 1
+        self._held = False
+
+
+def _log_lines(text, event):
+    import json
+
+    return [json.loads(line) for line in text.splitlines() if line.startswith("{") and f'"{event}"' in line]
+
+
+def test_nothing_runs_until_the_lock_is_held_and_a_long_wait_tells_the_watchdog(capsys):
+    """Another scheduler holds the lock for 200 s (the old container, say): the new one tries every 2 s, logs each
+    wait, starts nothing, pings /fail once it has waited LOCK_WAIT_SECONDS (180 s), and takes over when the lock is
+    free; then the next minute's job runs, and stopping closes the lock (the next scheduler takes over at once).
+    200 s at 2 s a try is 100 refusals, then the 101st try holds it."""
+    start = utc(2026, 10, 6, 9, 0, 1)
+    lock, told = FakeLock([False] * 100), []
+    s, launcher = drive([job("every")], start, start + 5 * MIN, lock=lock, fail=told.append)
+    assert lock.tries == 101 and lock.closed == 1
+    held_at = start + 200 * SEC
+    assert launcher.started and launcher.started[0][1] >= held_at  # nothing before the lock
+    assert len(told) == 1 and "waited 180 s" in told[0]
+    out = capsys.readouterr().out
+    waits = _log_lines(out, "scheduler_lock_wait")
+    # Every try is logged while the wait is under 180 s (90 tries: 0, 2, ..., 178 s), then once a minute.
+    assert len([w for w in waits if w["waited_seconds"] < sch.LOCK_WAIT_SECONDS]) == 90
+    assert all(w["reason"] == "another scheduler holds the lock" for w in waits)
+    assert _log_lines(out, "scheduler_lock_held")[0]["tries"] == 101
+
+
+def test_a_database_down_at_start_is_retried_with_backoff_and_the_watchdog_hears_at_5_minutes(capsys):
+    """Postgres refuses for about 6 minutes: the scheduler never exits, waits 2, 4, 8, 16, then 30 s between tries,
+    pings /fail once at 5 minutes (DB_DOWN_FAIL_SECONDS), then holds the lock when Postgres is back.
+    Tries at 0, 2, 6, 14, 30, 60, 90, ..., 300 (the 14th try, 300 s, tells the watchdog), 330, 360: 16 refusals."""
+    from us_outbound.clients.db import LockUnavailable
+
+    start = utc(2026, 10, 6, 9, 0, 1)
+    lock, told = FakeLock([LockUnavailable("OperationalError")] * 16), []
+    s, launcher = drive([job("every")], start, start + 10 * MIN, lock=lock, fail=told.append)
+    assert lock.tries == 17 and launcher.started
+    assert told == ["the scheduler cannot reach Postgres for its lock (300 s)"]
+    waits = _log_lines(capsys.readouterr().out, "scheduler_lock_wait")
+    assert [w["retry_in_seconds"] for w in waits[:6]] == [2.0, 4.0, 8.0, 16.0, 30.0, 30.0]
+    assert all(w["reason"] == "database unreachable" for w in waits)
+
+
+def test_a_lock_lost_with_its_connection_is_taken_again_before_anything_more_runs(capsys):
+    """A session lock dies with its connection: at the next minute the loop sees it is not held, waits for it again
+    (another scheduler has it for two tries), and only then starts the minute's job."""
+    start = utc(2026, 10, 6, 9, 0, 1)
+    lock = FakeLock()
+    clock = FakeClock(start)
+    launcher = Launcher(clock)
+    s = sch.Scheduler([job("every")], clock=clock, launch=launcher, lock=lock, fail=lambda r: None)
+
+    def sleep(seconds):
+        clock.sleep(seconds)
+        if clock.t >= start + 2 * MIN and lock.tries == 1:
+            lock.drop()
+            lock.answers = [False, False]
+        if clock.t >= start + 5 * MIN:
+            s.request_stop()
+
+    s.sleep = sleep
+    assert s.run() == 0
+    assert lock.tries == 4  # the first, then two refusals and the take-back
+    out = capsys.readouterr().out
+    assert len(_log_lines(out, "scheduler_lock_lost")) == 1
+    minutes = [t.replace(second=0) for t in launcher.starts("every")]
+    assert utc(2026, 10, 6, 9, 3) in minutes and minutes == sorted(set(minutes))
+
+
+# -- the sync_outcomes cadence (W2-4; RS §2 W2-4) ------------------------------------------------------------------
+
+
+def test_sync_outcomes_starts_54_times_on_a_weekday_24_on_a_sunday_and_is_never_missed_at_75_minutes():
+    """Every 15 minutes at :07 inside the ET send window (13:00-22:59 UK on weekdays: 10 hours x 4 = 40), hourly at :07
+    otherwise (00:00-12:59 and 23:00-23:59: 14 hours = 14): 54 on Tue 20 Oct; on Sun 18 Oct hourly, 24. The longest gap
+    between two starts in the week of 19-25 Oct (the clocks go back on the 25th) is 60 minutes, under EXPECTED's 75,
+    so heartbeat_check never flags a healthy sync_outcomes."""
+    crons = [sch.Cron.parse(c) for c in schedule.crons("sync_outcomes")]
+
+    def starts(a, b):
+        out, t = [], a
+        while t < b:
+            if any(sch.due(c, t) for c in crons):
+                out.append(t)
+            t += MIN
+        return out
+
+    tue = starts(utc(2026, 10, 19, 23, 0), utc(2026, 10, 20, 23, 0))  # Tue 20 Oct 00:00-24:00 BST
+    assert len(tue) == 40 + 14 == 54 and len(set(tue)) == 54
+    assert len(starts(utc(2026, 10, 17, 23, 0), utc(2026, 10, 18, 23, 0))) == 24  # Sun 18 Oct
+    week = starts(utc(2026, 10, 18, 23, 0), utc(2026, 10, 26, 0, 0))
+    gap = max((b - a for a, b in zip(week, week[1:])), default=timedelta(0))
+    assert gap == 60 * MIN < timedelta(minutes=hb.EXPECTED["sync_outcomes"]) == 75 * MIN
+    # The same week before W2-4 had 96 a day: 7 x 96 = 672 starts, and now 5 x 54 + 2 x 24 + 1 (the repeated hour).
+    assert len(week) == 5 * 54 + 2 * 24 + 1
 
 
 def test_at_start_names_only_jobs_the_table_runs():
@@ -566,6 +771,9 @@ def test_the_real_launcher_runs_the_cli_in_its_own_process():
     j = job("no_such_job", live=True)
     assert sch.command(j) == [sys.executable, "-m", "us_outbound", "run", "no_such_job", "--live"]
     assert sch.command(by_name()["suppression_load"])[-2:] == ["run", "suppression_load"]
+    # A start from the table carries the minute it was due, in UTC (12:00 BST is 11:00 UTC), which the run claims.
+    assert sch.command(by_name()["enrol"], utc(2026, 10, 20, 11, 0))[3:] == ["run", "enrol", "--live", "--due",
+                                                                            "2026-10-20T11:00"]
     proc = sch.launch(j)
     assert proc.wait(timeout=60) == 2  # refused (unknown job) before any context or database
 
@@ -599,7 +807,9 @@ SPEC9_CRONS = {
     "apollo_signals": "10 5 * * 1-5",  # W1-3a, 19 Oct 2026: after verify_accounts and apollo_enrich (03:30 before)
     "site_visits": "0 6 * * *", "score": "",  # public_signals and verify_in_clay: never built, removed (W2-1)
     "pick_contacts": "30 5 * * 1-5", "enrol": "0 12 * * 1-5", "poll_replies": "*/15 * * * *",
-    "poll_approvals": "*/5 * * * *", "hubspot_readback": "*/15 * * * *", "sync_outcomes": "7-59/15 * * * *",
+    "poll_approvals": "*/5 * * * *",
+    "hubspot_readback": "0 * * * *",  # hourly from W2-4 (20 Oct 2026; RS §2 W2-4): every 15 minutes before
+    "sync_outcomes": "7-59/15 13-22 * * 1-5",  # its first row (by_name): three from W2-4, schedule.crons has them
     "mailbox_health": "0 7 * * *", "kill_rules": "0 * * * *",
     "daily_post": "0 9 * * 2-6",  # 19 Oct 2026: Tuesday to Saturday, each post the day before (learn/daily_post.py)
     "monday_readout": "30 8 * * 1",  # Harry, 6 Oct 2026: after the hand-check, before the daily post
@@ -616,18 +826,24 @@ SPEC9_CRONS = {
     "retention": "40 0 * * *",  # SPEC 6 and 13 (SPEC 9 had the lead deletions in sync_outcomes at 01:00)
     "label_sample_monthly": "15 9 1 * *",  # Harry, 11 Oct 2026: the labels judged by hand, a batch a month
     "capture": "30 7 * * 1",  # W1-2, 19 Oct 2026: the reply read checked, Mondays before the readout
+    "follow_up": "45 8 * * *",  # W2-4, 20 Oct 2026: the not-now dates kept (replies/follow_up.py)
 }
 # The --live choices deploy/jobs.yaml had: every job that writes outside the database.
 LIVE = {"settings_sync", "score", "enrol", "poll_replies", "poll_approvals", "hubspot_readback", "sync_outcomes",
         "mailbox_health", "kill_rules", "daily_post", "monday_readout", "heartbeat_check", "hand_check_draw",
-        "blackout", "retention", "label_sample_monthly", "capture"}
+        "blackout", "retention", "label_sample_monthly", "capture", "follow_up"}
 
 
 def test_the_table_matches_the_job_registry_and_spec9():
     table = by_name()
-    assert list(table) == list(cli.JOBS) and len(table) == len(SCHEDULE) - 1  # settings_sync has two rows
+    # settings_sync has two rows, sync_outcomes three (W2-4)
+    assert list(table) == list(cli.JOBS) and len(table) == len(SCHEDULE) - 1 - 2
     # The second sync (4 Oct 2026): weekdays 11:30, so the morning's sheet edits are in force for enrol at 12:00.
     assert [j.cron for j in SCHEDULE if j.name == "settings_sync"] == ["0 2 * * *", "30 11 * * 1-5"]
+    # sync_outcomes (W2-4; RS §2 W2-4): every 15 minutes in the ET send window (13:00-22:59 UK, weekdays), hourly
+    # at :07 otherwise; one timeout for all three rows.
+    assert schedule.crons("sync_outcomes") == ["7-59/15 13-22 * * 1-5", "7 0-12,23 * * 1-5", "7 * * * 0,6"]
+    assert {j.timeout_minutes for j in SCHEDULE if j.name == "sync_outcomes"} == {10}
     assert schedule.crons("settings_sync") == ["0 2 * * *", "30 11 * * 1-5"]
     assert schedule.crons("enrol") == ["0 12 * * 1-5"] and schedule.crons("score") == []
     assert {n: j.cron for n, j in table.items()} == SPEC9_CRONS
@@ -669,7 +885,8 @@ def test_enabled_jobs_are_the_ones_heartbeat_check_expects():
                        "apollo_people", "site_visits", "verify_accounts", "pick_contacts", "enrol", "poll_replies", "poll_approvals", "hubspot_readback",
                        "sync_outcomes", "mailbox_health", "kill_rules", "blackout", "daily_post", "capture",
                        "monday_readout", "heartbeat_check",
-                       "suppression_load", "lookalikes", "hand_check_draw", "retention", "label_sample_monthly"]
+                       "suppression_load", "lookalikes", "hand_check_draw", "retention", "label_sample_monthly",
+                       "follow_up"]
     # lookalike_leads is parked before its first run on Sun 1 Nov (W0, 19 Oct 2026; code-sources B6): it paid for
     # whole-US pages and kept only the active states. Not started, and not expected, so no false "missed" alert.
     assert "lookalike_leads" not in enabled and "lookalike_leads" not in hb.EXPECTED
@@ -680,6 +897,10 @@ def test_enabled_jobs_are_the_ones_heartbeat_check_expects():
     assert hb.scheduled_jobs() == [j for j in cli.built_jobs() if j in enabled]
     assert list(dict.fromkeys(j.name for j, _ in sch.Scheduler().jobs)) == enabled
     assert [j.name for j, _ in sch.Scheduler().jobs].count("settings_sync") == 2
+    assert [j.name for j, _ in sch.Scheduler().jobs].count("sync_outcomes") == 3
+    # follow_up (W2-4, 20 Oct 2026): registered everywhere a new job must be, in the same commit.
+    assert cli.JOBS["follow_up"] == "us_outbound.replies.follow_up:sweep" and hb.EXPECTED["follow_up"] == 26 * 60
+    assert by_name()["follow_up"].live is True and "follow_up" in hb.IMPACT
     # capture (W1-2, 19 Oct 2026; RS §2 W1-2): registered everywhere a new job must be, in the same commit.
     assert cli.JOBS["capture"] == "us_outbound.replies.capture:run" and hb.EXPECTED["capture"] == 8 * 24 * 60
     assert by_name()["capture"].live is True and "capture" in hb.IMPACT

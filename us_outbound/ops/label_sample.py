@@ -8,7 +8,6 @@ not against the label check itself, and the judged companies become the label ch
   * `label_sample_monthly` (the 1st of each month, 09:15) scores last month's batch, adds a new one of MONTHLY
     companies not on the tab yet, and posts both to Slack with a link to the tab (say.sheet_link) and what to fill in. The draft definition changes for
     the misses follow (learn/definition_suggestions.py).
-  * `us-outbound labels sample [--size 50] [--live]` adds a batch now; `--score` scores every batch.
   * `us-outbound labels eval --from-sample` scores the model on every judged company (labels.judged_rows).
 
 Read-only otherwise: no model is asked, no credit spent, no company or card changed. settings_sync does not read
@@ -105,7 +104,7 @@ def add_batch(ctx: Context, size: int, batch: str) -> dict[str, Any]:
 
 
 def run(ctx: Context, size: int = SIZE) -> dict[str, Any]:
-    """`us-outbound labels sample`: add a batch of `size` now (this month's), with --live."""
+    """A batch of `size` added now (this month's), live only: the monthly job's first half, alone."""
     out = add_batch(ctx, size, batch_name(ctx))
     out.pop("on_tab")
     return out
@@ -205,18 +204,6 @@ def sample_rows(ctx: Context) -> list[tuple[str, Industry]]:
     sheet_id = ctx.guard.bounds.settings_sheet_id
     rows = read_tab(ctx.clients.sheets, sheet_id, TAB) if sheet_id else None
     return judged(rows or [], ctx.settings)
-
-
-def run_score(ctx: Context) -> dict[str, Any]:
-    """`us-outbound labels sample --score`: read the tab and count Harry's verdicts."""
-    sheet_id = ctx.guard.bounds.settings_sheet_id
-    rows = read_tab(ctx.clients.sheets, sheet_id, TAB) if sheet_id else None
-    if rows is None:
-        raise LookupError(f"the settings sheet has no {TAB} tab: run `us-outbound labels sample --live` first")
-    out = score(rows, ctx.settings)
-    log(JOB + "_score", run_id=ctx.run_id, judged=out["judged"], label_right=out["label_right"],
-        group_right=out["group_right"], wrong_pitch=out["wrong_pitch"])
-    return out
 
 
 # -- the monthly batch (Harry, 11 Oct 2026) -----------------------------------------------------------------------

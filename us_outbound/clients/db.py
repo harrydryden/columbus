@@ -669,7 +669,7 @@ class SessionLock:
         except psycopg.Error as exc:
             self.close()
             raise LockUnavailable(type(exc).__name__) from exc
-        got = row["got"] if isinstance(row, Mapping) else row[0]
+        got = next(iter(row.values()), False) if isinstance(row, Mapping) else row[0]
         self._held = bool(got)
         return self._held
 

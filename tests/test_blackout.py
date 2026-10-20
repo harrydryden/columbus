@@ -303,7 +303,7 @@ def test_a_dry_run_says_what_it_would_do_and_changes_nothing():
 
 def test_the_job_is_hourly_live_and_its_heartbeat_is_expected():
     job = by_name()["blackout"]
-    assert (job.cron, job.live, job.enabled, job.timeout_minutes) == ("40 * * * *", True, True, 10)
+    assert (job.cron, job.live, job.enabled, job.timeout_minutes) == ("40 * * * *", True, True, 5)  # 5 from W2-4
     assert hb.EXPECTED["blackout"] == 150 and "blackout" not in hb.WEEKDAY_JOBS
 
 

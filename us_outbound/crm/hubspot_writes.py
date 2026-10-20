@@ -1,7 +1,6 @@
-"""HubSpot writes (SPEC 1.2, 11): the ids to look up, and the reply writes.
-
-lookup_pipeline() reads the "Spill 3.0" pipeline, its first stage and Harry's owner id,
-for Harry to paste into the General tab. It never writes settings itself.
+"""HubSpot writes (SPEC 1.2, 11): the reply writes. (lookup_pipeline(), the `hubspot ids` command's read of the
+pipeline, stage and owner ids for the General tab, went in W2-4: the ids are on the sheet; HubSpot's settings show
+them.)
 
 record_reply() is SPEC 11 "HubSpot writes" for one positive or referral reply item (replies/desk.py):
   1. the company by root domain: more than one → nothing is written, the account is held and a
@@ -41,21 +40,6 @@ from us_outbound.clients.hubspot import COMPANY_PROPS, CONTACT_PROPS, DEAL_PROPS
 from us_outbound.context import Context
 from us_outbound.logs import clip, log
 from us_outbound.replies.desk import ReplyItem, save_payload
-
-
-def lookup_pipeline(ctx: Context) -> dict:
-    """Ids for the General tab: the "Spill 3.0" pipeline, its first stage and Harry's owner id (reads only)."""
-    g = ctx.settings.general
-    hs = ctx.clients.hubspot
-    found = hs.find_pipeline(g.hubspot_pipeline)
-    owner = hs.owner_id_for_email(g.escalation_email)
-    ids = {
-        "hubspot_pipeline_id": found[0] if found else None,
-        "hubspot_deal_stage_id": found[1] if found else None,
-        "hubspot_owner_id": owner,
-    }
-    log("hubspot_lookup", pipeline=g.hubspot_pipeline, **ids)
-    return ids
 
 
 # -- Phase 2: reply writes (SPEC 11 "HubSpot writes", positive or referral replies only) ----------

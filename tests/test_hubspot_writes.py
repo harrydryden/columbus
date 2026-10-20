@@ -26,7 +26,6 @@ from us_outbound.clients.guard import (
 from us_outbound.clients.http import ApiError, Response
 from us_outbound.crm import hubspot_writes as hw
 from us_outbound.logs import hash_email
-from us_outbound.settings.model import General, Settings
 
 NOW = datetime(2026, 10, 5, 15, 0, tzinfo=UTC)  # Monday 16:00 UK
 HANNAH = "hannah@meetspill.org"
@@ -457,21 +456,6 @@ def test_dry_run_reads_and_writes_nothing(default_settings):
     out = hw.record_reply(ctx, item(ctx))  # with the company there, every later write is worked out too
     assert out["status"] == "dry_run" and out["company_id"] == co and crm.writes(t) == []
     assert {w.action for w in ctx.guard.writes("hubspot")} >= {"contact.create"}
-
-
-def test_lookup_pipeline_reads_the_ids():
-    """`hubspot ids` (kept when `hubspot setup` went): the Spill 3.0 pipeline, its first stage and Harry's owner id."""
-    t = FakeTransport()
-    t.route("GET", "/crm/v3/pipelines/deals", body={"results": [
-        {"id": "1", "label": "Sales", "stages": [{"id": "s", "displayOrder": 0}]},
-        {"id": "82002613", "label": "Spill 3.0", "stages": [
-            {"id": "154381889", "displayOrder": 1}, {"id": "154381888", "displayOrder": 0}]},
-    ]})
-    t.route("GET", "/crm/v3/owners", body={"results": [{"id": "82221891", "email": "harry@spill.chat"}]})
-    ctx = make_context(Settings(general=General()), transport=t)
-    assert hw.lookup_pipeline(ctx) == {
-        "hubspot_pipeline_id": "82002613", "hubspot_deal_stage_id": "154381888", "hubspot_owner_id": "82221891"}
-    assert t.writes() == []
 
 
 def test_the_property_setup_is_gone():

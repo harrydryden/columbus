@@ -196,7 +196,7 @@ def test_each_claude_step_is_asked_once_in_its_month():
 # -- Apollo's website-visitor credits --------------------------------------------------------------------------------
 
 
-def test_the_website_visitor_credits_under_15_percent_while_site_visits_are_on():
+def test_the_website_visitor_credits_under_15_percent_while_site_visits_are_on(monkeypatch):
     ctx, _ = world(visitors=150)
     assert asked(ctx) == [":warning: *Apollo's website-visitor credits are running low; when they run out, we stop "
                           "learning which companies visit the US site.*\n150 of 1,200 left (12%).\n"
@@ -204,7 +204,8 @@ def test_the_website_visitor_credits_under_15_percent_while_site_visits_are_on()
                           "allowance)."]
     ctx, _ = world(visitors=300)
     assert asked(ctx) == []
-    ctx, _ = world(visitors=10, site_visit_domain="")  # site visits off: not asked about
+    monkeypatch.setattr(spend, "SITE_VISIT_DOMAIN", "")  # site visits off: not asked about
+    ctx, _ = world(visitors=10)
     assert asked(ctx) == [] and spend.read(ctx).visitors is None
 
 

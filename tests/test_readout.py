@@ -509,24 +509,21 @@ def test_the_cli_prints_it_and_posts_nothing(capsys):
     from tests.test_cli import Harness
 
     h = Harness()
-    assert h.run("readout") == 0
+    assert h.run("report", "readout") == 0
     out = capsys.readouterr().out
     assert "*Monday readout" in out and "*Exit criteria to scale*" in out
     assert not [r for r in h.transport.requests if r.url.endswith("chat.postMessage")]
 
 
-def test_signals_value_prints_the_table(capsys):
-    from tests.test_cli import Harness
+def test_the_signal_table_lines():
+    """The table's lines (its `signals value` command went in W2-4; learn/signal_value.py goes with W2-3)."""
+    from us_outbound.learn import signal_value
 
-    h = Harness()
-    assert h.run("signals", "value") == 0
-    assert "reads the database's views" in capsys.readouterr().out  # a MemoryStore has none
-    h.store.query_handlers["v_signal_value"] = lambda s, p: [
+    assert "reads the database's views" in signal_value.table_lines(None)[0]  # a MemoryStore has none
+    out = "\n".join(signal_value.table_lines([
         signal_row("EAP named", accounts_enrolled=4, accounts_sent=3, accounts_delivered=3, accounts_replied=1,
                    without_delivered=40, without_replied=2),
-        signal_row("Layoffs")]
-    assert h.run("signals", "value") == 0
-    out = capsys.readouterr().out
+        signal_row("Layoffs")]))
     assert ("  EAP named (weight 10): 4 enrolled with it, 3 emailed, 1 replied, 0 positive, 0 meetings: too few to "
             "read (under 30 emailed with it)") in out
     assert "  No company enrolled with: Layoffs." in out and "%" not in out

@@ -1,5 +1,5 @@
 -- heartbeats: one row per job run (build addition). SPEC 9: "Every job writes a
--- heartbeat row; a missed heartbeat alerts in Slack." ops/heartbeat.py writes the row
+-- heartbeat row; a missed heartbeat alerts in Slack." ops/health.py writes the row
 -- at start and upserts it by run_id at the end.
 CREATE TABLE IF NOT EXISTS us_outbound.heartbeats (
   run_id text NOT NULL,
@@ -10,6 +10,8 @@ CREATE TABLE IF NOT EXISTS us_outbound.heartbeats (
   dry_run boolean,
   detail jsonb,
   error text,
+  duration_s double precision,
+  exit_code integer,
   PRIMARY KEY (run_id)
 );
 CREATE INDEX IF NOT EXISTS heartbeats_job_started_at_idx ON us_outbound.heartbeats (job, started_at);

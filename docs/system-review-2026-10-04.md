@@ -1,5 +1,8 @@
 # System review, 4 October 2026
 
+> A record of its day (W2-4, 20 Oct 2026): the commands it names are as they were then. `us-outbound --help`
+> lists today's; README.md "Commands" says which were folded or removed.
+
 The day before the pilot's first real sends, Harry asked for "an extensive system review and refactor
 to ensure that data is flowing as needed, the gates on decisions are in place and coherent, and that it
 runs as efficiently as possible whilst being as simple and intuitive to use as possible".

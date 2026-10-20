@@ -63,7 +63,7 @@ CAMPAIGN_SETTINGS: dict[str, Any] = {
 TRACKING_FIELDS = frozenset({"open_tracking", "link_tracking"})
 # Instantly's GET /campaigns/{id} (read 2 Oct 2026) leaves out a setting that is at its default, so a
 # setting we want false and that is missing is false. is_evergreen is never returned, so it cannot be
-# checked (confirmed live 2 Oct 2026 by `campaigns show`; what it does is still to confirm, above).
+# checked (confirmed live 2 Oct 2026 by reading the campaign back; what it does is still to confirm, above).
 NOT_RETURNED = frozenset({"is_evergreen"})
 # The opt-out every email carries (Harry, 1 Oct 2026): Instantly's own unsubscribe link, not a page
 # of ours. It goes in the campaign's step template after the lead's rendered body, since Instantly

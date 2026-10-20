@@ -220,12 +220,12 @@ def flow() -> dict:
     out: dict[str, Any] = {"world": w}
     assert not any(validate_all(w.sheet)[1].values()), "the phase-0 sheet must validate"
 
-    out["sync1"] = w.run("dry-run", "settings_sync")
+    out["sync1"] = w.run("run", "settings_sync")
 
     # What source_universe and verify_in_clay (phase 1) will write: the account and its facts.
     w.store.insert("accounts", [dict(ACCOUNT)])
     w.store.insert("signal_events", facts())
-    out["score"] = w.run("dry-run", "score")
+    out["score"] = w.run("run", "score")
     out["scored"] = dict(w.account())
 
     # What pick_contacts (phase 2) will write, and Harry's approval of this week's hand-check.
@@ -233,18 +233,18 @@ def flow() -> dict:
     w.store.insert("hitl_items", [{"item_id": "hc-1", "kind": "hand_check", "status": "handled",
                                    "created_at": NOW - timedelta(hours=3),
                                    "payload": {"iso_week": iso_week(NOW.date()), "pulled_account_ids": []}}])
-    out["enrol"] = w.run("dry-run", "enrol")
+    out["enrol"] = w.run("run", "enrol")
     out["after_enrol"] = (dict(w.account()), dict(w.store.get("contacts", contact_id=CONTACT["contact_id"])))
 
     _, row = signal_row(w.sheet, "New People leader")
     assert row["weight"] == "30"
     row["weight"] = "5"
-    out["sync2"] = w.run("dry-run", "settings_sync")
+    out["sync2"] = w.run("run", "settings_sync")
     out["reweighted"] = dict(w.account())
 
     out["bad_row"], bad = signal_row(w.sheet, "Q4 plan-year window")
     bad["weight"] = "ten"
-    out["sync3"] = w.run("dry-run", "settings_sync")
+    out["sync3"] = w.run("run", "settings_sync")
     out["kept"], _ = load_current(w.store)
     return out
 

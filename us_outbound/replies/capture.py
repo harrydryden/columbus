@@ -20,7 +20,7 @@ nobody counted (code-replies-crm M3, M4; RT §1.6). This job checks the read two
       The plan named the steps analytics; it has no bounce count (Instantly's OpenAPI), so the campaign totals
       are read instead, which also state their unit (leads) for replies and bounces.
   (b) canary: an email to the seed inbox through the existing seed send path (ops/seed.send: the owner's own
-      campaign, its step template, a Copy row), and at the next run (or `us-outbound capture check`) the
+      campaign, its step template, a Copy row), and at the next run (or `us-outbound report capture`) the
       check that a received email from the seed address came back through the same read poll_replies uses
       (Instantly.list_emails, mode emode_all), tied to that canary: Instantly's lead field is the canary's
       address, or the email is in the thread of a send to it, and it came no earlier than the first send read
@@ -69,7 +69,7 @@ from us_outbound.replies import outcomes
 from us_outbound.timeparse import utc
 
 JOB = "capture"
-CHECK_JOB = "capture_check"  # `us-outbound capture check`: the canary check alone, by hand
+CHECK_JOB = "capture_check"  # `us-outbound report capture`: the canary check alone, by hand
 WINDOW = timedelta(days=7)  # what reconcile compares
 CANARY_WAIT = timedelta(hours=20)  # a canary younger than this is not checked yet (it goes out in the US window)
 # A canary not sent yet is checked again at the next run, its lead kept, until it is this old: the Tuesday check
@@ -488,6 +488,6 @@ def readout_caveat(ctx: Context) -> str | None:
 
 
 def check_only(ctx: Context) -> dict:
-    """`us-outbound capture check`: the last canary's check alone (on a Tuesday, the day after it went)."""
+    """`us-outbound report capture`: the last canary's check alone (on a Tuesday, the day after it went)."""
     out = check(ctx)
     return {"job": CHECK_JOB, "dry_run": ctx.dry_run, "canary_check": out, "errors": canary_errors(out)}

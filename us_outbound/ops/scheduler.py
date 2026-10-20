@@ -34,8 +34,10 @@ The loop:
     production with none). With Postgres out of reach it retries with backoff, and pings /fail after
     DB_DOWN_FAIL_SECONDS; never a silent exit. A session lock dies with its connection, so before each minute's
     tick the loop checks it still holds it, and takes it again (the same wait) before it starts anything more;
-  * catches up (W2-4; code-platform-ops B7): when it starts, or takes the lock back, each job with a fixed time of
-    day whose time fell in the last CATCH_UP_MINUTES with no heartbeat since is started once, for that minute.
+  * catches up (W2-4; code-platform-ops B7): when it starts, or takes the lock back, each job that runs daily or
+    less often (health.EXPECTED of a day or more: its next try is hours away) whose time fell in the last
+    CATCH_UP_MINUTES with no heartbeat since is started once, for that minute. A frequent job is not caught up: its
+    next run is minutes away.
     Every start from the table carries its due minute (`run <job> --due`), and the run claims the row
     "<job>:<due minute>" in heartbeats before it does anything (ops/health.run_job), so two starts for one minute
     (two schedulers, or a catch-up of a run the old container began) run once. Other minutes the loop missed are
@@ -100,7 +102,7 @@ LOCK_WAIT_SECONDS = 180.0  # the old container's SIGTERM frees it within 4 to 13
 LOCK_LOG_EVERY_SECONDS = 60.0  # how often a wait past LOCK_WAIT_SECONDS is logged
 DB_BACKOFF_SECONDS = (2.0, 4.0, 8.0, 16.0, 30.0)  # between tries while Postgres is out of reach, then 30 s each
 DB_DOWN_FAIL_SECONDS = 300.0  # Postgres out of reach this long at the lock: the watchdog's /fail
-CATCH_UP_MINUTES = 90  # how far back a missed daily job is caught up (module docstring)
+CATCH_UP_MINUTES = 90  # how far back a missed daily job is caught up (module docstring; design §8 W2-4)
 
 # -- cron -------------------------------------------------------------------------------
 
@@ -395,16 +397,17 @@ class Scheduler:
             log("scheduler_watchdog_failed", error=type(exc).__name__)
 
     def catch_up(self, now: datetime) -> list[str]:
-        """Queue once each fixed-time job whose time fell in the last CATCH_UP_MINUTES with no heartbeat since that
-        minute (module docstring). Never raises: a database it cannot read catches nothing up."""
+        """Queue once each daily (or rarer) job whose time fell in the last CATCH_UP_MINUTES with no heartbeat since
+        that minute (module docstring). Never raises: a database it cannot read catches nothing up."""
         if self.store_factory is None:
             return []
         from us_outbound.clients.db import Range
+        from us_outbound.ops.health import DAILY, EXPECTED
 
         wanted = []
         current = _floor(now)
         for job, cron in self.jobs:
-            if not cron.fixed or job.name in self.running:
+            if not cron.fixed or EXPECTED.get(job.name, 0) < DAILY or job.name in self.running:
                 continue
             t = current
             while t > current - timedelta(minutes=CATCH_UP_MINUTES):

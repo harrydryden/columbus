@@ -79,7 +79,7 @@ for the blackout until Mon 30 Nov": there is nothing to do.
 | 07:00 | Mailbox check, only when something changed or is wrong: a mailbox promoted to Active, a campaign's daily limit raised with the ramp, a new campaign created or activated, a sender name that is not the owner's full name | Usually nothing. If it asks you to run `us-outbound start --live` or `us-outbound mailbox check --fix --live`, run it |
 | Monday 05:45 | The weekly hand-check: `hand_check_sample` companies (10 until you set 20) picked at random from those the coming send days would email, after today's own (so Monday's sending is never held up). Since 14 Oct nothing is held here for doubtful facts or an unclear industry: a company missing its HQ state, size or industry is left out by itself ("incomplete information"), as is one the AI cannot place in our industries, and a borderline size (near a band edge) goes ahead on Apollo's count. With `hand_check_gate` = no only the picked companies wait for you, for 7 days at most; with yes the week's new leads wait for the whole check. A check still open on Wednesday 09:00 posts one reminder. If the Monday draw fails, the 5-minute poll draws the week itself from 06:15; with the whole-day gate, a week that found no company ready at 05:45 is drawn again once one is | Open the **Hand-check** tab (the post links it) and pick a `decision` on each row: *fine*, *leave out* (never emailed: say why in `reason`), or *wrong industry* with the right one in `right_label`; pick *no* in `contact_ok` or `opener_ok` when the person or the opening line is wrong. Each choice is applied within 5 minutes, and a change later is applied too (a leave out changed to fine puts the company back). A choice that cannot be applied says why in `note`. The check closes when every row is applied, or after 7 days; the Monday readout counts the decisions and any company sent unjudged (`handcheck approve` still works from a terminal). Every week's rows stay on the tab, and each applied row is kept in the database as a judgement |
 | Monday 08:30 | The Monday readout: last week, the targets, the exit criteria to scale, the cuts, the signal table and the tests | See **Mondays: the readout** below |
-| 09:00 Tue–Sat | The daily post, short since 9 Oct 2026, Tuesday to Saturday since 19 Oct 2026 (each covers the day before alone: Saturday's is Friday, Tuesday's is Monday; weekend replies are in the Monday readout): **Needs you** (one bullet per thing to do), **Yesterday** (sends and outcomes in one line, what was found in another, any positive reply or objection), **Today** (up to how many new contacts, what limits it, each sender's share, the week so far), **Pipeline** (ready, and what stands behind it), and **Watch** only when something needs a look (a loud mailbox, a kill rule, a campaign not sending, what the data says to tune) | Read **Needs you** first. `us-outbound daily --full` prints the full post as it was before: sources, labels, every mailbox and the credit budgets. The Monday readout carries the weekly detail |
+| 09:00 Tue–Sat | The daily post, short since 9 Oct 2026, Tuesday to Saturday since 19 Oct 2026 (each covers the day before alone: Saturday's is Friday, Tuesday's is Monday; weekend replies are in the Monday readout): **Needs you** (one bullet per thing to do), **Yesterday** (sends and outcomes in one line, what was found in another, any positive reply or objection), **Today** (up to how many new contacts, what limits it, each sender's share, the week so far), **Pipeline** (ready, and what stands behind it), and **Watch** only when something needs a look (a loud mailbox, a kill rule, a campaign not sending, what the data says to tune) | Read **Needs you** first. `us-outbound report daily --full` prints the full post as it was before: sources, labels, every mailbox and the credit budgets. The Monday readout carries the weekly detail |
 | 12:00 | Enrol adds the day's leads to Instantly (no card since 20 Oct 2026) | Nothing |
 | Any time | Reply cards, each with a draft | Answer within 2 hours, or the card is re-posted (13:00 to 23:00 UK). Answer within 24 hours: a positive reply waiting longer pauses new sends and is emailed to you |
 | Hourly | Kill-rule alerts: a mailbox, an email source or an industry group held back, with the reason | Check it, then `us-outbound killrules show` and `us-outbound killrules clear ID --live` |
@@ -101,7 +101,7 @@ one click decides.
 ## Mondays: the readout
 
 At 08:30 UK, after the hand-check's draw and before the daily post, `monday_readout` posts last week (Monday to
-Sunday, UK time) to #us-outbound. `us-outbound readout` prints the same text without posting. Read it top
+Sunday, UK time) to #us-outbound. `us-outbound report readout` prints the same text without posting. Read it top
 to bottom:
 
 1. **Last week:** emails sent, the companies that replied (people, not out-of-office; each company once,
@@ -138,7 +138,7 @@ to bottom:
    --live` before and after.
 8. **Signal value:** the signals whose companies replied more or less than the companies without them, as
    monitoring: at this volume most such gaps are chance, so none is a "Needs action" item (since 19 Oct 2026).
-   For the whole table, `us-outbound signals value`. Nothing re-weights itself.
+   Nothing re-weights itself.
 9. **Tests:** a test that reached one of its pre-registered looks last week, with its reply rates, or how
    far each running test has got.
 
@@ -147,7 +147,7 @@ counts only. A bounce rate on fewer than 100 sends says that one bounce moves it
 
 **Meetings** count bookings on your HubSpot calendar (the signature's "Book a call here", and the website's
 demo page, which books into the same calendar) and Spill 3.0 deals at "Demo requested" or later at a company
-we emailed. `hubspot_readback` reads them every 15 minutes and stops that company's emails; it only reads
+we emailed. `hubspot_readback` reads them every hour and stops that company's emails; it only reads
 HubSpot. A meeting and a deal for one booking count once.
 
 **Tests are read only at a look you set in advance.** On the Tests tab, before `us-outbound test start ID
@@ -304,12 +304,13 @@ paste, so the table below is a reference; the message itself says what to do. A 
 | "Claude: $X of the $50 monthly cap…" | 09:00, at 50%, 80% and 100%, once a month each (the month is UTC, as Anthropic counts it) | At the cap, replies come to you as "other" with no draft, copy QA stops, and new companies wait unverified for the industry label check (those already verified carry on). Raise `claude_monthly_cap_usd` on the General tab (up to $100) and the spend limit in the Anthropic Console |
 | "Apollo's website-visitor credits are running low…" | 09:00, once a month, under 15% left, while site visits are on | Buy more in Apollo, or the site-visit signals stop |
 | "Add N mailboxes now: a new mailbox takes about 3 weeks to warm up…" | Monday 08:30 (with the readout), once a week, when the Active mailboxes at full ramp take fewer new companies a week than `weekly_enrol_cap`, and enough companies are ready or coming to fill more | Buy the mailboxes, then `us-outbound mailbox add ADDRESS --owner "NAME" --live` for each. The same-day "Add a mailbox for …" line in the daily post stays |
-| "labels: N industry corrections since the last send day…" | 09:00, once a day, when 3 or more companies' industry was corrected by hand (the Hand-check tab, `labels set`) | The line names the moves (`Adtech & martech → Fintech (3)`): fix that label's `definition` or `apollo_keywords` on the Industries tab, `us-outbound labels eval --live`, then `us-outbound labels audit --live` |
+| "labels: N industry corrections since the last send day…" | 09:00, once a day, when 3 or more companies' industry was corrected by hand (the Hand-check tab, `labels set`) | The line names the moves (`Adtech & martech → Fintech (3)`): fix that label's `definition` or `apollo_keywords` on the Industries tab, `us-outbound labels eval --live`, then `us-outbound sync`: a changed definition changes the label check's version, and verify_accounts asks it again about the companies in the queue, about 150 each weekday morning |
 | "labels: the model put N of the M companies the rules labelled (P%) in another group or outside our labels…" | 09:00, once a day, when the model agreed on the group for under 70% of at least 20 companies the rules labelled (each counted once; the model naming a label within the rules' group, such as Publishers for Marketing & Creative Agencies, agrees) | The rules' NAICS codes or keywords for the group it names bring in the wrong companies: trim them on the Industries tab |
-| "labels: the rules gave no label to N of M companies checked…" | 09:00, once a day, when at least 20 companies and 30% of those checked had no rules label | The line names the model's commonest labels for them and their commonest NAICS codes (`541511 → Software & SaaS (9)`): add each code to that label's `naics_prefixes` on the Industries tab, then `us-outbound sync` and `us-outbound relabel --live` |
+| "labels: the rules gave no label to N of M companies checked…" | 09:00, once a day, when at least 20 companies and 30% of those checked had no rules label | The line names the model's commonest labels for them and their commonest NAICS codes (`541511 → Software & SaaS (9)`): add each code to that label's `naics_prefixes` on the Industries tab, then `us-outbound sync`: verify_accounts gives the queue the new rules' labels from the next weekday morning |
 | "The label check did not run (…); N companies wait unverified" | 09:00, once a day, while the model cannot be asked (the Claude cap, an error) | At the cap, raise `claude_monthly_cap_usd`; on an error, it usually clears itself next run. Verified companies carry on meanwhile. To run on the rules alone, set `label_check` to `skip` |
 | "Instantly's plan is full: nobody new is being emailed" | When an add finds the plan full, once a day | Upgrade the Instantly plan, or delete leads that finished their sequence. Nobody is suppressed: the contacts wait, and the next enrol adds them once there is room |
 | "Instantly's plan has room for N more leads, under 2 weeks…" | After an add, once a week | The same, before it fills |
+| "Replies that said “not now”: today is the day to follow up" | 08:45 UK, daily (`follow_up`, from W2-4, 20 Oct 2026), for each not-now reply whose date has come: the date they gave, or 90 days after the reply | Write to them again from the mailbox they wrote to. A HubSpot task due today is made for you too (it names the reply item; a warm reply's company and contact are linked). Nobody who has asked to stop since is listed |
 | "Some automatic jobs ran into problems" | Hourly, once a day per job and kind | Usually nothing: each job tries again on its next run. If it keeps coming, `us-outbound status` and the worker's logs in Railway |
 | "HubSpot turned down our key" (or Apollo, Instantly, Slack, Google, Anthropic), inside "Some automatic jobs ran into problems" | Hourly, once a day per key | If the key was revoked: make a new one, replace the variable in the us-outbound service's **Variables**, then **Deploy**. If the key is current, check what the plan allows (Apollo answers 403 for a search its plan does not include) |
 | "The jobs have stopped… The settings sheet has errors on the … tab" (also "N automatic jobs have stopped running") | Hourly, once a day | Fix the sheet (the message shows the first errors and links the tab), then `us-outbound sync`. The worker also reads the sheet each time it starts |
@@ -344,10 +345,9 @@ docs/railway-setup.md, step h.
   --live`. The label is set and kept on the Overrides tab, and the company's next emails are that label's;
   contacts already in flight keep theirs. `us-outbound labels show DOMAIN` gives its label's history. Since
   7 Oct the task model checks each company's label before it is verified (the label check, docs/pipeline.md
-  stage 3), so this should be rare: the full daily post's **Labels** line (`us-outbound daily --full`) counts
-  the corrections, and an ask names them when there are several. `us-outbound relabel` shows what the rules
-  and the stored checks change for the companies in the queue; `--live` applies it. Government domains (.gov,
-  .mil) are never prospected.
+  stage 3), so this should be rare: the full daily post's **Labels** line (`us-outbound report daily --full`)
+  counts the corrections, and an ask names them when there are several. Government domains (.gov, .mil) are never
+  prospected.
 - **A missed-heartbeat alert:** a job has not run when it should have. `us-outbound status` lists
   the jobs that failed or missed, with the error. The worker's logs are in Railway.
 - **Someone asks to be forgotten, or Apollo sends a deletion notice:** within 30 days,
@@ -410,7 +410,7 @@ The jobs only read Apollo's visitor list and never touch the tracker, so this is
 - **Email 1's subject split** (5 Oct 2026): half the companies (General `email1_subject_share`, 0.5)
   get the personal subject `email1_subject` ("support for the {{company}} team"; `{{company}}` and
   `{{first_name}}` only) in email 1 instead of the Copy row's. Emails 2 to 4 are unchanged. Each
-  company keeps its arm, and `us-outbound signals review` says which subject gets more replies once
+  company keeps its arm, and `us-outbound report signals` says which subject gets more replies once
   each arm has 30 companies emailed. To change the subject or the share, edit them on the General tab,
   then `us-outbound sync`; 0 sends every email 1 with the Copy row's subject. The first time, run
   `us-outbound settings load --tab General --live` to add the two keys to the sheet. To see the
@@ -423,9 +423,8 @@ The jobs only read Apollo's visitor list and never touch the tracker, so this is
   only), their 12-month headcount growth from Apollo (counts only, at most 60 credits), and works out
   each account's lookalike fit (industry, size and growth). Nothing to do. Customers themselves are kept
   out every night: `suppression_load` (01:30) reads them too, so a company that signs up mid-month gets no
-  more emails from the next morning (7 Oct 2026). `us-outbound lookalikes show`
-  lists the customers by industry and size; `us-outbound lookalikes fit` shows the fits and the tier
-  mix the lookalike rows give, without changing anything. To put the graded rows on the sheet, run
+  more emails from the next morning (7 Oct 2026). `us-outbound report lookalikes`
+  lists the customers by industry and size. To put the graded rows on the sheet, run
   `us-outbound settings load --tab Signals --live`: it adds "Close match" and "Some match to Spill's
   customers" and switches "Looks like Spill's customers" off.
 - **Parked since 19 Oct 2026, so it does not run on the 1st: lookalike leads** (`lookalike_leads`). Its
@@ -489,25 +488,27 @@ commands instead.
 | Command | What it does |
 | :- | :- |
 | `status` | `live_sending`, when the settings were synced, what waits for you, the jobs that need a look, what retention last deleted, mailboxes, today's number, and the go-live checks: Copy, Campaigns, Watchdog |
-| `daily`, `daily --full` | The daily post as it would read now, short or in full; it posts nothing |
+| `report daily`, `report daily --full` | The daily post as it would read now, short or in full; it posts nothing |
 | `accounts`, `accounts DOMAIN`, `accounts --csv` | The companies and contacts we hold: a summary and the list, one company in full, or a spreadsheet. Read-only |
 | `sync` | Brings sheet edits into force now |
 | `start --live` | Syncs, then resumes the campaigns and enrollment |
 | `stop --live` | The brake |
 | `seed send ADDRESS --owner NAME --live`, `seed check` | The seed-inbox test of the unsubscribe link (`--subject personal`: email 1 with the personal subject) |
 | `labels set DOMAIN "Fintech" --live`, `labels show DOMAIN` | Set a company's industry label (as *wrong industry* on the Hand-check tab does), or show its label and its check history |
-| `labels audit`, then `labels audit --live` | The label check for the whole queue now, rather than about 150 companies a weekday: the dry run says how many, what it costs at most (about $0.01 each) and shows a prompt; `--live` first reads the home page of each company whose label the page could settle: never checked, the model unsure, or a label the model gave without the rules agreeing (public pages, no paid service), and asks about those again with it. A label the model gives alone gets its own copy only once the model has read the page; until then the company gets its group's copy, then asks, decides, lists where the rules and the model differ, and withdraws the cards that no longer fit |
-| `labels sample --live`, then `labels sample --score` | Labels judged by you, not by the label check: 50 companies drawn at random from those emailed or to be emailed (`--size` for more), added to the Label sample tab as this month's batch, under the rows already there, with each one's site, what it does, our label, the copy it gets and how the label was decided. Fill `your_verdict` with the right label (any case), or `right`, `right group`, `wrong group` or `outside` (and `right_label` when ours is wrong); `--score` prints the share right with a 95% interval, how many emails would have carried a pitch that is not true, and, where the right label is known, how often our label, the rules and the model each had it. Judged rows are never redrawn. It asks no model and spends nothing |
+| (the `label_sample_monthly` job, the 1st at 09:15) | Labels judged by you, not by the label check: 50 companies drawn at random from those emailed or to be emailed, added to the Label sample tab as this month's batch, under the rows already there, with each one's site, what it does, our label, the copy it gets and how the label was decided. Fill `your_verdict` with the right label (any case), or `right`, `right group`, `wrong group` or `outside` (and `right_label` when ours is wrong); the next month's run scores the batch: the share right with a 95% interval, how many emails would have carried a pitch that is not true, and, where the right label is known, how often our label, the rules and the model each had it. Judged rows are never redrawn. It asks no model and spends nothing |
 | `labels eval --live` | Scores the model on the first cards' 13 companies (about $0.15; `--from-corrections` adds the companies corrected by hand, `--from-sample` the companies judged on the Label sample tab, about $0.01 each). Run it before changing a definition, keywords or the prompt; it exits 1 below 90% acceptable or on any unsafe answer |
 | `replies list`, `replies send ID --live` (`--text "…"` sends your text), `replies skip ID --live` | Reply cards without Slack |
 | `killrules show`, `killrules clear ID --live` | Kill-rule holds |
 | `mailbox check --live --fix` | Mailbox health now, each sender name set to its owner's full name, and the campaigns put right |
 | `copy preview --industry "Fintech" --html fintech.html`, `copy qa --live` | An email as a prospect will see it; QA for edited rows |
-| `readout` | The Monday readout for last week, printed and not posted |
-| `cohorts`, `cohorts changes`, `cohorts in-flight` | Each enrolment week at 7, 14, 21 and 28 days after email 1 (`--cut`, `--age`, `--weeks`); what changed between the last two config versions (or `cohorts changes A B`); each campaign's leads with a step still to send |
+| `report readout` | The Monday readout for last week, printed and not posted |
+| `report cohorts`, `cohorts changes`, `cohorts in-flight` | Each enrolment week at 7, 14, 21 and 28 days after email 1 (`--cut`, `--age`, `--weeks`); what changed between the last two config versions (or `cohorts changes A B`); each campaign's leads with a step still to send |
 | `campaigns ensure --fix --in-flight --live` | Applies campaign drift in the steps, delays or text_only to the leads already in flight too (held otherwise; docs/developing-while-live.md) |
-| `signals value`, `signals review` | The signal table (with meetings, against the companies without each signal), or each signal's verdict, with the tiers and email 1's subject |
+| `report signals` | Each signal's verdict, with the tiers and email 1's subject (the Monday readout carries the signal table's headline) |
 | `test start ID --live`, `test read ID` | Start a test on the Tests tab (an `ab`, `variant` or `holdout` test; see **Copy tests**); read it at its latest pre-registered look |
 
-Also `handcheck show|approve`, `erase --email` (and for an Apollo deletion notice), `run retention` and `schedule`.
+Also `handcheck show|approve`, `erase --email` (and for an Apollo deletion notice), `run retention`, `report pages`,
+`report lookalikes`, `report capture`, `unenrol --month YYYY-MM` and `schedule`. Folded in W2-4 (20 Oct 2026): `daily`,
+`readout`, `signals review` and `lookalikes show` are `report ...`; `rescore` is `run score`; `settings sync` is `sync`;
+`relabel`, `labels audit`, `labels sample`, `signals value` and `lookalikes fit` were removed.
 `us-outbound --help` lists every command.

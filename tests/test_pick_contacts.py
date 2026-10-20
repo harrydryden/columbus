@@ -285,7 +285,7 @@ def test_the_heartbeat_says_the_apollo_source_is_paused(default_settings):
     h.store.insert("accounts", [account()])
     FakeApollo(h.transport, {ORG: TEAM}, everyone_verified())
     pause_source(h, "apollo")
-    assert h.run("dry-run", "pick_contacts") == 0
+    assert h.run("run", "pick_contacts") == 0
     [beat] = h.beats("pick_contacts")
     # The job said it skipped, so the row says so (W1-1: the heartbeat read only a truthy "skipped" key and stored
     # this run as ok). A skip for a reason of its own still shows the job alive (base/heartbeats._shows_alive).
@@ -619,7 +619,7 @@ def test_the_cli_runs_it_with_a_heartbeat(default_settings):
     h = Harness(default_settings)
     h.store.insert("accounts", [account()])
     FakeApollo(h.transport, {ORG: TEAM}, everyone_verified())
-    assert h.run("dry-run", "pick_contacts") == 0
+    assert h.run("run", "pick_contacts") == 0
     [beat] = h.beats("pick_contacts")
     assert beat["status"] == "ok" and beat["dry_run"] is True
     assert (beat["detail"]["picked"], beat["detail"]["picked_by_row"]) == (1, {"Founder or executive": 1})

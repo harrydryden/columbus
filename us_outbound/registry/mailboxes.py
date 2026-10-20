@@ -121,7 +121,7 @@ def campaign_steps(text_only: bool = False) -> tuple[dict[str, str], ...]:
 
     In HTML the body variable sits in a <div>: Instantly drops text that is outside any tag when it saves a
     step, so a bare "{{s1_body}}<p>…</p>" was saved as the unsubscribe line alone (the first live create,
-    2 Oct 2026, read back with `us-outbound campaigns show`).
+    2 Oct 2026, read back with the `campaigns show` command of the time).
     """
     def body(i: int) -> str:
         var = f"{{{{s{i}_body}}}}"

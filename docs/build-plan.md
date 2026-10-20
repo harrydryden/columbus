@@ -1,5 +1,8 @@
 # US Outbound: build plan
 
+> A record of its day (W2-4, 20 Oct 2026): the commands it names are as they were then. `us-outbound --help`
+> lists today's; README.md "Commands" says which were folded or removed.
+
 SPEC.md is the brief. This file says how the build is sequenced, what is done, and what each phase needs from Harry. The build follows SPEC 0.2: build a phase, show the result against its acceptance checks, and wait for Harry's go-ahead before starting the next.
 
 ## Timeline

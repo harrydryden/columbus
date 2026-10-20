@@ -6,10 +6,15 @@ emails the registry mailboxes received (GET /emails, email_type received, one re
 to the whole account), and handles each one once.
 
 Recorded before it is classified (RS §2 W2-4): first, in one pass over everything read and in dry-run too, each
-new reply's events row (type replied, no class yet) is written and its account becomes engaged (unless Instantly
-flags the email as an automatic reply: an away message engages nobody until the model says otherwise). Only then is
-each reply classified, so a model outage, the Claude cap or the run's time budget leaves the reply on record (the
-kill rules, the send forecast, the account stop and every report see it) and the next run classifies it. A reply
+new reply's events row (type replied, no class yet) is written. Only then is each reply classified, so a model
+outage, the Claude cap or the run's time budget leaves the reply on record (the kill rules, the send forecast, the
+account stop and every report see it) and the next run classifies it. The account becomes engaged once the class
+is known and is not out_of_office (an away message Instantly did not flag engages nobody: marked at the first pass, it
+stayed engaged for good, and its contact's later send slots were freed). An email
+Instantly flags as an automatic reply is not recorded in that pass, as sync_outcomes did not record one before W2-4:
+an unclassified replied row frees the contact's later send slots and counts as a human reply, while an away message
+keeps its sequence going (stop_on_auto_reply is off); it is recorded with its class, which a human-written reply
+Instantly misflagged also gets. A reply
 is done once its event carries a class and, for a class a person answers (or an out-of-office), once its item
 exists: the class is written first and the item after it, so a run that stops between the two leaves the reply to
 the next run, which writes the item.
@@ -416,13 +421,12 @@ def _opt_out(ctx: Context, email: Mapping[str, Any], m: Match, info: Mapping[str
 
 def record(ctx: Context, d: Directory, emails: list[Mapping[str, Any]], out: dict) -> list[tuple[dict, Match]]:
     """The first pass (the module docstring): each email someone of ours sent us, with who it is from, and a replied
-    event (no class) for each new one, its account engaged unless Instantly took it for an automatic reply. The rest
-    are counted: dropped by why, unmatched. Database writes only, so dry-run does it too (SPEC 0.3)."""
+    event (no class) for each new one but an automatic reply. The rest are counted: dropped by why, unmatched.
+    Database writes only, so dry-run does it too (SPEC 0.3)."""
     registry = ctx.guard.bounds.registry_addresses
     known = outcomes.event_ids(ctx, outcomes.REPLIED)
     kept: list[tuple[dict, Match]] = []
     rows: dict[str, dict] = {}
-    engaged: list[str] = []
     for email in emails:
         eid, mailbox = str(email.get("id") or ""), _lower(email.get("eaccount"))
         if not eid:
@@ -438,16 +442,16 @@ def record(ctx: Context, d: Directory, emails: list[Mapping[str, Any]], out: dic
         kept.append((dict(email), m))
         if eid in known or eid in rows:
             continue
+        if outcomes.is_auto_reply(email):  # recorded once classified (the module docstring)
+            out["auto_replies_left_to_classify"] += 1
+            continue
         rows[eid] = {"event_id": eid, "contact_id": m.contact["contact_id"], "account_id": m.contact.get("account_id"),
                      "type": outcomes.REPLIED, "mailbox": mailbox, "occurred_at": outcomes.email_time(email) or ctx.now}
-        if not outcomes.is_auto_reply(email):
-            engaged.append(str(m.contact.get("account_id") or ""))
     if rows:
         sends = outcomes.sent_events(ctx, {r["contact_id"] for r in rows.values()})
         for r in rows.values():
             r["step"] = outcomes.step_before(sends.get(str(r["contact_id"]), []), utc(r["occurred_at"]))
         ctx.store.upsert("events", list(rows.values()))  # only these columns: a class already set stays
-        outcomes.mark_engaged(ctx, engaged)
     out["recorded"] = len(rows)
     return kept
 
@@ -704,7 +708,8 @@ def run(ctx: Context) -> dict:
     d = Directory(ctx)
     start = outcomes.since(ctx, JOB, live_only=True, earliest=d.earliest_enrolled())
     out: dict[str, Any] = {k: Counter() for k in ("classified", "items", "opted_out", "opted_out_on_retry", "dropped")}
-    out.update({k: 0 for k in ("recorded", "unmatched", "already_handled", "retry_later", "claude_cap_reached",
+    out.update({k: 0 for k in ("recorded", "auto_replies_left_to_classify", "unmatched", "already_handled",
+                               "retry_later", "claude_cap_reached",
                                "would_classify", "would_opt_out", "alerts_posted", "slack_errors",
                                "left_for_next_run", "marked_interested", "also_asked_to_stop")})
     out["would_spend_usd_at_most"] = 0.0

@@ -16,7 +16,7 @@ tests/test_sql.py parses every view with sqlglot and refuses any name outside th
     DROP VIEW IF EXISTS us_outbound.<view>
     COMMENT ON SCHEMA | TABLE | VIEW | COLUMN us_outbound[.<object>[.<column>]] IS '...'
 The ALTER form only adds a column (a type, no default, nothing dropped); the DROP form removes a view that was
-replaced, without CASCADE. Neither can touch stored rows. One statement at a time; comments and string literals are
+replaced, without CASCADE; a CREATE TABLE names no REFERENCES (a foreign key changes the table it names) and no LIKE. Neither can touch stored rows. One statement at a time; comments and string literals are
 ignored, and escape strings (E'...') and dollar quoting are refused, since the split cannot read them.
 
 apply() runs every statement in one transaction, each after
@@ -60,6 +60,7 @@ FORMS = {
     "comment": re.compile(rf"COMMENT\s+ON\s+(?P<on>SCHEMA|TABLE|VIEW|COLUMN)\s+(?P<name>{NAME})\s+IS\s+''$", re.I),
 }
 SPECIAL_RE = re.compile(r"""--|/\*|['"$;]""")
+TABLE_LINK_RE = re.compile(r"\b(?:REFERENCES|LIKE)\b", re.I)
 
 
 def files(root: Path = SQL_DIR) -> list[Path]:
@@ -155,6 +156,8 @@ def check_statement(sql: str) -> str:
         if len(parts) != 3:
             raise GuardViolation(f"COMMENT ON COLUMN names {DB_SCHEMA}.<table>.<column>, not {'.'.join(parts)!r}")
         return _in_schema(parts[:2], "COMMENT ON COLUMN")
+    if form == "table" and TABLE_LINK_RE.search(code):  # a foreign key adds a trigger to the table it names
+        raise GuardViolation("a table here neither references another (REFERENCES) nor copies one (LIKE)")
     return _in_schema(parts, f"{form} statement on")
 
 

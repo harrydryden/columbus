@@ -435,7 +435,7 @@ def test_harry_can_run_it_by_hand():
         contexts.append(ctx)
         return ctx
 
-    assert cli.main(["dry-run", "apollo_people"], context_factory=factory) == 0
+    assert cli.main(["run", "apollo_people"], context_factory=factory) == 0
     assert cli.main(["run", "apollo_people"], context_factory=factory) == 0
     first, second = (store.get("heartbeats", run_id=c.run_id) for c in contexts)
     assert first["status"] == second["status"] == "ok"

@@ -81,7 +81,7 @@ def test_sync_is_settings_sync_and_says_what_is_in_force(capsys):
     assert lines[-2].startswith("Settings synced from the sheet just now: ") and lines[-2].endswith("rows changed.")
     assert lines[-1] == "In force now: live_sending yes."  # auto_send went with the send approvals (W2-1)
     assert load_current(w.store)[0].general.live_sending is True  # a dry-run sync still brings the sheet in
-    assert w.run("settings", "sync") == 0  # the same command
+    assert w.run("sync") == 0  # again (`settings sync` went in W2-4: `sync` is the one command)
     lines = report(capsys.readouterr().out)
     assert lines[-2] == "Settings synced from the sheet just now: nothing had changed."
     assert [b["job"] for b in w.store.select("heartbeats")] == ["settings_sync", "settings_sync"]
@@ -243,7 +243,7 @@ def test_status_lists_only_the_jobs_that_need_a_look(capsys):
     (["replies", "approve", "item-000", "--edit", "Thanks"], {"action": "approve", "edit": "Thanks"}),
     (["mailbox", "check", "--fix", "--live"], {"action": "check", "fix": True, "live": True}),
     (["mailbox", "check"], {"fix": False}),
-    (["settings", "bootstrap", "--force"], {"action": "bootstrap", "force": True}),
+    (["settings", "load", "--tab", "General", "--take", "note"], {"action": "load", "tab": ["General"], "take": ["note"]}),
 ])
 def test_the_slack_words_parse(argv, expected):
     args = cli.build_parser().parse_args(argv)
@@ -251,23 +251,22 @@ def test_the_slack_words_parse(argv, expected):
         assert getattr(args, key) == value
 
 
-def test_build_commands_are_hidden_from_help_but_still_parse():
+def test_every_command_is_in_the_help_and_the_removed_ones_do_not_parse():
+    """W2-4 (RS P0-10): one table, every command in --help (none hidden); the one-off and folded commands no longer
+    parse."""
     text = cli.build_parser().format_help()
-    for name in cli.HIDDEN:
-        assert f"\n    {name} " not in text and f",{name}," not in text and f"{{{name}," not in text, name
-    for name in ("status", "accounts", "sync", "start", "stop", "replies", "killrules", "mailbox",
-                 "campaigns", "copy", "settings", "handcheck", "erase", "schedule", "run", "seed", "signals"):
+    for name in [c.name for c in cli.COMMANDS]:
         assert f"\n    {name} " in text, name
     # The one-off and removed commands went with W2-1 (20 Oct 2026): they no longer parse.
-    for name in ("golive", "approvals", "phase0", "clay"):
+    for name in ("golive", "approvals", "phase0", "clay", "dry-run", "rescore", "daily", "readout", "signals",
+                 "pages", "lookalikes", "capture", "hubspot", "data", "relabel", "suppression"):
         assert f"\n    {name} " not in text, name
         with pytest.raises(SystemExit):
             cli.build_parser().parse_args([name])
     assert ("`--live` makes a command act. Anything that reaches a prospect (start, replies send, every "
             "scheduled job) also needs live_sending = yes in the synced settings.") in " ".join(text.split())
-    for argv in (["dry-run", "enrol"], ["rescore"], ["suppression", "load"], ["scheduler"], ["db", "apply"],
-                 ["hubspot", "ids"], ["lookalikes", "show"], ["lookalikes", "fit"], ["pages", "show"], ["data", "show"],
-                 ["test", "read", "t1"], ["unenrol", "--month", "2026-11"]):
+    for argv in (["run", "enrol"], ["run", "score"], ["run", "suppression_load"], ["scheduler"], ["db", "apply"],
+                 ["report", "lookalikes"], ["report", "pages"], ["test", "read", "t1"], ["unenrol", "--month", "2026-11"]):
         assert cli.build_parser().parse_args(argv).command == argv[0]
 
 
@@ -367,13 +366,10 @@ def test_a_scheduled_run_prints_its_summary_as_one_line_with_long_lists_cut(monk
     assert printed["fired"] == []
     [beat] = h.beats("kill_rules")
     assert beat["detail"]["checked"] == list(range(100))
-    assert h.run("dry-run", "kill_rules") == 0
-    pretty = [line for line in capsys.readouterr().out.splitlines() if not line.startswith('{"event"')]
-    assert pretty[0] == "{" and len(pretty) > 100
 
 
 @pytest.mark.parametrize("argv", [["replies", "list"], ["killrules", "show"],
-                                  ["copy", "check"], ["campaigns", "show"]])
+                                  ["copy", "check"], ["seed", "check"]])
 def test_live_on_a_read_only_action_says_it_does_nothing(argv, capsys):
     h = Harness(SETTINGS)
     h.run(*argv, "--live")

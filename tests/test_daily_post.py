@@ -89,7 +89,7 @@ def test_a_campaign_that_is_not_active_has_no_capacity_and_the_post_says_why():
 
 def test_the_short_post_says_what_needs_harry_yesterday_today_the_pipeline_and_what_to_watch():
     """Harry, 9 Oct 2026: "a more readable pithier version of the daily report"; 12 Oct 2026: clear to anyone, even
-    new to the system. The 09:00 job posts this; the full post is `us-outbound daily --full`."""
+    new to the system. The 09:00 job posts this; the full post is `us-outbound report daily --full`."""
     ctx, t = world()
     out = daily_post.run(ctx)
     [post] = [r for r in t.requests if r.url.endswith("chat.postMessage")]
@@ -123,7 +123,7 @@ def test_the_short_post_says_what_needs_harry_yesterday_today_the_pipeline_and_w
         "*Worth a look*",
         "• Safety pause set off: emails found by clay: 4 of 100 sends bounced",
         "",
-        "Fine: mailboxes and campaigns. Full report: `railway ssh -- us-outbound daily --full`",
+        "Fine: mailboxes and campaigns. Full report: `railway ssh -- us-outbound report daily --full`",
     ]
     assert (out["sent"], out["replies"], out["positive"]) == (8, 3, 1)  # the summary keeps the same numbers (human replies)
 
@@ -138,7 +138,7 @@ def test_the_short_post_flags_a_loud_mailbox_and_covers_friday_only_on_saturday(
     assert "*Yesterday (Fri 23 Oct)*" in lines and lines[lines.index("*Yesterday (Fri 23 Oct)*") + 1] == "No emails sent"
     assert ("• sam@meetspill.org: 2 of its last 40 emails bounced (5%); over 3% of 100 it is paused automatically"
             in lines)
-    assert lines[-1] == "Fine: campaigns. Full report: `railway ssh -- us-outbound daily --full`"
+    assert lines[-1] == "Fine: campaigns. Full report: `railway ssh -- us-outbound report daily --full`"
 
 
 def test_the_short_post_with_nothing_waiting_says_so_first_and_shows_today_s_number():
@@ -181,7 +181,7 @@ def test_the_post_covers_yesterday_the_limiter_mailboxes_kill_rules_and_approval
     ctx, t = world()
     out = daily_post.run(ctx)
     [post] = [r for r in t.requests if r.url.endswith("chat.postMessage")]
-    lines, _ = daily_post.build(ctx)  # the full post: `us-outbound daily --full`
+    lines, _ = daily_post.build(ctx)  # the full post: `us-outbound report daily --full`
     assert lines[0] == "*Daily post, Tue 27 Oct*"
     assert lines[1] == ("Yesterday: 8 sent · 3 replies (1 positive) · 1 unsubscribe · 0 companies, 0 contacts found"
                         " · 0 ready to send")
@@ -320,7 +320,7 @@ def test_daily_post_runs_as_a_job_from_the_cli():
     from tests.test_cli import Harness
 
     h = Harness()
-    assert h.run("dry-run", "daily_post") == 0
+    assert h.run("run", "daily_post") == 0
     [beat] = h.beats("daily_post")
     assert beat["status"] == "ok" and beat["detail"]["sent"] == 0 and "text" not in beat["detail"]
 
@@ -393,10 +393,10 @@ def test_the_daily_command_prints_the_short_or_the_full_post_and_posts_nothing(c
     from tests.test_cli import Harness
 
     h = Harness()
-    assert h.run("daily") == 0
+    assert h.run("report", "daily") == 0  # `daily` until W2-4
     out = capsys.readouterr().out
     assert "*Daily summary, " in out and "*Pipeline*" in out and "*Sources*" not in out
-    assert h.run("daily", "--full") == 0
+    assert h.run("report", "daily", "--full") == 0
     out = capsys.readouterr().out
     assert "*Daily post, " in out and "*Sources*" in out
     assert not [r for r in h.transport.requests if r.url.endswith("chat.postMessage")]

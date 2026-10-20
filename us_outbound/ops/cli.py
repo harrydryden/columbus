@@ -120,9 +120,9 @@ JOBS: dict[str, str] = {
     "lookalike_leads": "us_outbound.sources.lookalike_leads:run",  # Harry, 5 Oct 2026: Apollo's lookalikes, monthly
     "hand_check_draw": "us_outbound.enrol.hand_check:run",  # SPEC 11 weekly hand-check, Mondays (W1-5)
     "retention": "us_outbound.ops.retention:run",  # SPEC 6 and 13: what we hold leaves when its time is up
-    "follow_up": "us_outbound.replies.follow_up:sweep",  # W2-4, 20 Oct 2026: the not-now dates kept, daily
     # Harry, 11 Oct 2026: a batch of companies to judge by hand each month, last month's scored, to Slack.
     "label_sample_monthly": "us_outbound.ops.label_sample:monthly",
+    "follow_up": "us_outbound.replies.follow_up:sweep",  # W2-4, 20 Oct 2026: the not-now dates kept, daily
 }
 # The module of every job, so one import of each proves no job lost a module it needs (W2-1, 20 Oct 2026: a removal
 # wide enough to miss an importer; tests/test_cli.py imports them all).

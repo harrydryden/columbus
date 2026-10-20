@@ -581,10 +581,10 @@ def test_report_lists_the_top_cells(world):
 def test_lookalikes_show_from_the_command_line(world, capsys):
     ctx, _ = world
     lk.run(ctx)
-    assert cli.main(["lookalikes", "show", "--top", "2"], context_factory=lambda job, live, **kw: ctx) == 0
+    assert cli.main(["report", "lookalikes", "--top", "2"], context_factory=lambda job, live, **kw: ctx) == 0
     out = capsys.readouterr().out
     assert "Lookalike cells from Spill's HubSpot customers" in out and "Top 2 of" in out
-    assert cli.main(["lookalikes", "show", "--top", "0"], context_factory=lambda job, live, **kw: ctx) == 2
+    assert cli.main(["report", "lookalikes", "--top", "0"], context_factory=lambda job, live, **kw: ctx) == 2
 
 
 def test_the_job_is_registered_monthly_before_source_universe():
@@ -804,68 +804,6 @@ def live_sheet(settings):
     return dataclasses.replace(settings, signals=tuple(
         dataclasses.replace(s, active=True) if s.signal == "Looks like Spill's customers" else s
         for s in settings.signals if not s.signal.endswith("match to Spill's customers")))
-
-
-def test_lookalikes_fit_shows_the_fits_and_the_tier_mix_and_writes_nothing(world, apollo, capsys):
-    ctx, _ = world
-    lk.run(ctx)
-    ctx.store.upsert("accounts", [
-        {"account_id": f"acc-{i}", "domain": f"tech{i}.example", "industry": "Fintech",
-         "industry_group": "Technology & Startups", "size_band": "20-49", "hq_state": "NY", "status": "queued",
-         "first_seen": NOW} for i in range(3)])
-    ctx = dataclasses.replace(ctx, settings=live_sheet(ctx.settings))
-    snapshot = {name: [dict(r) for r in rows] for name, rows in ctx.store.tables.items()}
-    calls = len(ctx.guard.calls)
-    capsys.readouterr()
-    assert cli.main(["lookalikes", "fit"], context_factory=lambda job, live, **kw: ctx) == 0
-    out = "\n".join(line for line in capsys.readouterr().out.splitlines() if not line.startswith('{"event"'))
-    assert out.splitlines()[0] == "Lookalike fit of 7 open accounts, worked out now from the cells of Mon 05 Oct 2026 02:30 UK."
-    # The fintech prospect, the three new Tech accounts at 10-49 and acme-tech (a customer, Excluded) fit 90 or more.
-    assert "  90-100          5" in out and "  10-19           1" in out and "  50-59           1" in out
-    assert "Growth known for 1 of 7; the rest are fitted on industry and size alone." in out
-    assert "\"Close match to Spill's customers\" (lookalike_fit >= 70, +10): 5 accounts." in out
-    assert "\"Some match to Spill's customers\" (lookalike_fit >= 45 AND lookalike_fit < 70, +3): 1 account." in out
-    # Today the 10-49 Tech accounts score 15 + 4 = 19 (Control); with the graded rows 30 (Standard).
-    assert "  Standard       0 (0%) !          4 (80%) !" in out
-    assert "  Control      5 (100%) !            1 (20%)" in out
-    assert "  Excluded              2                  2" in out
-    assert "Nothing was written." in out
-    assert {name: [dict(r) for r in rows] for name, rows in ctx.store.tables.items()} == snapshot
-    assert all(not c.write for c in ctx.guard.calls[calls:])  # reads only, and only the database
-    assert {c.system for c in ctx.guard.calls[calls:]} == {"db"}
-
-
-def test_lookalikes_fit_tries_other_cut_offs_and_weights_in_memory(world, apollo, capsys):
-    ctx, _ = world
-    lk.run(ctx)
-    ctx.store.upsert("accounts", [
-        {"account_id": f"acc-{i}", "domain": f"tech{i}.example", "industry": "Fintech",
-         "industry_group": "Technology & Startups", "size_band": "20-49", "hq_state": "NY", "status": "queued",
-         "first_seen": NOW} for i in range(3)])
-    ctx = dataclasses.replace(ctx, settings=live_sheet(ctx.settings))
-    snapshot = {name: [dict(r) for r in rows] for name, rows in ctx.store.tables.items()}
-    capsys.readouterr()
-    factory = lambda job, live, **kw: ctx  # noqa: E731
-    assert cli.main(["lookalikes", "fit", "--close", "90:5", "--some", "off"], context_factory=factory) == 0
-    out = capsys.readouterr().out
-    assert "\"Close match to Spill's customers\" (lookalike_fit >= 90, +5): 5 accounts." in out
-    assert "Some match" not in out
-    # 15 for 10-49 and 5 for the close match: 20, Standard, as with +10; the sheet is not touched.
-    assert "  Standard       0 (0%) !          4 (80%) !" in out
-    assert "tried in memory only" in out
-    assert cli.main(["lookalikes", "fit", "--close", "90:10", "--some", "60:4"], context_factory=factory) == 0
-    out = capsys.readouterr().out
-    assert "\"Some match to Spill's customers\" (lookalike_fit >= 60 AND lookalike_fit < 90, +4)" in out
-    assert {name: [dict(r) for r in rows] for name, rows in ctx.store.tables.items()} == snapshot
-    for bad, why in ((["--close", "ninety"], "LOWEST_FIT:WEIGHT"), (["--close", "60:10", "--some", "70:4"],
-                                                                     "must start below Close match's 60")):
-        assert cli.main(["lookalikes", "fit", *bad], context_factory=factory) == 2
-        assert why in capsys.readouterr().err
-
-
-def test_lookalikes_fit_before_the_first_run(ctx, capsys):
-    assert cli.main(["lookalikes", "fit"], context_factory=lambda job, live, **kw: ctx) == 0
-    assert "No lookalike cells yet" in capsys.readouterr().out
 
 
 # -- the settings load switches the old row off ---------------------------------------------------------------

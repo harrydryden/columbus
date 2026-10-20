@@ -1,5 +1,8 @@
 # Phase 0 runbook: Foundations (29 Sep – 9 Oct 2026)
 
+> A record of its day (W2-4, 20 Oct 2026): the commands it names are as they were then. `us-outbound --help`
+> lists today's; README.md "Commands" says which were folded or removed.
+
 > **Setup history (done); for day-to-day see [docs/daily.md](daily.md).**
 >
 > **Removed in W2-1 (20 Oct 2026; Harry's decisions of 19 Oct).** The commands `us-outbound golive`, `approvals list | send | reject`, `phase0 check` and `clay check-email` no longer exist and do not parse; send approvals and `auto_send`, Clay and second contacts went with them (git history keeps the code). `us-outbound status` prints golive's three live checks (Copy, Campaigns, Watchdog). §12's check and §8's Clay steps cannot be run any more. This page is the record of what was done then; for the system as it runs now see [daily.md](daily.md) and [roadmap.md](roadmap.md).

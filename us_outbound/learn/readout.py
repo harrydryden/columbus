@@ -54,7 +54,7 @@ reads and posts: it writes nothing but its heartbeat and, through base/notify.po
 made. The job (run) first makes Monday's asks, as the daily post does on the other days and there is no Monday post
 since 19 Oct 2026: the credit and spend asks (learn/spend.check) and the mailboxes to add three weeks ahead
 (learn/capacity_ahead.check), each once (post_once). The post goes to the dev channel until live_sending = yes.
-`us-outbound readout` prints it without posting.
+`us-outbound report readout` prints it without posting.
 """
 
 from __future__ import annotations
