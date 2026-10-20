@@ -553,6 +553,10 @@ def test_the_readout_reads_the_views_on_postgres(store):  # noqa: F811
     assert nums["matured"] == {"emailed": 70, "delivered": 69, "at_28": 69, "at_45": 69}
     assert "replies 17.4% (12 of 69; 95% 10.2–28.0)" in lines[2] and "on track" not in out
     assert (nums["targets"]["positive"]["k"], nums["targets"]["meetings"]["k"]) == (3, 2)
-    assert "  Top fit (Priority): 0 sent · 35 emailed so far, 10 replied (28.6%)" in out
+    # The explore arm cut in place of the tiers (W2-2): random is a00 to a34 sent step 1 (a70 not yet), all 35
+    # delivered, a00 to a09 replied: 10 / 35 = 28.6%; ranked (NULL arm) is a35 to a69, one bounce, so 34
+    # delivered, a35 and a36 replied: 2 / 34 = 5.9%. Nothing was sent last week.
+    assert "  random: 0 sent · 35 emailed so far, 10 replied (28.6%)" in out
+    assert "  ranked: 0 sent · 35 emailed so far, 2 replied (5.9%)" in out and "Top fit" not in out
     assert "  eap_named: 28.6% of 35 replied, against 5.9% of 34 without · 3 positive, 2 meetings: replies more" in out
     assert "hiring" not in out.split("*Signal value*")[1].split("*Tests*")[0]  # nobody emailed with it
