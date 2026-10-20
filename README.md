@@ -87,6 +87,19 @@ python -m venv .venv && .venv/bin/pip install -e '.[dev]'
 Tests never touch a real system: `tests/fakes.py` records every HTTP request and
 `MemoryStore` stands in for the Postgres database.
 
+The database tests (`tests/test_db.py`, and the view and parity tests that import its fixtures) run the DDL, the views
+and `PostgresStore` against a real Postgres 15 or later; without one they skip. Locally, a throwaway one:
+
+```
+docker run --rm -d --name us-outbound-pg -e POSTGRES_PASSWORD=postgres -p 55432:5432 postgres:16
+US_OUTBOUND_TEST_DSN=postgresql://postgres:postgres@localhost:55432/postgres .venv/bin/python -m pytest
+```
+
+Each session creates its own database in it and drops it at the end. CI (`.github/workflows/tests.yml`, W3-1, 20 Oct
+2026) runs the whole suite on every push and pull request with a `postgres:16` service and `US_OUTBOUND_REQUIRE_DB`
+set, so there a missing database fails the run instead of skipping. Railway deploys on push whatever CI says until
+"wait for CI" is turned on for the service (Harry's D12).
+
 ## Deploying (Railway)
 
 One Railway project, **Columbus**, in the EU West (Amsterdam) region:
@@ -145,7 +158,9 @@ See [docs/railway-setup.md](docs/railway-setup.md#where-this-differs-from-spec-h
 
 Tables beyond SPEC 6: `heartbeats`, `credit_ledger`, `hitl_items`, `domain_aliases`,
 `partners`, `lookalike_cells`, `lookalike_growth`, `config_versions` and `config_log` (Harry, 7 Oct 2026: what
-each cohort was enrolled under, and each change to what the leads in flight share; `config_version.py`).
+each cohort was enrolled under, and each change to what the leads in flight share; `config_version.py`),
+`source_state` (W3-3: the sources' cursors and plans) and `metrics` (W3-1, 20 Oct 2026: the persisted series the
+readout and the learning loops read, one row per day, cut, measure and definition version; `learn/metrics.py`).
 `suppression` gains `expires_at` (only Suppress-signal domains expire) and
 `contacts` gains `last_step_at` and `lead_deleted_at` (for retention: when its Instantly lead was deleted, 31 days
 after its last step), and `config_version`, `code_sha` and `copy_hash` (what the
@@ -200,7 +215,10 @@ lookalike fit and an early exclusion; `sources/lookalikes.py`, Harry, 1 and 5 Oc
 05:45, in place of `hand_check_post` at 08:00 since W1-5, 19 Oct 2026: SPEC 11's weekly hand-check, drawn from the
 accounts the coming send days would take, `hand_check_sample` of them, written to the Hand-check tab. With
 `hand_check_gate` = yes enrol waits for the whole check, as before; with `hand_check_gate` = no,
-Harry's D5, only the sampled companies wait, until judged or for 7 days). `stop` and `start` record the
+Harry's D5, only the sampled companies wait, until judged or for 7 days), and `metrics_daily` (daily 08:50, W3-1, 20
+Oct 2026: yesterday's process numbers and each open step-1 cohort's outcomes into the `metrics` table, every
+design-final §4 measure that can be read now, by cut, under a definition version; each Monday the week's forecasts
+and last week's scores; it reads the database and writes only its table, so no `--live`; `learn/metrics.py`). `stop` and `start` record the
 enrollment pause as heartbeats rows (`operator_stop` / `operator_start`). Each kill rule that
 fires is a `hitl_items` row (kind `kill_rule`) that holds the mailbox, source, industry group or
 enrollment until it is cleared (`base/holds.py`). The sending ramp (`registry/ramp.py`: 10 a day

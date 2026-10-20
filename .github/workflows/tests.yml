@@ -1,0 +1,40 @@
+# The test suite on every push and pull request, with a throwaway Postgres (W3-1, 20 Oct 2026; design-final W3-1
+# change 5). The database tests (tests/test_db.py and the files that import its fixtures) skip without
+# US_OUTBOUND_TEST_DSN; here US_OUTBOUND_REQUIRE_DB makes a missing or unreachable database a failure instead, so the
+# view SQL and the Postgres store run on every push. The DSN is the service container's own: never a Railway
+# variable or any other secret. Railway deploys on push whatever this says until "wait for CI" is turned on for the
+# service (Harry's D12).
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      US_OUTBOUND_TEST_DSN: postgresql://postgres:postgres@localhost:5432/postgres
+      US_OUTBOUND_REQUIRE_DB: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: python -m pip install -e '.[dev]'
+      - name: Tests (with Postgres)
+        run: python -m pytest -p no:cacheprovider -q -rs tests

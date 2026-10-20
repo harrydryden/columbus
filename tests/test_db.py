@@ -2,7 +2,8 @@
 
 The database tests need US_OUTBOUND_TEST_DSN: the URL of a Postgres 15 or later whose user
 may create databases, e.g. postgresql://postgres@127.0.0.1:54329/postgres. Without it (or if
-it cannot be reached) they skip. The session creates a fresh database
+it cannot be reached) they skip, unless US_OUTBOUND_REQUIRE_DB is set (CI: .github/workflows/tests.yml, W3-1), where
+that is a failure, so the Postgres tests cannot pass by skipping. The session creates a fresh database
 us_outbound_test_<random>, applies sql/ into it with ops/ddl.apply, and drops it at the end,
 so runs never interfere. Every test starts from empty tables.
 """
@@ -10,6 +11,7 @@ so runs never interfere. Every test starts from empty tables.
 from __future__ import annotations
 
 import os
+import re
 import uuid
 from collections.abc import Iterator
 from datetime import UTC, date, datetime, timedelta
@@ -30,6 +32,7 @@ from us_outbound.ops import health
 from us_outbound.ops import ddl, erase
 
 DSN_ENV = "US_OUTBOUND_TEST_DSN"
+REQUIRE_ENV = "US_OUTBOUND_REQUIRE_DB"  # set in CI: no database is a failure, not a skip
 SCHEMA = "us_outbound"
 VIEWS = ("v_account_outcomes", "v_queue", "v_readout_weekly", "v_mailbox_health",
          "v_budgets", "v_heartbeats")
@@ -43,12 +46,13 @@ T0 = datetime(2026, 10, 1, 12, 30, tzinfo=UTC)
 def dsn() -> Iterator[str]:
     """A fresh database with sql/ applied; dropped when the session ends."""
     admin = os.environ.get(DSN_ENV)
+    missing = pytest.fail if os.environ.get(REQUIRE_ENV) else pytest.skip
     if not admin:
-        pytest.skip(f"{DSN_ENV} is not set, so there is no Postgres to test against")
+        missing(f"{DSN_ENV} is not set, so there is no Postgres to test against")
     try:
         conn = psycopg.connect(admin, autocommit=True, connect_timeout=5)
     except psycopg.Error as exc:
-        pytest.skip(f"cannot reach the Postgres in {DSN_ENV}: {exc}")
+        missing(f"cannot reach the Postgres in {DSN_ENV}: {exc}")
     name = f"us_outbound_test_{uuid.uuid4().hex[:12]}"
     with conn:
         if conn.info.server_version < 150000:
@@ -494,7 +498,8 @@ def test_every_table_round_trips(db, store, table):
     # upsert sets only the columns a row carries; the rest stay.
     assert store.upsert(table, [{**ident, other: None}]) == 1
     assert store.get(table, **ident) == {**row, other: None}
-    fresh = {**row, **{c: (T0 + timedelta(days=1) if isinstance(row[c], datetime) else f"{row[c]}-2") for c in key}}
+    # A key column that is a time or a date (metrics.day, W3-1) moves a day on; a text one gets a suffix.
+    fresh = {**row, **{c: (row[c] + timedelta(days=1) if isinstance(row[c], date) else f"{row[c]}-2") for c in key}}
     assert store.upsert(table, [fresh]) == 1
     assert len(store.select(table)) == 2
     assert store.update(table, ident, {other: row[other]}) == 1
@@ -1313,3 +1318,17 @@ def test_accounts_dedupe_then_the_unique_domain_index_and_an_admit_that_loses_th
 def v_signal_value_gone(store) -> bool:
     return not store.query("SELECT 1 FROM information_schema.views WHERE table_schema = %(s)s AND table_name = %(v)s",
                            {"s": SCHEMA, "v": "v_signal_value"})
+
+
+def test_ci_runs_the_suite_with_a_throwaway_postgres_and_requires_it():
+    """W3-1 (design-final change 5): GitHub Actions on push, Python 3.12, a postgres:16 service and its DSN in
+    US_OUTBOUND_TEST_DSN (the container's own, never a secret), with US_OUTBOUND_REQUIRE_DB so the database tests
+    fail rather than skip when it is missing. The workflow's own run shows they are collected and pass."""
+    from pathlib import Path
+
+    text = (Path(__file__).resolve().parents[1] / ".github" / "workflows" / "tests.yml").read_text(encoding="utf-8")
+    assert re.search(r"^on:\n  push:", text, re.MULTILINE)
+    assert "image: postgres:16" in text and 'python-version: "3.12"' in text
+    assert f"{DSN_ENV}: postgresql://postgres:postgres@localhost:5432/postgres" in text
+    assert f'{REQUIRE_ENV}: "1"' in text and "python -m pytest" in text
+    assert "secrets." not in text and "DATABASE_URL" not in text  # never production's database or a secret

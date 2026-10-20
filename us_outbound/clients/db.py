@@ -61,6 +61,7 @@ TABLE_KEYS: dict[str, tuple[str, ...] | None] = {
     "config_versions": ("config_version",),  # config_version.py: what a cohort was enrolled under (Harry, 7 Oct 2026)
     "config_log": ("log_id",),  # changes to what in-flight leads share (registry/mailboxes.py; Harry, 7 Oct 2026)
     "source_state": ("key",),  # the sources' cursors, plan and visitor state (sources/source_state.py; W3-3)
+    "metrics": ("day", "segment_key", "metric", "definition_version"),  # the persisted series (learn/metrics.py; W3-1)
     "raw_irs_bmf": None,
     "raw_job_posts": None,
     "raw_clay_accounts": None,
@@ -119,11 +120,13 @@ TIMESTAMP_COLUMNS: dict[str, frozenset[str]] = {
     "config_versions": frozenset({"first_seen"}),
     "config_log": frozenset({"changed_at"}),
     "source_state": frozenset({"updated_at"}),
+    "metrics": frozenset({"computed_at"}),
 }
 
 # Columns stored as date (the W1-C contracts commit, 19 Oct 2026): a re-check falls due on a day, not at an instant.
 DATE_COLUMNS: dict[str, frozenset[str]] = {
     "accounts": frozenset({"recheck_after"}),
+    "metrics": frozenset({"day"}),  # the day a metrics row is about (W3-1)
 }
 
 # Every table's columns: MemoryStore refuses any other, in a row or a where, as Postgres does.
@@ -180,6 +183,7 @@ COLUMNS: dict[str, frozenset[str]] = {
         "log_id", "changed_at", "kind", "campaign", "changed_keys", "detail", "leads_in_flight", "code_sha",
         "changed_by", "run_id"}),
     "source_state": frozenset({"key", "value", "updated_at"}),
+    "metrics": frozenset({"day", "segment_key", "metric", "n", "k", "value", "definition_version", "computed_at"}),
 }
 
 Where = dict[str, Any]  # {col: value} equality; a list, tuple or set: IN; None: IS NULL; Range: lo <= col < hi

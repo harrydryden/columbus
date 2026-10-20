@@ -238,6 +238,32 @@ def _trap(ys: list[float], xs: list[float]) -> float:
     return sum((xs[i + 1] - xs[i]) * (ys[i] + ys[i + 1]) / 2 for i in range(len(xs) - 1))
 
 
+def newcombe(k1: int, n1: int, k2: int, n2: int, z: float = Z95) -> tuple[float, float]:
+    """The 95% interval for p1 − p2 from the two Wilson intervals (Newcombe 1998, method 10: the hybrid score). W3-1
+    reads the A/A sham arm with it: a difference between two labels that change nothing should sit inside it."""
+    if n1 <= 0 or n2 <= 0:
+        return -1.0, 1.0
+    p1, p2 = k1 / n1, k2 / n2
+    l1, u1 = wilson(k1, n1, z)
+    l2, u2 = wilson(k2, n2, z)
+    d = p1 - p2
+    return d - math.sqrt((p1 - l1) ** 2 + (u2 - p2) ** 2), d + math.sqrt((u1 - p1) ** 2 + (p2 - l2) ** 2)
+
+
+def binomial_quantile(q: float, n: int, p: float) -> int:
+    """The smallest x with P(X <= x) >= q for X ~ Binomial(n, p): a forecast count's interval ends (W3-1, F1)."""
+    if n <= 0 or p <= 0:
+        return 0
+    if p >= 1:
+        return n
+    total = 0.0
+    for x in range(n + 1):
+        total += math.exp(_log_choose(n, x) + x * math.log(p) + (n - x) * math.log1p(-p))
+        if total >= q - 1e-12:
+            return x
+    return n
+
+
 def min_n_ok(cells: Mapping[object, int] | Iterable[int], minimum: int = 15) -> bool:
     """Every cell has at least `minimum`: a split prints only then, else "pooled only" (RT §1.5). No cells: False."""
     ns = list(cells.values()) if isinstance(cells, Mapping) else list(cells)

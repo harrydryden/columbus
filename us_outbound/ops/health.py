@@ -385,6 +385,7 @@ EXPECTED: dict[str, int] = {
     "daily_post": 74 * _H,
     "capture": 8 * _DAY,  # Mon 07:30 (W1-2, 19 Oct 2026; replies/capture.py)
     "monday_readout": 8 * _DAY,  # Mon 08:30 (Harry, 6 Oct 2026; learn/readout.py)
+    "metrics_daily": 26 * _H,  # 08:50 daily (W3-1, 20 Oct 2026; learn/metrics.py)
     "suppression_load": 26 * _H,  # 01:30 daily (build addition)
     "follow_up": 26 * _H,  # 08:45 daily (W2-4, 20 Oct 2026; replies/follow_up.py): the not-now dates kept
     # Monthly jobs (Harry, 5 Oct 2026): at most 31 days apart, plus a day's slack.
@@ -415,6 +416,7 @@ IMPACT: dict[str, str] = {
     "suppression_load": "the do-not-contact list is not being refreshed",
     "settings_sync": "edits to the settings sheet are not being picked up",
     "daily_post": "the daily summary is not being posted",
+    "metrics_daily": "the numbers the Monday readout and the learning loops read are not being kept",
     "retention": "old personal data is not being deleted on time",
     "hand_check_draw": "nobody is checking by hand that the companies about to be emailed are the right ones",
     "follow_up": "replies that said “not now” are not being followed up on the date they gave",

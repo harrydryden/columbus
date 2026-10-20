@@ -409,7 +409,8 @@ def test_the_readout_has_the_cohort_section_under_20_lines():
     lines, nums = readout.build(w.ctx)
     start = lines.index("*Cohorts* (companies grouped by the week they were enrolled, each at the latest age reached "
                         "after email 1)")
-    end = next(i for i, x in enumerate(lines) if x.startswith("*Industry labels*"))
+    # The cohorts come last before the multiplicity line (W3-1's order: learn/readout.py).
+    end = next(i for i, x in enumerate(lines) if "at 95% in this readout" in x)
     section = lines[start:end - 1]
     assert len(section) < 20, section
     assert section[1] == "  W45 (2–8 Nov): 1 emailed · under 7 days since email 1"

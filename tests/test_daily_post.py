@@ -439,3 +439,79 @@ def test_a_failing_to_improve_section_still_posts_the_rest(monkeypatch):
     assert "could not be built" not in post and "*Pipeline*" in post
     lines, nums = daily_post.build(ctx)
     assert "*To improve*" in lines and nums["sections_failed"] == ["To improve"]
+
+
+# -- W3-1's asks: supply stalled, capture drift or canary failed, leads lost ------------------------------------------
+
+
+def _capture_fact(ctx, fact, reasons, drift=()):
+    ctx.store.upsert("signal_events", [{"event_id": "capture:2026-W44", "account_id": None, "source": "capture",
+                                        "fact": fact, "observed_at": TUE_9 - timedelta(days=1),
+                                        "value": {"reasons": list(reasons), "drift": list(drift)}}])
+
+
+def test_supply_stalled_after_three_send_days_with_nothing_found_while_50_wait():
+    """Tue 27 Oct: the last 3 send days are Mon 26, Fri 23 and Thu 22 Oct. Nothing first seen and no contact created
+    since Thu 22 00:00 UK, with 60 waiting: the ask. 49 waiting, or one company found on Fri 23: none."""
+    ctx, _ = world()
+    assert daily_post.stalled(ctx, 60) == (
+        "Supply stalled: no new company and no new contact on the last 3 send days while 60 companies wait for a check "
+        "or a contact: see what finding new companies and choosing who to email last said with "
+        "`railway ssh -- us-outbound status`")
+    assert daily_post.stalled(ctx, 49) is None
+    ctx.store.insert("accounts", [{"account_id": "f1", "status": "new",
+                                   "first_seen": datetime(2026, 10, 23, 4, tzinfo=UTC)}])
+    assert daily_post.stalled(ctx, 60) is None
+    ctx, _ = world()  # a contact found on Thu 22 at 05:30 UK counts as well
+    ctx.store.insert("contacts", [{"contact_id": "c9", "account_id": "a9",
+                                   "created_at": datetime(2026, 10, 22, 4, 30, tzinfo=UTC)}])
+    assert daily_post.stalled(ctx, 60) is None
+
+
+def test_capture_drift_or_a_failed_canary_is_an_ask_and_a_canary_not_set_up_is_not():
+    ctx, _ = world()
+    assert daily_post.capture_ask(ctx) is None  # no check this week: the readout says unverified, no ask
+    _capture_fact(ctx, "capture_unverified", ["drift:replied", "canary_send:off"],
+                  [{"measure": "replied", "instantly": 2, "ours": 0}])
+    assert daily_post.capture_ask(ctx) == (
+        "Capture drift: this week's check found Instantly's counts and ours apart (replied: Instantly 2, ours 0), so "
+        "replies may be going unread: look in Instantly's inbox, then `railway ssh -- us-outbound report capture`")
+    _capture_fact(ctx, "capture_unverified", ["canary:no_answer"])
+    assert daily_post.capture_ask(ctx).startswith("Canary failed (canary:no_answer): the seed inbox's answer")
+    _capture_fact(ctx, "capture_unverified", ["canary:none", "canary_send:off"])  # D10 e not confirmed yet
+    assert daily_post.capture_ask(ctx) is None
+    _capture_fact(ctx, "capture_verified", [])
+    assert daily_post.capture_ask(ctx) is None
+
+
+def test_leads_lost_to_a_gate_or_to_errors_yesterday():
+    """Yesterday (Mon 26 Oct) enrol was held by the hand-check: the day's share of the weekly cap, ceil(150 ÷ 5) =
+    30, is lost. A run that prepared 20 and enrolled 17 lost 3 to errors. A run with nothing lost: no ask."""
+    at = datetime(2026, 10, 26, 12, 0, tzinfo=UTC)
+
+    def enrol_run(status, detail):
+        ctx, _ = world()
+        ctx.store.upsert("heartbeats", [{"run_id": "e1", "job": "enrol", "status": status, "dry_run": False,
+                                         "started_at": at, "finished_at": at,
+                                         "detail": {"date": "2026-10-26", **detail}}])
+        start, end, _ = daily_post.period(ctx)
+        return daily_post.lost_ask(ctx, start, end)
+
+    assert enrol_run("skipped", {"reason": "the weekly hand-check is not approved yet"}) == (
+        "Leads lost: enrolment did not run yesterday (the weekly hand-check is not approved yet), about 30 leads: "
+        "`railway ssh -- us-outbound status`")
+    terms = {"weekly_target": 30, "sending_capacity": 20, "ready_accounts": 40, "binding": "sending_capacity"}
+    assert enrol_run("ok", {"number": 20, "enrolled": 17, "number_terms": terms}) == (
+        "Leads lost: 3 leads prepared yesterday and not enrolled (errors): read the error with "
+        "`railway ssh -- us-outbound status`")
+    assert enrol_run("ok", {"number": 20, "enrolled": 20, "number_terms": terms}) is None
+
+
+def test_the_asks_come_after_the_replies_holds_and_hand_check_in_the_post():
+    ctx, t = world()
+    _capture_fact(ctx, "capture_unverified", ["drift:replied"], [{"measure": "replied", "instantly": 2, "ours": 0}])
+    out = daily_post.run(ctx)
+    [post] = [r for r in t.requests if r.url.endswith("chat.postMessage")]
+    asks = [x for x in post.json["text"].splitlines() if x[:1].isdigit() and ". " in x[:4]]
+    assert asks[-1].startswith(f"{len(asks)}. Capture drift: this week's check found")
+    assert out["asks"] == ["Capture drift"]

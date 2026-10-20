@@ -12,7 +12,10 @@ Sunday is made on Monday, a day later than before.
 
 Since 9 Oct 2026 (Harry: "a more readable pithier version of the daily report") the job posts the short post
 (compact). Since 12 Oct 2026 (Harry: clear to anyone, even new to the system) its first line says whether anything
-needs you today; the asks follow, numbered, each with where to go or the command to paste; then yesterday in a few
+needs you today; the asks follow (from W3-1, 20 Oct 2026, three more after the replies, holds and hand-check: "Supply
+stalled" when no company and no contact was found on the last 3 send days while 50 or more wait; "Capture drift" or
+"Canary failed" from this week's reply-capture check; "Leads lost" when yesterday's enrolment was held by a gate or
+lost leads to errors: watch_asks), numbered, each with where to go or the command to paste; then yesterday in a few
 lines, today's number with what limits it and each sender's room, the pipeline, the one-line spend summary, and a
 "Worth a look" block only for what needs a look (a mailbox bouncing BOUNCE_WATCH or more, a kill rule, a campaign
 not sending, the To improve lines), ending with the areas checked that are fine. Every number is
@@ -626,6 +629,85 @@ def needs_you(ctx: Context, w: ForYou) -> str:
     return "*Needs you:* " + (" · ".join(parts) if parts else "nothing")
 
 
+# -- W3-1's asks (design-final W3-1 change 4; loops L7, L12, L6) ----------------------------------------------------
+
+STALL_DAYS = 3  # send days with no company and no contact found
+STALL_WAITING = 50  # ... while at least this many companies wait for a contact or a check
+CANARY_FAILED = ("canary:no_answer", "canary:not_sent", "canary_send:failed")  # replies/capture.py's reasons
+
+
+def stalled(ctx: Context, waiting: int) -> str | None:
+    """Supply stalled: no account first seen and no contact created over the last STALL_DAYS send days (US send
+    window, blackouts left out) while STALL_WAITING or more wait (L12)."""
+    days, d = [], ctx.today_uk()
+    for _ in range(STALL_DAYS):
+        d = capacity.previous_send_day(d, ctx.settings)
+        if d is None:
+            return None
+        days.append(d)
+    since = uk_midnight(days[-1])
+    if waiting < STALL_WAITING or ctx.store.select("accounts", {"first_seen": Range(since, ctx.now)}) \
+            or ctx.store.select("contacts", {"created_at": Range(since, ctx.now)}):
+        return None
+    return (f"Supply stalled: no new company and no new contact on the last {STALL_DAYS} send days while "
+            f"{waiting:,} companies wait for a check or a contact: see what {say.job_name('source_universe')} and "
+            f"{say.job_name('pick_contacts')} last said with {say.command('status')}")
+
+
+def capture_ask(ctx: Context) -> str | None:
+    """This week's reply-capture check (replies/capture.py) when it found a drift or the canary failed (L7); a check
+    not run, or the canary not set up yet (D10 e), is no ask: the readout says the counts are unverified."""
+    from us_outbound.replies import capture
+
+    rows = [r for f in (capture.VERIFIED, capture.UNVERIFIED) for r in capture._facts(ctx, f)
+            if (at := utc(r.get("observed_at"))) is not None and ctx.now - capture.FACT_FRESH <= at <= ctx.now]
+    if not rows:
+        return None
+    latest = max(rows, key=lambda r: (utc(r.get("observed_at")), str(r.get("event_id"))))
+    value = latest.get("value") if isinstance(latest.get("value"), Mapping) else {}
+    if latest.get("fact") != capture.UNVERIFIED:
+        return None
+    drift = [d for d in value.get("drift") or () if isinstance(d, Mapping)]
+    if drift:
+        what = "; ".join(f"{d.get('measure')}: Instantly {d.get('instantly')}, ours {d.get('ours')}" for d in drift)
+        return (f"Capture drift: this week's check found Instantly's counts and ours apart ({what}), so replies may be "
+                f"going unread: look in Instantly's inbox, then {say.command('report capture')}")
+    failed = [r for r in value.get("reasons") or () if r in CANARY_FAILED]
+    if failed:
+        return (f"Canary failed ({', '.join(failed)}): the seed inbox's answer did not come back through the reply "
+                f"read: {say.command('report capture')}")
+    return None
+
+
+def lost_ask(ctx: Context, start: datetime, end: datetime) -> str | None:
+    """Yesterday's enrol run lost leads to a gate (it did not run: a hold, a pause) or to errors (prepared, not
+    enrolled), from its run summary as learn/throughput.read_day reads it (L6: looked at the same day)."""
+    from us_outbound.learn import throughput
+
+    runs = ctx.store.select("heartbeats", {"job": throughput.ENROL, "started_at": Range(start, end)})
+    days = [(utc(r.get("started_at")), d, r) for r in runs if (d := throughput.read_day(ctx, r)) is not None]
+    if not days:
+        return None
+    _, day, row = max(days, key=lambda x: x[0])
+    errors = day.lost.get("errors", 0)
+    if day.binding == "gate":
+        why = str((row.get("detail") or {}).get("reason") or "a gate").rstrip(".")
+        return (f"Leads lost: enrolment did not run yesterday ({why}), about {day.lost.get('gate', 0)} leads: "
+                f"{say.command('status')}")
+    if errors:
+        return (f"Leads lost: {fmt.plural(errors, 'lead')} prepared yesterday and not enrolled (errors): read the "
+                f"error with {say.command('status')}")
+    return None
+
+
+def watch_asks(ctx: Context, nums: Mapping[str, Any]) -> tuple[list[str], dict[str, Any]]:
+    """The asks W3-1 adds, in order: supply stalled, capture drift or canary failed, leads lost."""
+    start, end, _ = period(ctx)
+    waiting = int(nums.get("waiting_for_contact") or 0) + int(nums.get("waiting_for_verification") or 0)
+    out = [a for a in (stalled(ctx, waiting), capture_ask(ctx), lost_ask(ctx, start, end)) if a]
+    return out, {}
+
+
 @dataclass
 class Day:
     """Everything the post reads, gathered once: the full post's lines (`us-outbound report daily --full`), the numbers
@@ -651,6 +733,7 @@ class Day:
     holds: int = 0  # kill-rule holds in force
     retention: str = ""
     spend: str = ""  # "Spend: Apollo balance …" (spend.summary_line)
+    asks: list[str] = field(default_factory=list)  # W3-1's: a supply stall, capture drift, leads lost (watch_asks)
 
 
 def build(ctx: Context, spent: spend.Spend | None = None) -> tuple[list[str], dict[str, Any]]:
@@ -868,12 +951,19 @@ def gather(ctx: Context, spent: spend.Spend | None = None) -> Day:
     if line:
         lines += ["", line]
     nums.update(retention=done)
+    # W3-1's asks (design-final W3-1 change 4): a supply stall, the reply capture's drift or canary, leads lost to a
+    # gate or an error; each in the asks at the top, never stopping the post.
+    asks, more = _section(ctx, "Asks", lambda: watch_asks(ctx, nums))
+    if more.get("sections_failed"):
+        nums["sections_failed"] = [*nums.get("sections_failed", []), *more["sections_failed"]]
+        asks = []
+    nums.update(asks=[a.split(":")[0] for a in asks])
     warm_lines = [f"{who(e)} ({e.get('reply_class')} reply to {e.get('mailbox') or '?'})" for e in warm[:LIST_LIMIT]]
     return Day(start, end, label, head, nums, waiting_on, lim, why=why, warm=warm_lines, objections=objections,
                tail=lines, visited=visited, groups=ready_groups(ready, ctx.settings) if ready else "",
                improve=improve, mailboxes=boxes, ramping=ramping,
                fired=[str((i.get("payload") or {}).get("reason")) for i in fired], holds=len(in_force),
-               retention=line or "", spend=spend_line)
+               retention=line or "", spend=spend_line, asks=asks)
 
 
 # -- the short post (Harry, 9 Oct 2026: "a more readable pithier version of the daily report") -------------------
@@ -909,8 +999,8 @@ def _waited(ctx: Context, items: Sequence[Mapping[str, Any]]) -> str:
     return ("waiting " if len(items) == 1 else "the oldest waiting ") + fmt.hours(ctx.now - oldest)
 
 
-def _needs(ctx: Context, w: ForYou) -> list[str]:
-    """The asks, numbered: what to do, and where (the channel, or the command to paste)."""
+def _needs(ctx: Context, w: ForYou, more: Sequence[str] = ()) -> list[str]:
+    """The asks, numbered: what to do, and where (the channel, or the command to paste); more: watch_asks' after."""
     channel = ctx.settings.general.alert_channel
     out = []
     if w.replies:
@@ -933,6 +1023,7 @@ def _needs(ctx: Context, w: ForYou) -> list[str]:
         if n:
             out.append(f"Weekly hand-check: {fmt.plural(n, 'company', 'companies')} still need a decision on the "
                        f"{say.sheet_link(ctx, hand_check_tab.TAB)}{then}")
+    out += list(more)
     return [f"{i}. {x}" for i, x in enumerate(out, 1)]
 
 
@@ -1046,7 +1137,7 @@ def _watch(day: Day) -> tuple[list[str], list[str]]:
 def compact(ctx: Context, day: Day) -> list[str]:
     """The short post: whether anything needs you, the asks, yesterday, today, the pipeline, and only what needs a
     look; the rest is in `us-outbound report daily --full` and the Monday readout."""
-    needs = _needs(ctx, day.waiting_on)
+    needs = _needs(ctx, day.waiting_on, day.asks)
     date = f"{ctx.now.astimezone(UK):%a %-d %b}"
     if needs:
         head = f"{say.ACTION} *Daily summary, {date}: {fmt.plural(len(needs), 'thing needs', 'things need')} you*"

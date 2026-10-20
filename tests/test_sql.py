@@ -98,6 +98,8 @@ BUILD_TABLES: dict[str, set[str]] = {
         "changed_by", "run_id",
     },
     "source_state": {"key", "value", "updated_at"},  # W3-3 (20 Oct 2026): the sources' state, out of the ledger
+    # W3-1 (20 Oct 2026): the persisted metrics series (learn/metrics.py).
+    "metrics": {"day", "segment_key", "metric", "n", "k", "value", "definition_version", "computed_at"},
 }
 RAW_TABLES = ("raw_irs_bmf", "raw_job_posts", "raw_clay_accounts", "raw_clay_contacts", "raw_site_visits", "raw_layoffs")
 RAW_COLUMNS = {"loaded_at", "run_id", "key", "payload"}
@@ -110,12 +112,15 @@ RETIRED_VIEWS = {"v_credits_month", "v_signal_value"}
 
 # Types by column name (the brief's rules), as sqlglot prints them; every other column is TEXT.
 TIMESTAMPS = {"first_seen", "last_scored", "effective_from", "effective_to"}  # plus every *_at
-DATES = {"recheck_after"}  # a re-check falls due on a day (W1-C, 19 Oct 2026)
+DATES = {"recheck_after",  # a re-check falls due on a day (W1-C, 19 Oct 2026)
+         "day"}  # the day a metrics row is about (W3-1, 20 Oct 2026)
 INTS = {"employees", "us_employees", "founded_year", "score", "step", "active_customers", "churned_customers",
         "us_active", "us_churned", "score_at_enrol", "contact_slot", "leads_in_flight",
-        "exit_code"}  # heartbeats.exit_code (W2-4, 20 Oct 2026; ops/health.py)
+        "exit_code",  # heartbeats.exit_code (W2-4, 20 Oct 2026; ops/health.py)
+        "n", "k"}  # metrics (W3-1)
 FLOATS = {"clay_credits_used", "credits", "usd", "strength", "duration_s",  # duration_s: heartbeats (W2-4)
-          "amount"}  # events.amount (W2-3)
+          "amount",  # events.amount (W2-3)
+          "value"}  # metrics.value (W3-1; signal_events' and source_state's value are jsonb)
 BOOLS = {"suppressed", "dry_run"}
 
 # Indexes the brief asks for (table -> leading columns); more are fine.

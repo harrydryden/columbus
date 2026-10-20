@@ -116,6 +116,7 @@ JOBS: dict[str, str] = {
     "daily_post": "us_outbound.learn.daily_post:run",
     "capture": "us_outbound.replies.capture:run",  # W1-2, 19 Oct 2026: is the reply read working? Mondays
     "monday_readout": "us_outbound.learn.readout:run",  # Harry, 6 Oct 2026: the learning loop
+    "metrics_daily": "us_outbound.learn.metrics:run",  # W3-1, 20 Oct 2026: the persisted metrics series
     # Build additions (README "Deviations").
     "heartbeat_check": "us_outbound.ops.health:run",  # missed jobs, caught errors, the outside watchdog (W2-4)
     "suppression_load": "us_outbound.suppression:load_from_hubspot",
