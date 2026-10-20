@@ -606,6 +606,7 @@ def more_specific(level: str, than: str) -> bool:
 POLICY_FACT, POLICY_SOURCE = "label_policy", "label_sample"  # signal_events.fact and .source of the stored policy
 POLICY_SOURCES = (AGREED, MODEL, UMBRELLA, RULES)
 POLICY_BATCHES, POLICY_MIN_N, POLICY_PRECISION, POLICY_LOWER = 3, 20, 0.90, 0.75
+POLICY_STALE_DAYS = 62  # two monthly runs missed: the readout says how old the policy in force is
 
 
 def policy_level(exact: int, n: int) -> str:
@@ -650,11 +651,19 @@ def store_policy(ctx: Context, counts: Mapping[str, tuple[int, int]], batches: S
     return value
 
 
-def stored_policy(ctx: Context) -> dict[str, Any] | None:
-    """The newest label_policy fact's value, or None (none stored yet)."""
+def policy_fact(ctx: Context) -> Mapping[str, Any] | None:
+    """The newest label_policy fact (the row: its value and when it was stored), or None (none stored yet)."""
     e = facts.newest(ctx.store.select("signal_events", {"source": POLICY_SOURCE, "fact": POLICY_FACT}),
                      POLICY_FACT, POLICY_SOURCE)
-    return dict(e["value"]) if e is not None and isinstance(e.get("value"), Mapping) else None
+    return e if e is not None and isinstance(e.get("value"), Mapping) else None
+
+
+def stored_policy(ctx: Context) -> dict[str, Any] | None:
+    """The newest label_policy fact's value, or None (none stored yet). However old: a stale policy stays in force
+    (dropping it would switch copy back without anyone deciding), and the readout says its age once it is older than
+    POLICY_STALE_DAYS (learn/label_metrics.sample_lines)."""
+    e = policy_fact(ctx)
+    return dict(e["value"]) if e is not None else None
 
 
 def active_policy(ctx: Context) -> dict[str, str] | None:

@@ -138,6 +138,29 @@ def test_the_asks_go_out_with_the_spend_asks():
     assert "labels_corrections:2026-10-27" in keys
 
 
+def test_a_policy_older_than_two_months_says_its_age():
+    """The newest label_policy fact stays in force however old (dropping it would switch copy back with no one
+    deciding), and the readout says its age past POLICY_STALE_DAYS (62). Stored 1 Aug 2026 12:00 UTC, read Mon 26 Oct
+    07:30 UTC: 1 Aug 12:00 to 26 Oct 12:00 is 30 + 30 + 26 = 86 days, less 4.5 hours, so 85 whole days -> the line.
+    Stored 21 Oct: 4 days -> no
+    line. With copy_level_policy yes, the old policy is still the one applied."""
+    start, end = datetime(2026, 10, 19, tzinfo=UTC), datetime(2026, 10, 26, tzinfo=UTC)
+    ctx = measured([], now=datetime(2026, 10, 26, 7, 30, tzinfo=UTC))
+    sample = {"judged": 50, "label_right": 34, "group_right": 44}
+    labels.store_policy(ctx, {"rules+model": (20, 21), "model": (6, 9)}, ["2026-07"], sample)
+    [e] = ctx.store.select("signal_events", {"fact": labels.POLICY_FACT})
+    ctx.store.upsert("signal_events", [{**e, "observed_at": datetime(2026, 8, 1, 12, tzinfo=UTC)}])
+    lines = label_metrics.readout_lines(ctx, start, end)
+    assert lines[-1] == ("  The label policy was stored 85 days ago and none since: check label_sample_monthly is "
+                         "running.")
+    on = dataclasses.replace(ctx, settings=dataclasses.replace(
+        DEFAULT, general=dataclasses.replace(DEFAULT.general, copy_level_policy=True)))
+    assert labels.active_policy(on) == {"rules+model": "label", "model": "group", "umbrella": "group",
+                                        "rules": "group"}
+    ctx.store.upsert("signal_events", [{**e, "observed_at": datetime(2026, 10, 21, 12, tzinfo=UTC)}])
+    assert not any("days ago" in x for x in label_metrics.readout_lines(ctx, start, end))
+
+
 def test_the_monday_readout_carries_the_block():
     from us_outbound.learn import readout
 

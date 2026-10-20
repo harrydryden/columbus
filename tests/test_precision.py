@@ -75,8 +75,8 @@ def w43_pool(*, media_fine=0):
     return rows, events
 
 
-def world(*, live=False, media_fine=0, settings=DEFAULT):
-    ctx = make_context(settings, live=live, now=NOW)
+def world(*, live=False, media_fine=0, settings=DEFAULT, now=NOW):
+    ctx = make_context(settings, live=live, now=now)
     ctx.clients.sheets = Sheet(ctx.guard, {})
     rows, events = w43_pool(media_fine=media_fine)
     ctx.store.insert("signal_events", rows + events)
@@ -105,7 +105,9 @@ def test_the_pool_of_four_weeks_with_its_wilson_interval_and_reasons():
 def test_a_split_prints_only_when_every_cell_has_fifteen():
     """Group cells of 20, 20 and 8 rows: not printable (8 < 15). A two-way state split of 24 and 24: printable. One
     cell alone (every row's label source is model) says nothing: not printable. The readout prints the state split
-    with its intervals (Wilson 24 of 24: (0.862, 1.0)) and names the others as pooled only."""
+    with its intervals (Wilson 24 of 24: (0.862, 1.0)) and names the others as pooled only. The arm: rows 0-23 on
+    accounts in the random arm, rows 24-47 on accounts whose arm is NULL (picked before the arm existed), which read
+    as ranked (enrol/queue.py), so two cells of 24, not a third "unknown" cell."""
     ctx = make_context(DEFAULT, now=NOW)
     groups = [TECH] * 20 + ["Marketing & Creative Agencies"] * 20 + ["Legal Teams"] * 8
     rows = []
@@ -114,6 +116,8 @@ def test_a_split_prints_only_when_every_cell_has_fifteen():
         row["value"]["snapshot"]["industry_group"] = g
         rows.append(row)
     ctx.store.insert("signal_events", rows)
+    ctx.store.insert("accounts", [{"account_id": f"a{i:02}", "domain": f"a{i:02}.com", "status": "enrolled",
+                                   "arm": "random" if i < 24 else None} for i in range(48)])
     t = precision.tally(ctx)
     group = t.splits["group"]
     assert group.cells == {"Legal Teams": (8, 8), "Marketing & Creative Agencies": (20, 20), TECH: (20, 20)}
@@ -121,6 +125,7 @@ def test_a_split_prints_only_when_every_cell_has_fifteen():
     state = t.splits["state"]
     assert state.cells == {"IL": (24, 24), "NY": (24, 24)} and state.printable is True
     assert t.splits["label source"].cells == {"model": (48, 48)} and t.splits["label source"].printable is False
+    assert t.splits["arm"].cells == {"random": (24, 24), "ranked": (24, 24)} and t.splits["arm"].printable is True
     lines = precision.readout_lines(ctx, t)
     assert "  By state: IL 24 of 24 (100%, 95% 86%–100%); NY 24 of 24 (100%, 95% 86%–100%)." in lines
     [pooled] = [x for x in lines if x.startswith("  Pooled only (a cell under 15 rows): ")]
@@ -330,6 +335,45 @@ def test_only_an_approved_row_is_applied_and_only_once():
     assert ind[ADS]["definition"] == "Agencies that make ads; not a media company or publication"
 
 
+def test_a_row_cut_short_on_its_second_target_is_finished_next_sync_without_saying_it_twice():
+    """A definition_not row on two labels: the first sync writes Advertising agencies, then the sheet refuses
+    Publishers (a 503), so the row is not applied (no date) and the error is recorded. The next sync applies it
+    again: Advertising agencies already says "not a media company or publication", so its definition stays as it is
+    (one "not a media company", no update_cell for it), Publishers gets the words, and the row is dated applied."""
+    from us_outbound.clients.http import ApiError
+
+    ctx = make_context(DEFAULT, live=True, now=NOW)
+    sheets = Sheet(ctx.guard, {
+        "Industries": [{"industry": ADS, "definition": "Agencies that make ads.", "exclude_naics": ""},
+                       {"industry": "Publishers", "definition": "Publishes books", "exclude_naics": ""}],
+        definitions.SUGGESTIONS_TAB: [
+            suggestion("2026-11:definition_not:media_publisher", "definition_not", f"{ADS}; Publishers",
+                       "not a media company or publication", "approved")]})
+    writes, refuse = [], ["Publishers"]
+
+    def update_cell(sid, tab, match, col, value):
+        if match["industry"] in refuse:
+            refuse.remove(match["industry"])
+            raise ApiError("sheets", 503, "The service is currently unavailable.", "https://sheets.googleapis.com/")
+        writes.append((match["industry"], col))
+        return _set(sheets, tab, match, col, value)
+
+    sheets.update_cell = update_cell
+    ctx.clients.sheets = sheets
+    sheet = ctx.guard.bounds.settings_sheet_id
+    first = definitions.apply_approved(ctx, sheet)
+    assert first["applied"] == [] and [e["id"] for e in first["errors"]] == ["2026-11:definition_not:media_publisher"]
+    assert writes == [(ADS, "definition")]
+    assert sheets.tabs[definitions.SUGGESTIONS_TAB][0]["applied"] == ""
+    second = definitions.apply_approved(ctx, sheet)
+    assert second == {"applied": ["2026-11:definition_not:media_publisher"], "missing": [], "errors": []}
+    assert writes == [(ADS, "definition"), ("Publishers", "definition")]  # Advertising agencies not written again
+    ind = {r["industry"]: r["definition"] for r in sheets.tabs["Industries"]}
+    assert ind == {ADS: "Agencies that make ads; not a media company or publication",
+                   "Publishers": "Publishes books; not a media company or publication"}
+    assert sheets.tabs[definitions.SUGGESTIONS_TAB][0]["applied"] == "2026-10-24"
+
+
 def test_an_exclude_naics_row_without_a_code_or_with_an_unknown_label_is_not_applied():
     ctx = make_context(DEFAULT, live=True, now=NOW)
     sheets = Sheet(ctx.guard, {
@@ -351,12 +395,36 @@ def test_naics_text():
     assert definitions.naics_text("not IT services") == ((), "")
 
 
-def test_the_monday_readout_shows_t1_by_gate_version_and_t3_with_the_label_copy_figure():
-    """Acceptance (W3-2): the readout carries T1 pooled with its interval and by gate version (W43 drawn under a new
-    gate), and the label sample's exact and group precision with the label-copy emails apart (October: 4 of 30)."""
+MONDAY = datetime(2026, 10, 26, 7, 30, tzinfo=UTC)  # Monday of W44, 07:30 UTC = 08:30 UK (GMT): the readout's hour
+
+
+def test_the_monday_readout_pools_the_four_judged_weeks_before_this_one():
+    """The readout runs Monday 08:30 UK (03:30 ET); hand_check_draw (05:45 UK) has drawn W44's rows by then and none is
+    judged. So the pool is the four weeks ending with last week, the week the hand-check section reports: W40-W43, 38
+    fine of 48. Ending with this week (W41-W44) would leave W40's 12 judged rows out and count W44's none: rows 12-47,
+    whose fine rows are 12-37, 26 of 36, about a quarter short. A W44 row judged early (a leave-out) is not counted
+    either: it belongs to next Monday's pool."""
     from us_outbound.learn import readout
 
-    ctx = world()
+    ctx = world(now=MONDAY)
+    ctx.store.insert("signal_events", [judgement(93, "2026-W44", "leave out", reason="other")])
+    lines, nums = readout.build(ctx)
+    p = nums["icp_precision"]
+    assert p["weeks"] == list(WEEKS)
+    assert (p["fine"], p["judged"]) == (38, 48)
+    assert p["interval"] == [0.6574, 0.8827]
+    assert any("pooled over 4 weeks, 2026-W40 to 2026-W43)" in x for x in lines)
+    assert "  Fine: 38 of 48 (79%, 95% 66%–88%); left out 8, wrong industry 2. The 0.90 target needs about 150 rows " \
+           "to show; 48 so far." in lines
+
+
+def test_the_monday_readout_shows_t1_by_gate_version_and_t3_with_the_label_copy_figure():
+    """Acceptance (W3-2): the readout carries T1 pooled with its interval and by gate version (W43 drawn under a new
+    gate), and the label sample's exact and group precision with the label-copy emails apart (October: 4 of 30). Run
+    at the readout's hour on the Monday after W43, so the pool is W40-W43."""
+    from us_outbound.learn import readout
+
+    ctx = world(now=MONDAY)
     for e in ctx.store.select("signal_events", {"source": hand_check.SOURCE}):
         if e["value"]["week"] == "2026-W43":
             ctx.store.upsert("signal_events", [{**e, "value": {**e["value"], "gate_version": "h2:r2"}}])

@@ -27,7 +27,7 @@ from us_outbound import facts, fmt, labels
 from us_outbound.context import Context
 from us_outbound.learn import stats
 from us_outbound.settings.model import LABEL_CHECK_REQUIRED
-from us_outbound.timeparse import utc_or_epoch
+from us_outbound.timeparse import utc, utc_or_epoch
 
 # Corrections in a day that ask for a look at the Industries tab.
 ASK_CORRECTIONS = 3
@@ -176,9 +176,11 @@ def _ci(k: int, n: int) -> str:
     return f"{k} of {n} ({k / n:.0%}, 95% {lo:.0%}–{hi:.0%})" if n else "none judged"
 
 
-def sample_lines(stored: Mapping[str, Any] | None, applied: bool) -> list[str]:
+def sample_lines(stored: Mapping[str, Any] | None, applied: bool, age_days: int | None = None) -> list[str]:
     """The label sample's score (T3), the rater's agreement (T1r) and the label policy, from a label_policy fact's
-    value (labels.store_policy), for the readout."""
+    value (labels.store_policy), for the readout. age_days: how long ago the fact was stored; past
+    labels.POLICY_STALE_DAYS a line says so (label_sample_monthly has stopped storing it, and the policy in force,
+    applied or not, rests on old batches)."""
     if not stored:
         return ["  Judged by hand (the monthly label sample): no batch scored yet."]
     sample = stored.get("sample") or {}
@@ -205,6 +207,9 @@ def sample_lines(stored: Mapping[str, Any] | None, applied: bool) -> list[str]:
     state = (f"applied (General copy_level_policy is yes): {would}" if applied
              else f"not applied (General copy_level_policy is no, Harry's D20): {would} when it is")
     out.append(f"  Label policy: {policy_line(stored)}; {state}.")
+    if age_days is not None and age_days > labels.POLICY_STALE_DAYS:
+        out.append(f"  The label policy was stored {age_days} days ago and none since: check label_sample_monthly "
+                   "is running.")
     return out
 
 
@@ -226,7 +231,11 @@ def readout_lines(ctx: Context, start: datetime, end: datetime, wrong_industry: 
                      f"{d.get('held', 0)} · disqualified {d.get('disqualified', 0)}")
     elif not week.corrections:
         lines.append("  No company checked or corrected last week.")
-    lines += sample_lines(labels.stored_policy(ctx), bool(ctx.settings.general.copy_level_policy))
+    fact = labels.policy_fact(ctx)
+    stored_at = utc(fact.get("observed_at")) if fact is not None else None
+    lines += sample_lines(dict(fact["value"]) if fact is not None else None,
+                          bool(ctx.settings.general.copy_level_policy),
+                          (ctx.now - stored_at).days if stored_at is not None else None)
     if wrong_industry is not None and wrong_industry[1]:
         k, n = wrong_industry
         lines.append(f"  The hand-check found the wrong industry on {_ci(k, n)} random rows.")

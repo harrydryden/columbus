@@ -108,8 +108,9 @@ def rows_for(ctx: Context, accounts: Sequence[Mapping[str, Any]], batch: str) ->
                                                     "fact": labels.VERDICT_FACT}):
             checks.setdefault(str(e["account_id"]), []).append(e)
     sent = sent_levels(ctx, ids)
+    policy = labels.active_policy(ctx)  # what enrol would apply now: None while General copy_level_policy is no
     return [_row(a, labels.latest_stored(checks.get(str(a["account_id"]), [])), batch,
-                 sent.get(str(a["account_id"])) or labels.copy_level(a))
+                 sent.get(str(a["account_id"])) or labels.copy_level(a, policy))
             for a in sorted(accounts, key=lambda a: str(a.get("domain") or ""))]
 
 

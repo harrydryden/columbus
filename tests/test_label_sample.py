@@ -292,6 +292,25 @@ def test_the_untrue_pitch_reads_the_copy_level_enrol_stamped():
     assert {r["domain"]: r["copy"] for r in ls.draw(ctx, 2)} == {"a000.com": "group", "a001.com": "label"}
 
 
+def test_a_row_not_yet_emailed_shows_the_level_the_label_policy_gives_once_it_is_switched_on():
+    """The copy column for a company not emailed yet is the level enrol would send now. a001 is rules+model (label
+    copy by its source); the stored policy routes rules+model to group copy (no judged rows: policy({}) is group for
+    every source). With General copy_level_policy no, the policy is not read: label. With yes: group, as enrol would
+    stamp it. a003 was emailed with label copy (contacts.copy_level): its column stays what was sent either way."""
+    import dataclasses
+
+    from us_outbound import labels
+
+    ctx = world(n=4)
+    ctx.store.insert("contacts", [{"contact_id": "c3", "account_id": "a003", "enrolled_at": AT, "copy_level": "label"}])
+    labels.store_policy(ctx, {}, ["2026-09"])
+    assert {r["domain"]: r["copy"] for r in ls.draw(ctx, 4)} == {
+        "a000.com": "group", "a001.com": "label", "a002.com": "group", "a003.com": "label"}
+    ctx.settings = dataclasses.replace(DEFAULT, general=dataclasses.replace(DEFAULT.general, copy_level_policy=True))
+    assert {r["domain"]: r["copy"] for r in ls.draw(ctx, 4)} == {
+        "a000.com": "group", "a001.com": "group", "a002.com": "group", "a003.com": "label"}
+
+
 def test_the_score_by_how_the_label_was_decided_feeds_the_policy():
     """October (data-crm-settings §Label sample), by decided_by: rules+model 20 of 21 exact, model 6 of 9, umbrella 5
     of 10. by_source counts (exactly right, judged); labels.policy routes rules+model to label copy and the other two

@@ -40,8 +40,9 @@ to bottom:
     and each decision counted, the reasons for leaving out, and the companies sent unjudged (released 7 days after
     the draw) or still held. Counts only: at 10 to 20 rows a week a rate's interval would be about ±25 points.
   * ICP precision (learn/precision.readout_lines; W3-2, 20 Oct 2026): T1, the hand-check's random rows judged fine
-    pooled over four weeks, with its Wilson interval and by gate version; the leave-out reasons (T2); the contact
-    and opener answers; a split only when every cell has 15 rows.
+    pooled over the four weeks ending with last week (this week's rows are drawn but not judged yet at 08:30), with
+    its Wilson interval and by gate version; the leave-out reasons (T2); the contact and opener answers; a split only
+    when every cell has 15 rows.
   * Industry labels (learn/label_metrics.readout_lines; W3-2): last week's label check and corrections; the label
     sample's exact and group precision (T3) with intervals and the label-copy emails apart; the label policy and
     whether it is applied (General copy_level_policy, D20); the hand-check's wrong-industry rows. (The cards' "right
@@ -506,13 +507,17 @@ def signal_section(ctx: Context) -> tuple[list[str], int | None]:
     return [f"  {x}" for x in (text[1:] if signals.companies else text)], sum(sp.readable for sp in signals.splits)
 
 
-def precision_section(ctx: Context) -> tuple[list[str], dict[str, Any]]:
+def precision_section(ctx: Context, start: datetime) -> tuple[list[str], dict[str, Any]]:
     """The ICP precision block (learn/precision.readout_lines) and its numbers: T1 pooled with its interval, the
-    reasons, the gate versions. Monitoring: a failure says so in its section and never stops the readout."""
+    reasons, the gate versions, over the four weeks ending with the week starting at start (the week the hand-check
+    section reports). Not this week: the readout runs Monday 08:30 UK, after hand_check_draw has drawn the new week's
+    rows and before any is judged, so this week would count as judged none of them and push the oldest judged week out
+    of the pool. Monitoring: a failure says so in its section and never stops the readout."""
+    from us_outbound.enrol import enrol  # imported when used, as build imports hand_check
     from us_outbound.learn import precision
 
     try:
-        t = precision.tally(ctx)
+        t = precision.tally(ctx, through=enrol.iso_week(start.astimezone(UK).date()))
         lines = precision.readout_lines(ctx, t)
     except GuardViolation:
         raise
@@ -571,7 +576,7 @@ def build(ctx: Context) -> tuple[list[str], dict[str, Any]]:
     body += checked
     # ICP precision (T1, T2) pooled over four weeks, and the industry labels (the check, the label sample's T3, the
     # label policy): W3-2, each in its own guard, so neither stops the readout.
-    t1, precision_nums = precision_section(ctx)
+    t1, precision_nums = precision_section(ctx, start)
     body += t1
     body += label_section(ctx, start, end, precision_nums.get("wrong_industry"))
     # Monitoring, not a decision (metrics-audit H5; W2-3): counts and intervals, no verdict, never a "Needs action".

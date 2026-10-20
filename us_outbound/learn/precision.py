@@ -188,7 +188,7 @@ def _cells(ctx: Context, rows: Sequence[Mapping[str, Any]]) -> dict[str, list[st
         out["state"].append(str(snap.get("hq_state") or "unknown"))
         out["slice"].append(str(sliced.get("slice") if isinstance(sliced, Mapping) else "") or "unknown")
         out["score decile"].append(_decile(snap.get("score")))
-        out["arm"].append(str(a.get("arm") or "unknown"))
+        out["arm"].append(str(a.get("arm") or "ranked"))  # NULL reads as ranked (enrol/queue.py)
         out["label source"].append(str(snap.get("label_source") or "not checked"))
     return out
 
