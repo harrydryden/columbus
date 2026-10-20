@@ -505,6 +505,20 @@ def _record(ctx: Context, f: Firing) -> None:
                                      "payload": _payload(ctx, f)}])
 
 
+def holding(ctx: Context, scope: str, target: str) -> bool:
+    """A hold for (scope, target) is open or escalated (learn/early_warning.py asks before it holds; W3-4)."""
+    return _Fired(ctx.store).open(scope, target)
+
+
+def hold(ctx: Context, f: Firing) -> None:
+    """Record a hold another rule decided (learn/early_warning.py with early_warning_pause = yes; W3-4), as a firing
+    of this module is recorded: in any mode, the safe direction. Its alert is the caller's (posted once a week), so
+    the item is no outbox entry: post_unsent never posts it again as a kill rule's."""
+    f.item_id = f.item_id or new_id()
+    ctx.store.upsert("hitl_items", [{"item_id": f.item_id, "kind": KIND, "status": "open", "created_at": ctx.now,
+                                     "payload": {**_payload(ctx, f), "outbox": False}}])
+
+
 def expire(ctx: Context) -> list[dict]:
     """14-day mailbox pauses whose time is up: handled, so the hold lifts (the sheet still says Paused)."""
     today = ctx.today_uk()

@@ -120,8 +120,9 @@ SCHEDULE: tuple[ScheduledJob, ...] = (
     ScheduledJob("monday_readout", "30 8 * * 1", live=True, enabled=True, timeout_minutes=20, phase=3),
     # W3-1, 20 Oct 2026 (design-final §4): the persisted metrics series, daily at 08:50 UK, after the Monday readout
     # (08:30), which scores last week's forecasts itself, and before the daily post (09:00). It reads the database and
-    # writes only its metrics table, so no --live (learn/metrics.py).
-    ScheduledJob("metrics_daily", "50 8 * * *", live=False, enabled=True, timeout_minutes=10, phase=3),
+    # writes its metrics table the same in dry-run as live; from W3-4 (21 Oct 2026) it posts the early warning
+    # (learn/early_warning.py) to the alert channel once a week when it fires, so --live (still dry until live_sending).
+    ScheduledJob("metrics_daily", "50 8 * * *", live=True, enabled=True, timeout_minutes=10, phase=3),
     # Build additions (README "Deviations").
     ScheduledJob("heartbeat_check", "5 * * * *", live=True, enabled=True, timeout_minutes=5, phase=0),
     # HubSpot opt-outs and bounces, and Spill's customers' domains (Harry, 7 Oct 2026: daily, not monthly).

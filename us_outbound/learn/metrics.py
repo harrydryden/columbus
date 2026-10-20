@@ -30,6 +30,10 @@ What it writes (IDS maps each metric to its design-final §4 id):
     week × the matured positive rate, or SPEC 12's 1% under 30 matured; the 5% and 95% binomial quantiles); each with
     :low and :high rows. After the week ends, forecast_score:<name> (k 1 inside, 0 outside; value the actual).
     flags() names a forecast outside its interval FLAG_WEEKS weeks running: a definition or model check.
+  * Then the early warning (W3-4, 21 Oct 2026; learn/early_warning.py): an alert, once an ISO week, when the matured
+    outcomes are far below plan (no human reply in 100, or a meeting or positive rate likely under half of SPEC 12's),
+    which holds new enrolment only with General early_warning_pause = yes. It posts to the alert channel, so the
+    scheduler runs this job with --live from W3-4 (ops/schedule.py); the series is written the same either way.
 
 Two clocks. Every row but a cohort's and a forecast's is dated yesterday (UK). P1 and S1 count that UK day and O9 its
 month; everything else is as of the run itself (08:50 UK the next day): the rolling windows of P2, P3, D1, D2, O8 and
@@ -682,9 +686,21 @@ def run(ctx: Context) -> dict:
         r["computed_at"] = ctx.now
     if rows:
         ctx.store.upsert(TABLE, rows)
+    warned: dict[str, Any] = {}
+    if found:  # the early warning (W3-4, learn/early_warning.py): after the series, in its own try
+        try:
+            from us_outbound.learn import early_warning
+
+            warned = early_warning.check(ctx, found)
+        except GuardViolation:
+            raise
+        except Exception as exc:
+            errors.append(f"metrics_daily early_warning: {type(exc).__name__}: {str(exc)[:160]}")
+            log("metrics_block_failed", run_id=ctx.run_id, block="early_warning", error=f"{type(exc).__name__}: {exc}"[:200])
     ids = sorted({i for r in rows if (i := id_of(r["metric"]))})
     summary = {"job": JOB, "dry_run": ctx.dry_run, "day": day.isoformat(), "definition_version": DEFINITION_VERSION,
-               "rows": len(rows), "ids": ids, "cohorts": weeks, "forecasts": wrote, "scored": scored, "errors": errors}
+               "rows": len(rows), "ids": ids, "cohorts": weeks, "forecasts": wrote, "scored": scored, "errors": errors,
+               "early_warning": warned}
     log("metrics_daily_done", run_id=ctx.run_id, **{k: v for k, v in summary.items() if k != "ids"})
     return summary
 
