@@ -137,7 +137,7 @@ def test_a_hubspot_opt_out_stops_the_lead_in_flight_and_the_rest_of_its_account(
     w = in_flight_world(default_settings)
     assert hubspot_opts_out(w, JANE)["added"] == 1
     out = outcomes.run(w.ctx)["account_stops"]
-    assert out == {"to_stop": 2, "stopped": {"deleted": 2}, "errors": []}
+    assert out == {"to_stop": 2, "stopped": {"deleted": 2}, "errors": [], "refused": []}
     assert deleted(w) == ["L-jane", "L-omar"]  # Bob, at another company, goes on
     calls = [c for c in w.ctx.guard.writes("instantly") if c.action == "lead.delete"]
     assert [(c.target, c.sent) for c in calls] == [(CAMPAIGNS["cmp-hannah"], True)] * 2  # through the guard, live
@@ -188,7 +188,7 @@ def test_an_expired_entry_and_a_finished_lead_stop_nothing(default_settings):
                     now=w.ctx.now - timedelta(days=40), expires_at=w.ctx.now - timedelta(days=1))
     w.ctx.store.update("contacts", {"account_id": "acc-acme"}, {"enrolled_at": REPLY_NOW - timedelta(days=40)})
     suppression.add(w.ctx.store, email=JANE, reason="hubspot_opt_out_or_bounce", source="hubspot", now=w.ctx.now)
-    assert account_stop.sweep(w.ctx) == {"to_stop": 0, "stopped": {}, "errors": []} and deleted(w) == []
+    assert account_stop.sweep(w.ctx) == {"to_stop": 0, "stopped": {}, "errors": [], "refused": []} and deleted(w) == []
 
 
 def test_an_instantly_unsubscribe_still_pending_is_left_to_its_own_path(default_settings):
@@ -239,7 +239,7 @@ def test_a_new_customer_is_suppressed_by_the_nightly_load_and_its_lead_in_flight
 
 
 def test_a_failed_customer_read_keeps_the_opt_outs_and_says_so(default_settings):
-    from us_outbound.ops import job_errors
+    from us_outbound.ops import health
 
     w = in_flight_world(default_settings)
     w.transport.route("POST", "/crm/v3/objects/companies/search", status=403, body={"message": "missing scope"})
@@ -247,7 +247,7 @@ def test_a_failed_customer_read_keeps_the_opt_outs_and_says_so(default_settings)
     assert out["added"] == 1 and suppression.is_suppressed(w.ctx.store, email=JANE, now=w.ctx.now)
     assert out["customers_error"].startswith("Spill's customers could not be read from HubSpot (AuthError: ")  # a 403
     assert out["customers_error"].endswith("yesterday's entries stand") and "customers" not in out
-    [finding] = job_errors.findings("suppression_load", {"status": "ok", "detail": out, "started_at": w.ctx.now})
+    [finding] = health.findings("suppression_load", {"status": "ok", "detail": out, "started_at": w.ctx.now})
     assert finding.kind == "customers_error"  # heartbeat_check tells Harry, once a day
 
 

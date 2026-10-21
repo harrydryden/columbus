@@ -7,6 +7,18 @@ whole tab: settings_sync then keeps the previous version of that tab in force.
 
 Row numbers are sheet rows counting the header, so the first data row is row 2.
 Errors are written for Harry, in American English.
+
+General keys are forward-compatible (W1-1, 19 Oct 2026; RS P0-2): a key the code does not know, one renamed
+(RENAMED_GENERAL) or one retired (RETIRED_GENERAL) is a warning, and its row is not read; it never rejects the tab.
+Before, an unknown key was an error, so a package that added a key, and a rollback after Harry added its row, left
+the General version in force unusable and stopped every job, the brakes included (11 Oct 2026). strict (the sheet
+sync, the default) still fails on a duplicate key; strict=False (settings/sync.load_current, re-reading the version
+in force) keeps the first row of a duplicated key and warns. A value that does not parse fails in both. Every key a
+package deletes from General goes into RETIRED_GENERAL in the same commit, and the live sheet's key names are a test
+fixture (tests/fixtures/general_keys_live.txt). general_warnings() lists the warnings.
+
+The Tests tab's pre-registration and its one-running-test rule (W3-4) are enforced the same way (W3-4 r2): strictly
+on the sheet, not on the version in force read again (_tests), which the code before W3-4 may have stored without them.
 """
 
 from __future__ import annotations
@@ -47,13 +59,21 @@ from us_outbound.settings.model import (
     AB_TEST,
     ACTIONS,
     COPY_TEST_KINDS,
-    CLAY_VERIFICATION_MODES,
     LABEL_CHECK_MODES,
+    LIVE_SPLITS,
+    LOOK_RULES,
+    METRIC_IDS,
+    OBRIEN_FLEMING,
+    ONE_LOOK,
+    REGISTRY_FROM,
+    TEST_METHODS,
+    HAND_CHECK_SAMPLE_MAX,
+    HAND_CHECK_SAMPLE_MIN,
+    MAX_EXPLORE_SHARE,
     COPY_STATUSES,
     COPY_STEPS,
     EMAIL1_SUBJECT_VARIABLES,
     EMAIL_FORMATS,
-    FOCUS_LINE_TOKENS,
     GENERAL_COPY,
     GENERIC_LINE_TOKENS,
     GENERIC_OPENER_KEY,
@@ -90,7 +110,6 @@ from us_outbound.settings.model import (
     Industry,
     IndustryPage,
     Mailbox,
-    NamedAccount,
     Override,
     Role,
     SendWindow,
@@ -118,7 +137,7 @@ NEVER_ACTIVE_STATES = frozenset({"CA", "WA"})  # SPEC 1.3
 MAX_DAILY_CAP = 30  # SPEC 13: 30 sends per mailbox per day
 CLAUDE_CAP_USD = 100.0  # a guard against a typo; the sheet's value is the cap (SPEC 1.1 set $10; Harry, 7 Oct 2026: $50)
 SPILL_DOMAIN = "spill.chat"  # SPEC 1.2: spill.chat never sends cold email
-CONTROL_ANGLE = "General"  # SPEC 5: Control-tier accounts always get this angle
+GENERAL_ANGLE = "General"  # SPEC 5: the angle of an account no other active angle suits (scoring/angle.py)
 COPY_VARIABLES = frozenset(VARIABLES)  # the variables a copy row may use (copy/variables.py; style.md)
 OPENER_PLACEHOLDERS = frozenset(PLAIN_OPENER_TOKENS)  # SPEC 5: "Saw your benefits page mentions {evidence}"
 # The tokens each opener column may use (enrol/openers.py fills them from stored facts).
@@ -131,8 +150,7 @@ KEY_COLUMNS: dict[str, tuple[str, ...]] = {tab: spec.keys(tab) for tab in TABS} 
 # General keys that must not be blank. Other text keys may be blank until phase 0 fills them.
 _GENERAL_REQUIRED_TEXT = frozenset(
     {"escalation_email", "alert_channel", "dev_channel", "booking_link", "booking_page", "demo_host",
-     "hubspot_pipeline", "claude_model", "claude_task_model", "email_format", "site_url", "clay_verification",
-     "label_check"}
+     "hubspot_pipeline", "claude_model", "claude_task_model", "email_format", "site_url", "label_check"}
 )
 
 _DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
@@ -411,15 +429,54 @@ _GENERAL_TYPES: dict[str, Any] = typing.get_type_hints(General)
 # the credit budgets monthly, like Apollo's and Clay's own.
 RENAMED_GENERAL = {
     "daily_enrol_cap": ("weekly_enrol_cap", "the enrolment target is weekly, Monday to Sunday, UK time"),
-    "clay_weekly_credits": ("clay_monthly_credits", "credit budgets are monthly, like Clay's own"),
     "apollo_weekly_credits": ("apollo_monthly_credits", "credit budgets are monthly, like Apollo's own"),
 }
 # Keys no longer used (Harry, 1 Oct 2026): emails carry no postal address and no privacy link, and
 # the opt-out is Instantly's own unsubscribe link. A sheet that still has these rows stays valid;
-# `us-outbound settings load` removes them.
+# `us-outbound settings load` removes them. Every key a later package deletes from General joins this map in the
+# same commit as its deletion (W1-1, 19 Oct 2026), never before: a key still on General is read, and retiring it
+# early would put its code default in place of the sheet's value.
 RETIRED_GENERAL = {
     "postal_address": "emails carry no postal address (Harry, 1 Oct 2026)",
     "privacy_url": "emails carry no privacy link; the opt-out is Instantly's unsubscribe link (Harry, 1 Oct 2026)",
+    # Harry's D7 replaced the Control tier with a random arm under a new key, explore_share, rather than renaming
+    # this one (the W1-C contracts commit, 19 Oct 2026; RS P0-2). W2-2 (20 Oct 2026) removed General.control_share,
+    # and the tiers and thresholds with it.
+    "control_share": "the Control tier gives way to a random explore arm, explore_share (Harry, 19 Oct 2026)",
+    "priority_threshold": "the tiers were retired: accounts are taken by score, with a random explore arm "
+                          "(Harry's D7, 19 Oct 2026)",
+    "standard_threshold": "the tiers were retired: accounts are taken by score, with a random explore arm "
+                          "(Harry's D7, 19 Oct 2026)",
+    "auto_thresholds": "the tiers and their self-balancing thresholds were retired (Harry's D7, 19 Oct 2026)",
+    # W2-1 (20 Oct 2026): the dormant code went, and with it the keys it read (design-final §3.3).
+    "auto_send": "send approvals were removed: enrol adds each day's leads to Instantly (Harry's D6, 19 Oct 2026)",
+    "second_contact": "second contacts were removed (Harry, 19 Oct 2026); one contact per company",
+    "second_contact_min_employees": "second contacts were removed (Harry, 19 Oct 2026)",
+    "second_contact_delay_days": "second contacts were removed (Harry, 19 Oct 2026)",
+    "clay_monthly_credits": "Clay was removed (Harry's D18, 19 Oct 2026)",
+    "clay_weekly_credits": "Clay was removed (Harry's D18, 19 Oct 2026)",
+    "clay_accounts_function_id": "Clay was removed (Harry's D18, 19 Oct 2026)",
+    "clay_contacts_function_id": "Clay was removed (Harry's D18, 19 Oct 2026)",
+    "clay_credits_per_account": "Clay was removed (Harry's D18, 19 Oct 2026)",
+    "clay_verification": "Clay was removed (Harry's D18, 19 Oct 2026): accounts are verified on Apollo data and HubSpot",
+    "clay_email_fallback": "Clay was removed (Harry's D18, 19 Oct 2026)",
+    "clay_cross_check": "Clay was removed (Harry's D18, 19 Oct 2026)",
+    "recontact_person_months": "never read (W2-1, 20 Oct 2026)",
+    "recontact_account_months": "never read (W2-1, 20 Oct 2026)",
+    "hubspot_deal_stage": "never read: hubspot_deal_stage_id names the stage (W2-1, 20 Oct 2026)",
+    "apollo_credits_per_account": "never read (W2-1, 20 Oct 2026)",
+    "opener_focus": "the \"what they do\" opener was removed while off (W2-1, 20 Oct 2026)",
+    "opener_focus_line": "the \"what they do\" opener was removed while off (W2-1, 20 Oct 2026)",
+    # W2-3 (20 Oct 2026): the complaint stop rule had no input (code-learn-reporting B2).
+    "stop_rule_complaint_rate": "nothing reports a spam complaint to us yet, so the rule never had an input; the "
+                                "readout says complaints are not measured (W2-3, 20 Oct 2026)",
+    # W2-4 (20 Oct 2026): constants Harry never edits, now in code at the live sheet's values (settings/model.py).
+    "score_cap": "a constant in code now, 100 (settings/model.SCORE_CAP; W2-4, 20 Oct 2026)",
+    "escalation_hours": "a constant in code now, 24 (settings/model.ESCALATION_HOURS; W2-4, 20 Oct 2026)",
+    "apollo_enrich_groups": "a constant in code now, Technology & Startups (settings/model.APOLLO_ENRICH_GROUPS; W2-4)",
+    "site_visit_domain": "a constant in code now, spill.chat (settings/model.SITE_VISIT_DOMAIN; W2-4, 20 Oct 2026)",
+    "site_visit_us_paths": "a constant in code now, /us (settings/model.SITE_VISIT_US_PATHS; W2-4, 20 Oct 2026)",
+    "site_visit_intent_paths": "a constant in code now (settings/model.SITE_VISIT_INTENT_PATHS; W2-4, 20 Oct 2026)",
 }
 
 
@@ -454,10 +511,9 @@ _GENERIC_KEYS = frozenset({GENERIC_OPENER_KEY, *GENERIC_OPENER_KEYS.values()})
 
 
 def _line_problems(value: str, tokens: Iterable[str]) -> list[str]:
-    """A General opener line (opener_focus_line, the generic lines): its tokens, one line, no funding or money.
+    """A General opener line (the generic lines): its tokens, one line, no funding or money.
 
-    Refusing money here is safe: the generic lines are new and the focus line has none, so the General tab in
-    force stays valid. The Signals tab's lines may still hold the old funding lines, so `copy check` and the
+    Refusing money here is safe: the generic lines are new, so the General tab in force stays valid. The Signals tab's lines may still hold the old funding lines, so `copy check` and the
     render-time check read those instead (copy_rules.money_violations), and a refusal never empties settings.
     """
     problems = opener_token_problems(value, tokens)
@@ -492,9 +548,13 @@ def _check_general_value(key: str, value: Any) -> None:
     kind = _GENERAL_TYPES[key]
     if kind in (int, float) and value < 0:
         raise ValueError("must not be negative")
-    if key == "control_share" and not 0 <= value <= 1:
-        raise ValueError("is a share: between 0 and 1, like 0.15")
-    if key in ("stop_rule_bounce_rate", "stop_rule_complaint_rate") and not 0 <= value <= 1:
+    if key == "explore_share" and not 0 <= value <= MAX_EXPLORE_SHARE:
+        raise ValueError(f"is a share: between 0 and {MAX_EXPLORE_SHARE:g}, like 0.15 for 15% of each day's picks "
+                         "drawn at random; 0 means no random arm")
+    if key == "hand_check_sample" and not HAND_CHECK_SAMPLE_MIN <= value <= HAND_CHECK_SAMPLE_MAX:
+        raise ValueError(f"is the number of companies in the weekly hand-check: {HAND_CHECK_SAMPLE_MIN} to "
+                         f"{HAND_CHECK_SAMPLE_MAX}, like 20")
+    if key == "stop_rule_bounce_rate" and not 0 <= value <= 1:
         raise ValueError("is a share: between 0 and 1, like 0.03 for 3%")
     if key == "opener_holdout_share" and not 0 <= value <= 1:
         raise ValueError("is a share: between 0 and 1, like 0.3 for 30% of accounts with no opener")
@@ -506,23 +566,10 @@ def _check_general_value(key: str, value: Any) -> None:
         problems = email1_subject_problems(value)
         if problems:
             raise ValueError("; ".join(problems))
-    if key == "opener_focus_line" and value:
-        problems = _line_problems(value, FOCUS_LINE_TOKENS)
-        if not problems and "{focus}" not in value.replace(" ", ""):
-            problems.append("must use {focus}, the phrase it exists for")
-        if problems:
-            raise ValueError("; ".join(problems))
     if key in _GENERIC_KEYS and value:
         problems = _line_problems(value, GENERIC_LINE_TOKENS)
         if problems:
             raise ValueError("; ".join(problems))
-    if key == "escalation_hours" and value < 1:
-        raise ValueError("must be at least 1")
-    # A second contact (enrol/second.py; Harry, 6 Oct 2026).
-    if key == "second_contact_min_employees" and value < 1:
-        raise ValueError("is a number of staff, like 50")
-    if key == "second_contact_delay_days" and value < 1:
-        raise ValueError("must be at least 1, so the two people's first emails never arrive the same day")
     if key == "claude_monthly_cap_usd" and value > CLAUDE_CAP_USD:
         raise ValueError(f"may not exceed ${CLAUDE_CAP_USD:.0f} a month (a guard against a typo: settings/validate.py)")
     if key == "escalation_email":
@@ -533,9 +580,9 @@ def _check_general_value(key: str, value: Any) -> None:
         raise ValueError(f"must be a Claude model id like claude-opus-5-5 or claude-sonnet-5-5, not {value!r}")
     if key == "email_format" and value not in EMAIL_FORMATS:
         raise ValueError(f"must be one of {', '.join(EMAIL_FORMATS)}")
-    if key == "clay_verification" and value not in CLAY_VERIFICATION_MODES:
-        raise ValueError(f"must be one of {', '.join(CLAY_VERIFICATION_MODES)} (required: every account goes "
-                         "through Clay; skip: verified on Apollo data and HubSpot)")
+    if key == "live_split" and value not in LIVE_SPLITS:
+        raise ValueError(f"must be one of {', '.join(LIVE_SPLITS)} (both: the opener holdout, the subject split and the "
+                         "running test, as before; or the one split that draws arms)")
     if key == "label_check" and value not in LABEL_CHECK_MODES:
         raise ValueError(f"must be one of {', '.join(LABEL_CHECK_MODES)} (required: the task model checks each new "
                          "company's industry label before it is verified; skip: the rules alone)")
@@ -551,18 +598,17 @@ def _check_general_value(key: str, value: Any) -> None:
         bad = [v for v in value if not _SLACK_USER.fullmatch(v)]
         if bad:
             raise ValueError(f"{', '.join(bad)} is not a Slack user id (they look like U01ABCDEF)")
-    # The website-visit signals (sources/site_visits.py; Harry, 5 Oct 2026).
-    if key == "site_visit_domain" and value and not _DOMAIN.fullmatch(value.strip().lower()):
-        raise ValueError(f"is the bare domain Apollo's tracker is on, like spill.chat (no https:// or path), not {value!r}")
-    if key in ("site_visit_us_paths", "site_visit_intent_paths"):
-        bad = [v for v in value if not v.startswith("/")]
-        if bad:
-            raise ValueError(f"{', '.join(bad)} is not a path on the site: each starts with /, like /us/pricing")
 
 
-def _general(rows: list[_Row]) -> General:
+def _general(rows: list[_Row], strict: bool = True, warnings: list[RowError] | None = None) -> General:
+    """The General tab. Unknown, renamed and retired keys are warnings (module docstring), added to `warnings`."""
     values: dict[str, Any] = {}
     where: dict[str, _Row] = {}
+
+    def warn(r: _Row, message: str) -> None:
+        if warnings is not None:
+            warnings.append(RowError("General", r.number, "key", message, r.label))
+
     for r in rows:
         key = r.text("key")
         if not key:
@@ -571,15 +617,19 @@ def _general(rows: list[_Row]) -> General:
             continue  # a note-only row
         if key in RENAMED_GENERAL:
             new, why = RENAMED_GENERAL[key]
-            r.fail("key", f"{key!r} is now {new!r}: {why}")
+            warn(r, f"{key!r} is now {new!r} ({why}): this row is not read; put its value on a {new} row")
             continue
         if key in RETIRED_GENERAL:
-            continue  # no longer used; the row can be deleted
+            warn(r, f"{key!r} is no longer used ({RETIRED_GENERAL[key]}): the row can be deleted")
+            continue
         if key not in _GENERAL_TYPES:
-            r.fail("key", f"unknown key {key!r}{hint(key, _GENERAL_TYPES)}")
+            warn(r, f"unknown key {key!r}{hint(key, _GENERAL_TYPES)}: this row is not read")
             continue
         if key in where:
-            r.fail("key", f"{key} is already on row {where[key].number}")
+            if strict:
+                r.fail("key", f"{key} is already on row {where[key].number}")
+            else:
+                warn(r, f"{key} is already on row {where[key].number}: this row is not read")
             continue
         where[key] = r
         kind = _GENERAL_TYPES[key]
@@ -603,17 +653,12 @@ def _general(rows: list[_Row]) -> General:
             rows[0].errors.append(RowError("General", HEADER_ROW, "value", f"{key}: {message}"))
 
     g = General(**values)
-    if g.standard_threshold > g.priority_threshold:
-        err("standard_threshold", f"must not be above priority_threshold ({g.priority_threshold})")
     if g.dev_channel.lstrip("#").lower() == g.alert_channel.lstrip("#").lower():
         err("dev_channel", "must differ from alert_channel: dry-run posts only to the dev channel (SPEC 0.3)")
     if g.live_sending and not g.approver_slack_ids:
         err("live_sending", "cannot be yes while approver_slack_ids is blank")
     if g.min_employees > g.max_employees:
         err("min_employees", f"must not be above max_employees ({g.max_employees})")
-    if g.clay_cross_check and not g.clay_accounts_function_id.strip():
-        err("clay_cross_check", "cannot be yes while clay_accounts_function_id is blank: build the \"US Outbound – "
-                                "Accounts\" function in Clay first (docs/pipeline.md), then paste its id")
     if g.email1_subject_share > 0 and not g.email1_subject.strip():
         err("email1_subject", f"cannot be blank while email1_subject_share is above 0 ({g.email1_subject_share:g}); "
                               "write a subject, or set the share to 0")
@@ -728,16 +773,15 @@ def _angles(rows: list[_Row]) -> list[tuple[Angle, int]]:
         if order is not None and order < 1:
             r.fail("order", "must be 1 or more")
         _unique(r, "order", order, orders, f"order {order}")
-        if active and not v["default_opener"]:
-            r.fail("default_opener", "is required")
-        if name == CONTROL_ANGLE and active is False:
-            r.fail("active", f"{CONTROL_ANGLE} must stay active: Control-tier accounts always get it")
+        if name == GENERAL_ANGLE and active is False:
+            r.fail("active", f"{GENERAL_ANGLE} must stay active: an account no other angle suits gets it")
         if r.ok:
             out.append((Angle(angle=name, order=order, argument=v["argument"], default_opener=v["default_opener"],
                               active=active, landing_page_override=v["landing_page_override"]), r.number))
-    if rows and CONTROL_ANGLE.casefold() not in names:
+    if rows and GENERAL_ANGLE.casefold() not in names:
         rows[0].errors.append(
-            RowError("Angles", HEADER_ROW, "angle", f"the {CONTROL_ANGLE} angle is missing; Control-tier accounts always get it")
+            RowError("Angles", HEADER_ROW, "angle",
+                     f"the {GENERAL_ANGLE} angle is missing; an account no other angle suits gets it")
         )
     return out
 
@@ -998,24 +1042,6 @@ def _focus(rows: list[_Row]) -> list[tuple[Focus, int]]:
     return out
 
 
-def _named_accounts(rows: list[_Row]) -> list[tuple[NamedAccount, int]]:
-    from us_outbound.clean.domains import is_personal_domain
-
-    out: list[tuple[NamedAccount, int]] = []
-    seen: dict[str, int] = {}
-    for r in rows:
-        v = r.fields()
-        domain = v["domain"]
-        if domain and is_personal_domain(domain):
-            r.fail("domain", f"{domain} is a personal email domain, not a company")
-        elif domain == SPILL_DOMAIN:
-            r.fail("domain", "spill.chat is Spill")
-        _unique(r, "domain", domain, seen, domain or "")
-        if r.ok:
-            out.append((NamedAccount(domain=domain, name=v["name"], note=v["note"]), r.number))
-    return out
-
-
 def _holdout_arms(a: str, b: str) -> str:
     """Why a holdout test's versions are not the two arms of one split, or ""."""
     col_a, col_b = HOLDOUT_ARMS.get(a.casefold()), HOLDOUT_ARMS.get(b.casefold())
@@ -1078,13 +1104,20 @@ def _variant(r: _Row, kind: str) -> tuple[int, str, str, str, str]:
     return email, change, texts[0], texts[1], find
 
 
-def _tests(rows: list[_Row]) -> list[tuple[Test, int]]:
+def _tests(rows: list[_Row], strict: bool = True) -> list[tuple[Test, int]]:
     """The Tests tab. kind (ab, the default, holdout or variant) and looks (Harry, 6 Oct 2026) are optional columns,
     and so are a variant test's email, change, text_a, text_b and find (Harry, 7 Oct 2026), and share_a, the share
-    of an ab or variant test's accounts version_a takes (Harry, 8 Oct 2026; 50% when blank)."""
+    of an ab or variant test's accounts version_a takes (Harry, 8 Oct 2026; 50% when blank).
+
+    strict=False (the version in force, read again: settings/sync.load_current) does not require the pre-registration
+    or the one running test (W3-4 r2): a row stored by the code before W3-4, started on or after REGISTRY_FROM without
+    them, must still be read, or every tab falls back and enrolment and the reply desk stop (spec.py: rows stored under
+    older code validate under newer code). Such a test draws no arms (Settings.drawn_test) and settings_sync says so
+    once a day (Settings.registration_gaps); the sheet's own check (strict) still refuses the row."""
     out: list[tuple[Test, int]] = []
     seen: dict[str, int] = {}
     running: int | None = None
+    running_rows = [r.number for r in rows if r.text("status").strip().lower() == "running"]
     for r in rows:
         test_id = r.parse("test_id", str)
         _unique(r, "test_id", test_id.casefold() if test_id else None, seen, f"test {test_id!r}")  # as load keys it
@@ -1125,10 +1158,35 @@ def _tests(rows: list[_Row]) -> list[tuple[Test, int]]:
             elif not SHARE_A_MIN <= share_a <= 1 - SHARE_A_MIN:
                 r.fail("share_a", f"must be between {SHARE_A_MIN:.0%} and {1 - SHARE_A_MIN:.0%}: the smaller arm "
                                   "decides when the test can be read")
+        # The pre-registration (W3-4, 21 Oct 2026; settings/model.PRE_REGISTRATION): a test started from REGISTRY_FROM
+        # runs only once its row names the metric, the outcomes definition, the test, alpha and the per-look rule, and
+        # only as the one test running. A test started before keeps the rules it started under.
+        registered = start is None or start >= REGISTRY_FROM
+        needed = is_running and registered and strict
+        metric_id = r.parse("metric_id", one_of(METRIC_IDS), required=needed, default="")
+        version = r.parse("definition_version", str, required=needed, default="")
+        method = r.parse("test", one_of(TEST_METHODS), required=needed, default="")
+        alpha = r.parse("alpha", _alpha, required=needed, default=None)
+        rule_name = r.parse("look_thresholds", one_of(LOOK_RULES), required=needed, default="")
+        interim = tuple(looks or ())  # the looks before the read_date, which is always the last
+        unfit = ""
+        if is_running and registered and rule_name == ONE_LOOK and interim:
+            unfit = "must be blank when look_thresholds is one_look: the test is read once, on its read_date"
+        elif is_running and registered and rule_name == OBRIEN_FLEMING and not interim:
+            unfit = ("needs at least one look before the read_date when look_thresholds is obrien_fleming; or set "
+                     "look_thresholds to one_look")
+        if unfit and strict:
+            r.fail("looks", unfit)
+        elif unfit:  # the version in force, read again: read with the default rule, and not pre-registered (no draws)
+            rule_name = ""
+        alone = needed and len(running_rows) > 1
+        if alone:
+            r.fail("status", f"only one test runs at a time from {REGISTRY_FROM:%d %b %Y} (rows "
+                             f"{', '.join(str(n) for n in running_rows)} say running): stop the others first")
         # SPEC 9: one copy test at a time, since it decides each account's copy; a variant test decides part of it,
-        # so it counts as one (Harry, 7 Oct 2026). A holdout assigns nothing, so it runs beside either.
+        # so it counts as one (Harry, 7 Oct 2026). A holdout assigns nothing, so it ran beside either (before 21 Oct).
         if is_running and kind in COPY_TEST_KINDS:
-            if running is not None:
+            if running is not None and not alone:
                 r.fail("status", f"only one copy test (ab or variant) runs at a time; row {running} is already "
                                  "running")
             else:
@@ -1138,8 +1196,18 @@ def _tests(rows: list[_Row]) -> list[tuple[Test, int]]:
                              status=status, start_date=start, read_date=read, decision_rule=rule,
                              result=r.text("result"), kind=kind, looks=looks, email=email, change=change,
                              text_a=text_a, text_b=text_b, find=find,
-                             share_a=share_a if share_a is not None else 0.5), r.number))
+                             share_a=share_a if share_a is not None else 0.5, metric_id=metric_id or "",
+                             definition_version=version or "", test=method or "", alpha=alpha,
+                             look_thresholds=rule_name or ""), r.number))
     return out
+
+
+def _alpha(text: str) -> float:
+    """A test's total two-sided alpha: above 0 and at most 0.5, like 0.10."""
+    value = parse_float(text)
+    if not 0 < value <= 0.5:
+        raise ValueError(f"is the test's total two-sided alpha, above 0 and at most 0.5, like 0.10, not {text!r}")
+    return value
 
 
 _VALIDATORS: dict[str, Callable[[list[_Row]], Any]] = {
@@ -1154,23 +1222,36 @@ _VALIDATORS: dict[str, Callable[[list[_Row]], Any]] = {
     "Overrides": _overrides,
     "Tests": _tests,
     "Focus": _focus,
-    "Named accounts": _named_accounts,
 }
 
 
-def _validate(tab: str, rows: Iterable[Mapping[str, Any]] | None) -> tuple[Any, list[RowError]]:
+def _validate(tab: str, rows: Iterable[Mapping[str, Any]] | None, *, strict: bool = True,
+              warnings: list[RowError] | None = None) -> tuple[Any, list[RowError]]:
     if tab not in _VALIDATORS:
         raise ValueError(f"unknown settings tab {tab!r}")
     errors: list[RowError] = []
     prepared = _prepare(tab, rows, errors)
     if prepared is None:
         return (General() if tab == "General" else []), errors
+    if tab == "General":
+        return _general(prepared, strict, warnings), errors
+    if tab == "Tests":
+        return _tests(prepared, strict), errors
     return _VALIDATORS[tab](prepared), errors
 
 
-def validate_tab(tab: str, rows: Iterable[Mapping[str, Any]] | None) -> tuple[Any, list[RowError]]:
+def general_warnings(rows: Iterable[Mapping[str, Any]] | None, *, strict: bool = True) -> list[RowError]:
+    """The General rows that are not read, and why: an unknown, renamed or retired key (and, with strict=False, a
+    duplicate). None of them rejects the tab (module docstring)."""
+    warnings: list[RowError] = []
+    _validate("General", rows, strict=strict, warnings=warnings)
+    return warnings
+
+
+def validate_tab(tab: str, rows: Iterable[Mapping[str, Any]] | None, *,
+                 strict: bool = True) -> tuple[Any, list[RowError]]:
     """One tab on its own: (General, errors) for General, else (tuple of the tab's rows, errors)."""
-    value, errors = _validate(tab, rows)
+    value, errors = _validate(tab, rows, strict=strict)
     if tab == "General":
         return value, errors
     return tuple(obj for obj, _ in value), errors
@@ -1184,13 +1265,15 @@ def _names(rows: Iterable[Mapping[str, Any]] | None, col: str) -> dict[str, str]
     return {n.casefold(): n for n in (_cell(r, col) for r in rows or ()) if n}
 
 
-def validate_all(tabs: Mapping[str, Iterable[Mapping[str, Any]] | None]) -> tuple[Settings | None, dict[str, list[RowError]]]:
-    """Every tab, then the references between them. Settings only when there are no errors at all."""
+def validate_all(tabs: Mapping[str, Iterable[Mapping[str, Any]] | None], *,
+                 strict: bool = True) -> tuple[Settings | None, dict[str, list[RowError]]]:
+    """Every tab, then the references between them. Settings only when there are no errors at all. strict: see the
+    module docstring (False when the version in force is read again)."""
     raw = {tab: (list(tabs[tab]) if tabs.get(tab) is not None else None) for tab in TABS}
     values: dict[str, Any] = {}
     errors: dict[str, list[RowError]] = {}
     for tab in TABS:
-        values[tab], errors[tab] = _validate(tab, raw[tab])
+        values[tab], errors[tab] = _validate(tab, raw[tab], strict=strict)
 
     # References are checked against every name on the referenced tab, valid row or not, so
     # one bad Angles row does not also fail the signals that name it.
@@ -1263,6 +1346,11 @@ def validate_all(tabs: Mapping[str, Iterable[Mapping[str, Any]] | None]) -> tupl
                 errors["Tests"].append(RowError("Tests", row, col, f"{version!r} is not a copy_version on the Copy tab", t.test_id))
             elif status != "approved":
                 errors["Tests"].append(RowError("Tests", row, col, f"a running test needs {version} approved", t.test_id))
+    # One randomised split draws arms (W3-4, 21 Oct 2026; design-final §5 L10). General live_split is not checked
+    # against the Tests tab here (W3-4 r1): the error would keep the Tests tab back, and General, with live_sending = no,
+    # could then be kept back with it. A test started from REGISTRY_FROM draws arms only while live_split names its
+    # split (Settings.drawn_test); settings_sync posts once a day while a running one does not (sync.split_mismatches),
+    # and `test start` refuses to start one under another split (learn/looks.start).
     values["Tests"] = tests
 
     # An Overrides industry names an Industries label and an industry_group a group, as written there (9 Oct 2026:
@@ -1299,19 +1387,6 @@ def validate_all(tabs: Mapping[str, Iterable[Mapping[str, Any]] | None]) -> tupl
         focus_rows.append((dataclasses.replace(f, industry_group=canonical), row))
     values["Focus"] = focus_rows
 
-    # General apollo_enrich_groups names industry groups on the Industries tab (sources/apollo_enrich.py).
-    general = values["General"]
-    enrich_row = next((i + FIRST_DATA_ROW for i, r in enumerate(raw["General"] or ())
-                       if _cell(r, "key") == "apollo_enrich_groups"), HEADER_ROW)
-    unknown = [g for g in general.apollo_enrich_groups if g.casefold() not in groups]
-    for g in unknown:
-        errors["General"].append(RowError("General", enrich_row, "value", f"apollo_enrich_groups: {g!r} is not an "
-                                          f"industry_group on the Industries tab{hint(g, groups.values())}",
-                                          "apollo_enrich_groups"))
-    if not unknown and general.apollo_enrich_groups:
-        values["General"] = dataclasses.replace(general, apollo_enrich_groups=tuple(
-            dict.fromkeys(groups[g.casefold()] for g in general.apollo_enrich_groups)))
-
     if any(errors.values()):
         return None, errors
     settings = Settings(
@@ -1321,7 +1396,7 @@ def validate_all(tabs: Mapping[str, Iterable[Mapping[str, Any]] | None]) -> tupl
             for field, tab in (
                 ("signals", "Signals"), ("angles", "Angles"), ("industries", "Industries"), ("states", "States"),
                 ("roles", "Roles"), ("copy", "Copy"), ("mailboxes", "Mailboxes"), ("overrides", "Overrides"),
-                ("tests", "Tests"), ("focus", "Focus"), ("named_accounts", "Named accounts"),
+                ("tests", "Tests"), ("focus", "Focus")
             )
         },
     )

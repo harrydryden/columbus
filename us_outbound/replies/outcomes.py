@@ -1,8 +1,9 @@
 """sync_outcomes (SPEC 6 events, 9, 12, 13): what Instantly did with our leads, into the events table.
 
-It runs every 15 minutes, beside poll_replies. SPEC 9 had it at 01:00 daily, but the kill rules
-and the send forecast (enrol/capacity.py) need today's sends, bounces and stops, and SPEC 13
-honors opt-outs the same day. Each run:
+It runs every 15 minutes inside the US Eastern send window (13:00 to 22:59 UK on weekdays) and hourly otherwise
+(W2-4, 20 Oct 2026; ops/schedule.py), beside poll_replies. SPEC 9 had it at 01:00 daily, but the kill rules and the
+send forecast (enrol/capacity.py) need today's sends, bounces and stops, and SPEC 13 honors opt-outs the same day:
+an unsubscribe click is read within the hour. Each run:
 
   * sent:         each campaign email a registry mailbox sent to one of our contacts (GET /emails,
                   email_type sent, one request series per mailbox). step is the email's place
@@ -12,13 +13,14 @@ honors opt-outs the same day. Each run:
                   is set from step 1 when enrol could not know it (Harry has two addresses).
                   A reply the reply desk sent is its own type, reply_sent (replies/desk.py): never
                   a step, and dropped here if Instantly lists it among the sent emails.
-  * replied:      each email one of our contacts, or anyone at the account's domain, sent to a
-                  registry mailbox, unclassified (reply_class NULL) for poll_replies to classify.
-                  The account becomes engaged. An email Instantly marks as an auto-reply is left to
-                  poll_replies: stop_on_auto_reply is off, so Instantly keeps that sequence going,
-                  and an away message does not engage anyone.
+  * replied:      not here (W2-4, 20 Oct 2026). poll_replies is the one reader of received mail: it records each
+                  reply's event before it classifies it, so a model or budget outage never loses one (RS §2 W2-4).
+                  Both jobs listed received mail on an endpoint limited to 20 requests a minute; this one no longer
+                  does, and the two-writer contract that kept their rows apart went with it.
   * bounced:      each lead in a US Outbound campaign whose status is bounced. The address also goes
-                  on suppression (reason bounce), so a later re-contact cannot use it.
+                  on suppression (reason bounce), before the event is written, so a later re-contact cannot use
+                  it. A run that recorded a bounce then runs the bounce kill rules (learn/kill_rules.after_bounce;
+                  W2-3): a mailbox over the limit is paused within the run, the hourly kill_rules the backstop.
   * unsubscribed: each lead whose status is unsubscribed, which is what a click on Instantly's own
                   unsubscribe link does (Harry, 1 Oct 2026: that link is the opt-out every email
                   carries). replies/optout.py records it everywhere SPEC 11 asks; it is a go-live
@@ -27,10 +29,9 @@ honors opt-outs the same day. Each run:
                   (SPEC 1.2). A click marks the lead itself, so the lead's status is enough: confirmed
                   live 6 Oct 2026 (the seed test). PHASE0-CONFIRM: that the List-Unsubscribe header does too.
 
-Event ids are the idempotency keys (SPEC 6): the Instantly email id for sent and replied rows,
+Event ids are the idempotency keys (SPEC 6): the Instantly email id for sent rows (and poll_replies' replied rows),
 "bounced:{lead id}" and "unsubscribed:lead:{lead id}" for lead statuses, so a re-run adds nothing.
-enrol/capacity.py reads these event names (STOP_EVENTS). A replied row written here carries only
-the columns this job owns, so it never clears a class poll_replies has already set.
+enrol/capacity.py reads these event names (STOP_EVENTS).
 
 What a run reads (it runs every 15 minutes, so each read is kept small):
   * emails from SYNC_OVERLAP (6 hours) before the last good run started; once a day (RECHECK_EVERY)
@@ -50,11 +51,11 @@ writes the database (SPEC 0.3), but nothing to Instantly or HubSpot.
 
 Then the account-level stop (replies/account_stop.py; Harry, 6 Oct 2026): at an account where someone
 replied, bounced, unsubscribed or complained, every other contact's lead is stopped too. That matters only
-for accounts with a second contact (enrol/second.py); with one contact per account it calls nothing. And
+for an account with more than one contact in flight; with one contact per account it calls nothing. And
 (Harry, 7 Oct 2026) a contact in flight whose address or domain has been suppressed since enrolment (a HubSpot
 opt-out from suppression_load, a customer domain) has their lead stopped, with everyone else's at the account.
 
-Directory, since() and mark_engaged() are shared with poll_replies.
+Directory, received_reason(), since() and mark_engaged() are shared with poll_replies.
 
 SPEC 9's other sync_outcomes duties are not here: the daily retention job deletes leads 31 days after
 their last step (ops/retention.py), and Apollo deletion notices, which Apollo offers no API for, are
@@ -169,15 +170,40 @@ def is_campaign_send(email: Mapping[str, Any], eaccount: str) -> bool:
     return not sender or sender == eaccount
 
 
+# Why an email listed as received is not a reply from outside Spill (received_reason). Each is counted in the
+# readers' summaries (W1-2, 19 Oct 2026; code-replies-crm M3): until then a dropped email left no trace, so a wrong
+# reading of one Instantly field (from_address_email filled from the eaccount, say) would look exactly like "no
+# replies yet".
+CAMPAIGN_SEND, MANUAL_SEND, NO_SENDER, FROM_SELF = "campaign_send", "manual_send", "no_sender", "from_self"
+REGISTRY_SENDER, SPILL_DOMAIN, SYSTEM_SENDER = "registry_sender", "spill_domain", "system_sender"
+DROP_REASONS = (CAMPAIGN_SEND, MANUAL_SEND, NO_SENDER, FROM_SELF, REGISTRY_SENDER, SPILL_DOMAIN, SYSTEM_SENDER)
+
+
+def received_reason(email: Mapping[str, Any], eaccount: str, registry: frozenset[str] = frozenset()) -> str | None:
+    """None for an email someone outside Spill sent to the mailbox; else why it is not one (DROP_REASONS)."""
+    ue = _ue_type(email)
+    if ue == UE_CAMPAIGN:
+        return CAMPAIGN_SEND
+    if ue == UE_MANUAL:
+        return MANUAL_SEND
+    sender = from_address(email)
+    if not sender:
+        return NO_SENDER
+    if sender == eaccount:
+        return FROM_SELF
+    if sender in registry:
+        return REGISTRY_SENDER
+    local, _, domain = sender.partition("@")
+    if is_spill_domain(domain):
+        return SPILL_DOMAIN
+    if local in SYSTEM_SENDERS:
+        return SYSTEM_SENDER
+    return None
+
+
 def is_received(email: Mapping[str, Any], eaccount: str, registry: frozenset[str] = frozenset()) -> bool:
     """An email someone outside Spill sent to the mailbox (not ours, not a system notice)."""
-    if _ue_type(email) in (UE_CAMPAIGN, UE_MANUAL):
-        return False
-    sender = from_address(email)
-    if not sender or sender == eaccount or sender in registry:
-        return False
-    local, _, domain = sender.partition("@")
-    return not is_spill_domain(domain) and local not in SYSTEM_SENDERS
+    return received_reason(email, eaccount, registry) is None
 
 
 # -- who an email or lead belongs to --------------------------------------------------------
@@ -414,34 +440,6 @@ def _record_sent(ctx: Context, d: Directory, emails: Iterable[Mapping[str, Any]]
     return sum(1 for r in new.values() if r["event_id"] not in known), set(by_contact)
 
 
-def _record_replies(ctx: Context, d: Directory, emails: Iterable[Mapping[str, Any]], dropped: Counter[str]) -> tuple[int, int]:
-    """Unclassified replied events for new replies; their accounts become engaged. (new, auto-replies left)"""
-    known = event_ids(ctx, REPLIED)
-    registry = ctx.guard.bounds.registry_addresses
-    rows: dict[str, dict] = {}
-    auto = 0
-    for e in emails:
-        eid, acct = str(e.get("id") or ""), _lower(e.get("eaccount"))
-        if not eid or eid in known or eid in rows or not is_received(e, acct, registry):
-            continue
-        if is_auto_reply(e):
-            auto += 1  # poll_replies decides: an away message engages nobody
-            continue
-        m = d.match_reply(e)
-        if m is None:
-            dropped["received: no contact or account of ours"] += 1
-            continue
-        rows[eid] = {"event_id": eid, "contact_id": m.contact["contact_id"], "account_id": m.contact.get("account_id"),
-                     "type": REPLIED, "mailbox": acct, "occurred_at": email_time(e) or ctx.now}
-    if rows:
-        sends = sent_events(ctx, {r["contact_id"] for r in rows.values()})
-        for r in rows.values():
-            r["step"] = step_before(sends.get(str(r["contact_id"]), []), utc(r["occurred_at"]))
-        ctx.store.upsert("events", list(rows.values()))  # only these columns: a class already set stays
-        mark_engaged(ctx, (r["account_id"] for r in rows.values()))
-    return len(rows), auto
-
-
 def _record_bounce(ctx: Context, contact: dict, lead: Mapping[str, Any], known: set[str]) -> bool:
     lead_id = str(lead.get("id") or "")
     event_id = f"{BOUNCED}:{lead_id}"
@@ -450,17 +448,24 @@ def _record_bounce(ctx: Context, contact: dict, lead: Mapping[str, Any], known: 
     sends = sent_events(ctx, [contact["contact_id"]]).get(str(contact["contact_id"]), [])
     last = sends[-1] if sends else {}
     at = utc(last.get("occurred_at")) or utc(lead.get("timestamp_last_contact")) or ctx.now
+    # The suppression first, then the event (W2-3): the bounced event is how a later run knows this lead is done, so
+    # it must never exist without the suppression. kill_rules no longer suppresses every bounced contact again each
+    # hour (its suppress_bounced went: code-learn-reporting B16), and a run that stopped between the two now
+    # suppresses again next time rather than never.
+    address = _lower(lead.get("email")) or _lower(contact.get("email"))
+    if address:
+        suppression.add(ctx.store, email=address, reason=BOUNCE_REASON, source=INSTANTLY_SOURCE, now=ctx.now)
+    if contact.get("email") and _lower(contact.get("email")) != address:
+        suppression.add(ctx.store, email=_lower(contact["email"]), reason=BOUNCE_REASON, source=INSTANTLY_SOURCE,
+                        now=ctx.now)
+    if not contact.get("suppressed"):
+        ctx.store.update("contacts", {"contact_id": contact["contact_id"]},
+                         {"suppressed": True, "suppressed_reason": BOUNCE_REASON})
     ctx.store.upsert("events", [{
         "event_id": event_id, "contact_id": contact["contact_id"], "account_id": contact.get("account_id"),
         "type": BOUNCED, "step": parse.integer(last.get("step")),
         "mailbox": last.get("mailbox") or contact.get("mailbox"), "occurred_at": at,
     }])
-    address = _lower(lead.get("email")) or _lower(contact.get("email"))
-    if address:
-        suppression.add(ctx.store, email=address, reason=BOUNCE_REASON, source=INSTANTLY_SOURCE, now=ctx.now)
-    if not contact.get("suppressed"):
-        ctx.store.update("contacts", {"contact_id": contact["contact_id"]},
-                         {"suppressed": True, "suppressed_reason": BOUNCE_REASON})
     known.add(event_id)
     return True
 
@@ -546,16 +551,22 @@ def run(ctx: Context) -> dict:
 
     sent_emails = inst.list_emails(registry, w.start, email_type="sent", until=w.end)
     sent, touched = _record_sent(ctx, d, sent_emails, set(campaigns), dropped)
-    received = inst.list_emails(registry, w.start, email_type="received", until=w.end)
-    replied, auto = _record_replies(ctx, d, received, dropped)
     if w.read_leads:
         _lead_outcomes(ctx, d, campaigns.values(), out, dropped)
     # Anyone's reply, bounce, unsubscribe or complaint stops every sequence at the account (Harry, 6 Oct 2026).
     from us_outbound.replies import account_stop
 
     out["account_stops"] = account_stop.sweep(ctx)
+    # A recorded bounce runs the bounce kill rules now (W2-3): a mailbox over the limit is paused in this run, not at
+    # the next hourly kill_rules, which stays the backstop.
+    if out["bounced"]:
+        from us_outbound.learn import kill_rules
 
-    out.update(sent=sent, contacts_with_new_sends=len(touched), replied=replied, auto_replies_left_to_poll_replies=auto,
-               unsubscribed=dict(out["unsubscribed"]), dropped=dict(dropped))
+        out["kill_rules"] = kill_rules.after_bounce(ctx)
+        if out["kill_rules"].get("error"):
+            out["kill_rule_errors"] = [out["kill_rules"]["error"]]
+
+    out.update(sent=sent, contacts_with_new_sends=len(touched), unsubscribed=dict(out["unsubscribed"]),
+               dropped=dict(dropped))
     log("sync_outcomes_done", run_id=ctx.run_id, **out)
     return out

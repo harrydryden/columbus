@@ -7,7 +7,7 @@ import pytest
 
 from us_outbound.settings.defaults import COLUMNS, US_STATES, default_tabs
 from us_outbound.settings.model import TABS, General, SendWindow
-from us_outbound.settings.validate import validate_all
+from us_outbound.settings.validate import RETIRED_GENERAL, validate_all
 
 
 @pytest.fixture(scope="module")
@@ -37,8 +37,12 @@ def test_defaults_are_fresh_copies(tabs):
 
 
 def test_general_has_every_model_key_once(tabs, settings):
+    """Every General field has one row, and no retired key has one, so `settings load` removes its row from the sheet
+    and never adds it back (control_share, W1-C; the tier thresholds, W2-2)."""
     keys = [r["key"] for r in tabs["General"]]
     assert sorted(keys) == sorted(f.name for f in dataclasses.fields(General))
+    assert not set(keys) & set(RETIRED_GENERAL) and "explore_share" in keys
+    assert {"control_share", "priority_threshold", "standard_threshold", "auto_thresholds"} <= set(RETIRED_GENERAL)
     assert len(keys) == len(set(keys))
     # Every value reads back as the model default: a key missing from the tab takes the same value.
     assert settings.general == General()
@@ -54,14 +58,16 @@ def test_general_spec_values(tabs, settings):
     assert raw["email_format"] == "html" and raw["booking_page"] == "https://www.spill.chat/us/book-demo"
     assert raw["site_url"] == "https://www.spill.chat/us" and raw["price_from"] == "195"
     notes = {r["key"]: r["note"] for r in tabs["General"]}
-    assert "calendar month" in notes["clay_monthly_credits"] and "0 means no Clay calls" in notes["clay_monthly_credits"]
     assert "Monday to Sunday" in notes["weekly_enrol_cap"] and "calendar month" in notes["apollo_monthly_credits"]
     g = settings.general
     assert g.live_sending is False
     assert g.send_window == SendWindow((0, 1, 2, 3, 4), time(9), time(16), "America/New_York")
     # Harry, 30 Sep 2026: a weekly enrolment target (SPEC's 30 a day is 150 a week), monthly credits.
-    assert (g.weekly_enrol_cap, g.control_share, g.priority_threshold, g.standard_threshold) == (150, 0.15, 50, 20)
-    assert (g.apollo_monthly_credits, g.clay_monthly_credits, g.apollo_floor, g.escalation_hours) == (2000, 2000.0, 5000, 24)
+    assert g.weekly_enrol_cap == 150
+    # The W1-C keys: the random arm at Harry's 0.15 (D7, from W2-2), the hand-check's 10, the early warning alerts only.
+    assert (raw["explore_share"], raw["hand_check_sample"], raw["early_warning_pause"]) == ("0.15", "10", "no")
+    assert (g.explore_share, g.hand_check_sample, g.early_warning_pause) == (0.15, 10, False)
+    assert (g.apollo_monthly_credits, g.apollo_floor) == (2000, 5000)
     assert g.claude_monthly_cap_usd == 10.0
 
 
@@ -71,20 +77,22 @@ def test_the_general_notes_harry_reads(tabs):
     assert notes["live_sending"].startswith("The master switch and Harry's sign-off. no: nothing reaches a prospect")
     assert "02:00 and 11:30 UK on weekdays), or now with `us-outbound sync`" in notes["live_sending"]
     assert notes["live_sending"].endswith("To stop sending that is already under way, run `us-outbound stop --live`.")
-    assert notes["auto_send"].endswith("Nothing goes out while live_sending is no.")
     assert "Harry: U098X453UAG" in notes["approver_slack_ids"] and "slack_id (Mailboxes tab)" in notes["approver_slack_ids"]
     assert notes["optout_tested"].endswith("Live sending waits for it.")
-    for key in ("hubspot_pipeline_id", "hubspot_deal_stage_id", "hubspot_owner_id"):
-        assert notes[key].endswith("From `us-outbound hubspot ids`. Without it, a positive reply creates no HubSpot deal.")
+    for key in ("hubspot_pipeline_id", "hubspot_deal_stage_id", "hubspot_owner_id"):  # `hubspot ids` went in W2-4
+        assert notes[key].endswith("Without it, a positive reply creates no HubSpot deal.")
+        assert "HubSpot" in notes[key].removesuffix("Without it, a positive reply creates no HubSpot deal.")
+        assert "us-outbound" not in notes[key]
     assert notes["booking_link"] == "Harry's HubSpot meetings link: the signature's 'Book a call here', and reply drafts."
     assert notes["booking_page"] == "The demo page each email's call to action links to."
     assert notes["apollo_floor"].startswith("Safety floor: no job spends Apollo credits")
     assert notes["opener_generic"].endswith("Tokens: {company}, {city}. Blank: no opener.")
-    # Keys no code reads stay on the sheet (removing one would make a sheet that has it unusable).
+    # Keys no code read went with W2-1 (20 Oct 2026): retired, so a sheet that still has their rows only warns
+    # (RETIRED_GENERAL), and `settings load` takes the rows off the sheet.
     for key in ("recontact_person_months", "recontact_account_months", "hubspot_deal_stage", "clay_credits_per_account",
-                "apollo_credits_per_account"):
-        assert notes[key] == "Not used yet; leave as it is.", key
-    assert not [k for k, n in notes.items() if k in ("live_sending", "auto_send", "approver_slack_ids", "optout_tested")
+                "apollo_credits_per_account", "auto_send", "second_contact", "clay_verification", "opener_focus"):
+        assert key not in notes and key in RETIRED_GENERAL, key
+    assert not [k for k, n in notes.items() if k in ("live_sending", "approver_slack_ids", "optout_tested")
                 and "SPEC" in n]
     # Harry, 7 Oct 2026: the label check (labels.py), required from the start.
     row = next(r for r in tabs["General"] if r["key"] == "label_check")
@@ -110,13 +118,12 @@ DEFAULT_SIGNALS = [
     ("Hiring and growth", 15, None, "Score", "Growing team", 90, True),
     ("Visited the US site", 35, None, "Score", "", 30, True),  # was +20
     ("Viewed US pricing or demo page", 25, None, "Score", "", 30, True),  # was +15
-    ("Nonprofit budget", 15, None, "Score", "", 400, True),
-    ("Nonprofit fiscal year ahead", 20, None, "Score", "", 1, True),
-    ("Q4 plan-year window", 10, None, "Score", "", 1, False),  # inactive
+    # W2-2: Nonprofit budget and Nonprofit fiscal year ahead (irs_bmf) went; no source writes their facts.
+    ("Q4 plan-year window", 10, None, "Score", "", 1, False),  # inactive, and never matches (no calendar facts)
     ("Team of 10–49", 15, None, "Score", "", 365, True),  # new: the size signal
     ("Team of 50–99", 10, None, "Score", "", 365, True),
     ("Layoffs", 0, None, "Suppress", "", 90, True),
-    ("Named by Harry", 30, None, "Score", "", 365, True),  # build addition (Harry, 30 Sep 2026)
+    # W2-2: Named by Harry went with the Named accounts tab (W2-1); nothing writes the named fact.
     # Harry, 5 Oct 2026: the lookalike graded by lookalike_fit; the old row stays, off, so a load switches it off.
     ("Close match to Spill's customers", 10, None, "Score", "", 120, True),
     ("Some match to Spill's customers", 3, None, "Score", "", 120, True),

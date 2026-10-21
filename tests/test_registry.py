@@ -455,7 +455,7 @@ def test_mailbox_health_dry_run_proposes_only():
 
 
 def go_live(ctx, at=NOW - timedelta(days=3), *, stop_after: bool = False) -> None:
-    """`us-outbound start --live` ran ok (and, if stop_after, `stop` after it): ops/heartbeat.py's rows."""
+    """`us-outbound start --live` ran ok (and, if stop_after, `stop` after it): ops/health.py's rows."""
     rows = [{"run_id": "start-1", "job": "operator_start", "status": "ok", "dry_run": False, "started_at": at}]
     if stop_after:
         rows.append({"run_id": "stop-1", "job": "operator_stop", "status": "ok", "dry_run": True,
@@ -617,6 +617,26 @@ def test_mailbox_health_sets_instantly_limits_to_the_sheet_caps():
     [post] = [r.json for r in t.requests if r.url.endswith("chat.postMessage")]
     assert ("• Set hannah@meetspill.org's daily limit in Instantly from 50 to 30 (its `daily_cap` on the Mailboxes tab, "
             "or the ramp's when lower)") in post["text"]
+
+
+def test_a_disconnected_mailbox_is_held_with_no_capacity_and_reported():
+    """code-learn-reporting B12: an OAuth grant expires on Sam's only mailbox (Instantly status -1, connection_error).
+    mailbox_health reports it to fix, and enrol/capacity.py, reading its summary, gives Sam no room (held, 0 free)
+    before the hourly kill rule pauses it; Hannah, connected, keeps hers."""
+    from us_outbound.enrol import capacity
+
+    accounts = {m.address: warm_account(m.address) for m in MAILBOXES}
+    accounts[SAM]["status"] = -1
+    ctx, t, inst, sheets = setup(accounts=accounts)
+    out = reg.mailbox_health(ctx)
+    assert out["failing"] == {SAM: "Instantly reports the account as connection_error"}
+    assert "failing" in out["post_reasons"]
+    [post] = [r.json for r in t.requests if r.url.endswith("chat.postMessage")]
+    assert f"• {SAM}: Instantly reports the account as connection_error, so it sends nothing" in post["text"]
+    ctx.store.insert("heartbeats", [{"run_id": "mh-1", "job": "mailbox_health", "status": "ok", "started_at": NOW,
+                                     "detail": out}])
+    room = capacity.sending_capacity(ctx.store, SETTINGS, ctx.now_et().date())
+    assert "Sam Jackson" not in room and room["Hannah Spalding"].free > 0
 
 
 def test_mailbox_health_in_dry_run_only_reports_a_limit_it_would_set():

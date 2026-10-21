@@ -7,7 +7,6 @@ signals are context, never the line, and no opener mentions funding or money. Fa
 from __future__ import annotations
 
 import dataclasses
-import json
 import re
 from datetime import UTC, datetime, timedelta
 from itertools import count
@@ -52,13 +51,13 @@ def fact(source, name, value, days=2, *, quote="", account_id="acc-1") -> dict:
 def acct(**kw) -> dict:
     return {"account_id": "acc-1", "domain": "brightline.com", "clean_name": "Brightline", "hq_city": "Austin",
             "hq_state": "TX", "industry": "Fintech", "industry_group": "Technology & Startups", "employees": 40,
-            "size_band": "20-49", "tier": "Standard", **kw}
+            "size_band": "20-49", "tier": "Queue", **kw}
 
 
 def opener(facts, role="People leader", settings=S, person=None, **kw) -> openers.Opener:
-    """The account's opener; its angle as scoring sets it for its tier (Standard, unless given)."""
+    """The account's opener; its angle as scoring sets it (unless given)."""
     a = acct(**kw)
-    a.setdefault("angle", choose_angle(a["tier"], score_account(a, facts, settings, TODAY).matches, settings).angle)
+    a.setdefault("angle", choose_angle(score_account(a, facts, settings, TODAY).matches, settings))
     return openers.choose(a, person or {"contact_id": "con-1", "role": role}, facts, settings, TODAY, check=check)
 
 
@@ -299,7 +298,7 @@ def test_the_default_lines_cover_every_signal_that_can_fire_and_pass_the_rules()
     banned = ("therap", "licensed", "unlimited", "%", "noticed you're", "!")
     lines = openers.sample_lines(DEFAULT)
     assert {(sig, col) for sig, col, _, _ in lines if sig == openers.GENERAL_TAB} == {
-        ("General", k) for k in (*GENERIC_KEY.values(), "opener_focus_line")}  # the General tab's lines too
+        ("General", k) for k in GENERIC_KEY.values()}  # the General tab's lines too (opener_focus_line went: W2-1)
     for _, _, line, filled in lines:
         assert not any(b in line.lower() for b in banned), line
         assert filled is None or filled.count(".") == 1 and filled.endswith("."), filled  # one sentence
@@ -394,9 +393,10 @@ def test_no_signal_line_and_no_plain_opener_means_the_generic_line_and_with_none
     assert (op.text, op.arm, op.source) == ("", openers.NONE, "")
 
 
-def test_the_general_angle_and_control_get_the_generic_line_never_a_signal_line():
-    # A Control account is signal-blind (SPEC 5): General angle, so the generic line, even with funding facts.
-    op = opener(FUNDING, FOUNDER, tier="Control", angle="General")
+def test_the_general_angle_gets_the_generic_line_never_a_signal_line():
+    # The General angle has no signal line: the generic line, even with funding facts. (The Control tier, which always
+    # had it, went with W2-2: an account now gets the angle its signals suggest.)
+    op = opener(FUNDING, FOUNDER, angle="General")
     assert (op.text, op.arm, op.source) == (GENERIC[FOUNDER], openers.OPENER, "opener_generic_founder")
     assert opener([], FOUNDER).source == "opener_generic_founder"  # no signal at all
 
@@ -797,82 +797,18 @@ def test_a_held_out_account_gets_none_and_records_the_line_it_would_have_had():
         "", openers.HOLDOUT, "Funding in the last 6 months / opener_founder", FUNDING_LINES[FOUNDER])
 
 
-# -- the "what they do" phrase (General opener_focus), then the generic line ----------------------------------------
-
-ABOUT = [fact("apollo_org", "keywords", ["payroll software", "restaurants", "hospitality", "saas"]),
-         fact("apollo_org", "description", "Brightline makes payroll software for restaurants and bars.")]
-
-
-def focus_ctx(phrase="payroll software for restaurants", live=True, **general):
-    s = defaults(opener_holdout_share=0.0, **general)
-    sdk = FakeSDK(text=json.dumps({"phrase": phrase}), input_tokens=400, output_tokens=60)
-    ctx = make_context(s, now=NOW, claude_sdk=sdk, live=live)
-    return ctx, sdk
+# -- the "what they do" phrase: the label check's validation (labels.py) -------------------------------------------
+# The opener_focus line that also used it was removed while off (W2-1, 20 Oct 2026): an account with no signal line
+# gets the generic line, and no opener ever asks the task model.
 
 
-def test_a_dry_run_asks_no_model_and_says_what_a_live_one_would_spend():
-    ctx, sdk = focus_ctx(live=False, opener_focus=True)
-    op = openers.for_account(ctx, acct(angle="General"), {"role": FOUNDER}, ABOUT)
-    assert (op.text, op.source) == (GENERIC[FOUNDER], "opener_generic_founder")  # no phrase: the generic line
+def test_an_account_with_no_signal_line_gets_the_generic_line_and_no_model_is_asked():
+    ctx = make_context(defaults(opener_holdout_share=0.0), now=NOW, claude_sdk=(sdk := FakeSDK(text="{}")), live=True)
+    about = [fact("apollo_org", "keywords", ["payroll software", "restaurants"]),
+             fact("apollo_org", "description", "Brightline makes payroll software for restaurants and bars.")]
+    op = openers.for_account(ctx, acct(angle="General"), {"role": FOUNDER}, about)
+    assert (op.text, op.source) == (GENERIC[FOUNDER], "opener_generic_founder")
     assert sdk.calls == [] and ctx.store.select("credit_ledger") == []
-    [note] = op.notes
-    assert note.startswith("opener_focus: dry-run: not asked; a live run asks claude-sonnet-5-5, at most $0.00")
-
-
-def test_the_focus_line_is_off_by_default_and_costs_nothing():
-    ctx, sdk = focus_ctx()
-    assert DEFAULT.general.opener_focus is False
-    op = openers.for_account(ctx, acct(angle="General"), {"role": FOUNDER}, ABOUT)
-    assert op.source == "opener_generic_founder" and sdk.calls == []
-
-
-def test_the_focus_line_with_the_task_model_is_asked_once_and_logs_its_spend():
-    ctx, sdk = focus_ctx(opener_focus=True)
-    op = openers.for_account(ctx, acct(angle="General"), {"role": FOUNDER}, ABOUT)
-    assert (op.text, op.arm, op.source) == ("I came across Brightline and its work on payroll software for restaurants.",
-                                            openers.OPENER, openers.FOCUS_SOURCE_NAME)
-    [call] = sdk.calls
-    assert call["model"] == "claude-sonnet-5-5" and call["max_tokens"] == openers.FOCUS_MAX_TOKENS
-    assert call["output_config"]["effort"] == "low"
-    assert "<keywords>\npayroll software, restaurants" in call["messages"][0]["content"]
-    [spend] = ctx.store.select("credit_ledger", {"system": "claude"})
-    assert spend["job"] == "opener_focus" and 0 < spend["usd"] < 0.005  # a fraction of a cent an account
-    [stored] = ctx.store.select("signal_events", {"source": openers.FOCUS_SOURCE})
-    assert stored["value"]["phrase"] == "payroll software for restaurants"
-    # The stored phrase is used next time: no second call.
-    again = openers.for_account(ctx, acct(angle="General"), {"role": FOUNDER}, [*ABOUT, stored])
-    assert again.text == op.text and len(sdk.calls) == 1
-    # A firing signal never uses it; nor does a held-out account, which costs no call.
-    assert openers.for_account(ctx, acct(angle="Growing team"), {"role": FOUNDER}, [*ABOUT, *FUNDING]).source.startswith("Funding")
-    ctx.settings = defaults(opener_focus=True, opener_holdout_share=1.0)
-    held = openers.for_account(ctx, acct(account_id="acc-9", angle="General"), {"role": FOUNDER}, ABOUT)
-    assert (held.arm, held.source) == (openers.HOLDOUT, openers.FOCUS_SOURCE_NAME) and len(sdk.calls) == 1
-
-
-def test_the_monthly_cap_refuses_the_call_and_the_account_gets_the_generic_line():
-    ctx, sdk = focus_ctx(opener_focus=True)
-    ctx.store.insert("credit_ledger", [{"entry_id": "e1", "system": "claude", "job": "copy_draft", "usd": 9.99,
-                                        "credits": 0.0, "occurred_at": NOW}])
-    op = openers.for_account(ctx, acct(angle="General"), {"role": FOUNDER}, ABOUT)
-    assert (op.text, op.source) == (GENERIC[FOUNDER], "opener_generic_founder") and sdk.calls == []
-    assert any("monthly Claude cap" in n for n in op.notes)
-    assert ctx.store.select("signal_events", {"source": openers.FOCUS_SOURCE}) == []  # asked again next time
-
-
-def test_a_phrase_that_fails_validation_is_stored_as_refused_and_never_used():
-    ctx, sdk = focus_ctx("the leading payroll platform", opener_focus=True)
-    op = openers.for_account(ctx, acct(angle="General"), {"role": FOUNDER}, ABOUT)
-    assert op.source == "opener_generic_founder" and any("makes a claim (leading)" in n for n in op.notes)
-    [stored] = ctx.store.select("signal_events", {"source": openers.FOCUS_SOURCE})
-    assert stored["value"]["phrase"] == "" and stored["value"]["answer"] == "the leading payroll platform"
-    openers.for_account(ctx, acct(angle="General"), {"role": FOUNDER}, [*ABOUT, stored])
-    assert len(sdk.calls) == 1  # not asked again while the refusal is fresh
-
-
-def test_no_keywords_or_description_means_no_call():
-    ctx, sdk = focus_ctx(opener_focus=True)
-    op = openers.for_account(ctx, acct(angle="General"), {"role": FOUNDER}, [])
-    assert op.source == "opener_generic_founder" and sdk.calls == []
 
 
 @pytest.mark.parametrize("raw, why", [
@@ -961,13 +897,10 @@ def test_the_general_keys():
         return validate_tab("General", rows)
 
     g, errs = general("opener_holdout_share", "0.3")
-    assert errs == [] and (g.opener_holdout_share, g.opener_focus) == (0.3, False)
-    assert g.opener_focus_line == "I came across {company} and its work on {focus}."
+    assert errs == [] and g.opener_holdout_share == 0.3
     assert "is a share" in str(general("opener_holdout_share", "1.5")[1][0])
-    assert "did you mean {focus}?" in str(general("opener_focus_line", "I saw {company} works on {foc}.")[1][0])
-    assert "must use {focus}" in str(general("opener_focus_line", "I came across {company}.")[1][0])
-    assert "funding or money" in str(general("opener_focus_line", "I saw {company} raised a round for {focus}.")[1][0])
-    assert general("opener_focus", "yes")[0].opener_focus is True
+    # opener_focus and opener_focus_line are retired (W2-1): not General fields, and no build row.
+    assert not hasattr(g, "opener_focus") and not hasattr(g, "opener_focus_line")
 
 
 # -- the copy desk: preview with a real line, the sheet check -----------------------------------------------------------
@@ -1039,7 +972,7 @@ def test_enrol_fills_the_opener_for_the_contact_and_records_the_arm():
     s = dataclasses.replace(make_settings(live_sending=True), signals=signals)
     # acc-1 gets its signal's line; acc-2 has no signal, so the generic line; acc-3 is in the 30% holdout by
     # its hash, so its email 1 has none.
-    accounts = [acct(account_id=a, domain=f"{a}.com", clean_name=f"Bright {a[-1]}", tier="Standard", score=30,
+    accounts = [acct(account_id=a, domain=f"{a}.com", clean_name=f"Bright {a[-1]}", tier="Queue", score=30,
                      angle="Growing team" if a != "acc-2" else "General", status="verified",
                      industry="Advertising agencies", industry_group="Marketing & Creative Agencies")
                 for a in ("acc-1", "acc-2", "acc-3")]

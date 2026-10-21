@@ -3,15 +3,11 @@
 The workspace's plan holds only so many leads. When /leads/add leaves a lead out because the plan is full
 (clients/instantly.plan_full: remaining_in_plan 0, or leads left out with a status naming the limit; plan_full_error:
 the whole add refused for it), the lead was not refused: it is not on Instantly's blocklist and in no other
-campaign. Until 7 Oct 2026 enrol and a send approval's ✅ treated every left-out lead as refused and suppressed its
-contact for good (enrol.mark_not_added), so a full plan would have suppressed every contact enrol tried. Now:
-  * enrol (auto_send = yes) skips each lead left out with the reason SKIP ("Instantly plan limit"), keeps its
-    contact and account as they are (verified, not suppressed), and adds no more leads that run, so the next run
-    tries them again;
-  * a send approval's ✅ holds the card (approvals._hold, the way a stop or a blackout holds it): it stays open,
-    its ✅ stays valid and each poll_approvals run tries again until there is room or the card expires; the rest
-    of that run's approvals are held without an add;
-  * either posts the plan-full alert (full_text) to the alert channel with the approvers mentioned, once a UK day (notify.post_once).
+campaign. Until 7 Oct 2026 enrol treated every left-out lead as refused and suppressed its contact for good
+(enrol.mark_not_added), so a full plan would have suppressed every contact enrol tried. Now:
+  * enrol skips each lead left out with the reason SKIP ("Instantly plan limit"), keeps its contact and account as
+    they are (verified, not suppressed), and adds no more leads that run, so the next run tries them again;
+  * it posts the plan-full alert (full_text) to the alert channel with the approvers mentioned, once a UK day (notify.post_once).
 And after any add that reports remaining_in_plan, a warning once an ISO week when the room left is under
 LOW_WEEKS weeks of weekly_enrol_cap, so the plan is raised before it fills.
 """
@@ -26,9 +22,8 @@ from us_outbound.clients import instantly
 from us_outbound.context import Context
 from us_outbound.logs import log
 
-SKIP = "Instantly plan limit"  # the skip reason (enrol) and the hold (a send approval)
+SKIP = "Instantly plan limit"  # enrol's skip reason
 KEPT = "Instantly's plan has no room for new leads: the contact is kept and is added when there is room"
-HOLD = "Instantly's plan has no room for new leads (upgrade the plan, or delete leads that finished their sequence)"
 LOW_WEEKS = 2  # warn when the plan's room is under this many weeks of weekly_enrol_cap
 MAKE_ROOM = "upgrade the plan in Instantly, or delete leads there that have finished all their emails"
 
@@ -46,8 +41,7 @@ def full_text() -> str:
         ["Instantly's plan holds only so many people (leads) at once, and it has no room left.",
          "People already in the campaign still get their follow-ups. The new ones are kept, not dropped, and wait "
          "for room."],
-        do=f"Make room: {MAKE_ROOM}. Nothing else is needed: {say.job_name('enrol')} and the approved send cards "
-           "try again by themselves.",
+        do=f"Make room: {MAKE_ROOM}. Nothing else is needed: {say.job_name('enrol')} tries again by itself.",
     )
 
 

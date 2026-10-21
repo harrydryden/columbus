@@ -58,12 +58,13 @@ def test_set_refuses_every_sign_off_key_before_the_sheet_is_read(key):
 
 
 def test_set_names_every_sign_off_key_it_refuses_and_other_keys_still_set():
-    with pytest.raises(ValueError, match="--set cannot change live_sending, auto_send: they are"):
-        loader.check_sets({"auto_send": "yes", "live_sending": "yes", "weekly_enrol_cap": "100"})
-    assert set(loader.SIGN_OFF) == {"live_sending", "auto_send", "optout_tested", "approver_slack_ids"}
+    with pytest.raises(ValueError, match="--set cannot change live_sending, optout_tested: they are"):
+        loader.check_sets({"optout_tested": "yes", "live_sending": "yes", "weekly_enrol_cap": "100"})
+    # auto_send left the sign-off keys with the send approvals (W2-1): it is retired, not a switch.
+    assert set(loader.SIGN_OFF) == {"live_sending", "optout_tested", "approver_slack_ids"}
     tabs = default_tabs()
-    plan = loader.plan_general(tabs["General"], default_tabs()["General"], {"clay_verification": "required"})
-    assert general_row({"General": plan.rows}, "clay_verification")["value"] == "required"
+    plan = loader.plan_general(tabs["General"], default_tabs()["General"], {"label_check": "skip"})
+    assert general_row({"General": plan.rows}, "label_check")["value"] == "skip"
 
 
 def test_the_cli_refuses_it_with_the_message(capsys):
@@ -81,7 +82,7 @@ def test_the_cli_refuses_it_with_the_message(capsys):
 def stale_sheet():
     """Harry's sheet: his values, and notes from an older build on two keys; a note-only row."""
     sheet = default_tabs()
-    general_row(sheet, "auto_send").update(value="yes", note="an old note")
+    general_row(sheet, "label_check").update(value="skip", note="an old note")
     general_row(sheet, "weekly_enrol_cap").update(value="90", note="")
     sheet["General"].append({"key": "", "value": "", "note": "Harry's own line"})
     return sheet
@@ -91,7 +92,7 @@ def test_a_plain_load_never_refreshes_a_note_of_a_key_the_sheet_has():
     ctx = world(stale_sheet(), live=True)
     out = loader.load(ctx, ["General"])
     written = {"General": ctx.clients.sheets.written["General"]}
-    assert general_row(written, "auto_send")["note"] == "an old note"
+    assert general_row(written, "label_check")["note"] == "an old note"
     assert general_row(written, "weekly_enrol_cap")["note"] == ""
     assert not any("note refreshed" in u for u in out["tabs"][0]["updated_names"])
 
@@ -102,12 +103,12 @@ def test_take_note_refreshes_the_notes_from_the_build_and_never_a_value():
     out = loader.load(ctx, ["General"], take=["note"])
     rows = ctx.clients.sheets.written["General"]
     written = {"General": rows}
-    for key in ("auto_send", "weekly_enrol_cap"):
+    for key in ("label_check", "weekly_enrol_cap"):
         assert general_row(written, key)["note"] == build[key]["note"]
-    assert general_row(written, "auto_send")["value"] == "yes" and general_row(written, "weekly_enrol_cap")["value"] == "90"
+    assert general_row(written, "label_check")["value"] == "skip" and general_row(written, "weekly_enrol_cap")["value"] == "90"
     assert {"key": "", "value": "", "note": "Harry's own line"} in rows  # a note-only row stays as it is
     summary = out["tabs"][0]
-    assert {"auto_send: note refreshed", "weekly_enrol_cap: note refreshed"} <= set(summary["updated_names"])
+    assert {"label_check: note refreshed", "weekly_enrol_cap: note refreshed"} <= set(summary["updated_names"])
     assert summary["rows_after"] == summary["rows_before"]
 
 
@@ -116,7 +117,7 @@ def test_take_note_needs_the_general_tab_and_a_dry_run_says_what_would_change():
     with pytest.raises(ValueError, match="--take names a column the loaded tabs do not keep: note"):
         loader.load(ctx, ["Industries"], take=["note"])
     out = loader.load(ctx, ["General"], take=["note"])
-    assert out["dry_run"] is True and "auto_send: note refreshed" in out["tabs"][0]["updated_names"]
+    assert out["dry_run"] is True and "label_check: note refreshed" in out["tabs"][0]["updated_names"]
     assert ctx.guard.bounds.settings_sheet_id == TEST_SHEET_ID
 
 

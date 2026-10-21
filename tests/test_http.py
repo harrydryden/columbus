@@ -6,7 +6,6 @@ import pytest
 import requests
 
 from us_outbound.clients.apollo import Apollo
-from us_outbound.clients.clay import Clay
 from us_outbound.clients.guard import Boundaries, Guard, Op
 from us_outbound.clients.http import (
     ApiError,
@@ -157,7 +156,7 @@ def test_which_requests_count_as_idempotent():
     assert is_idempotent("POST", Op("company.search"))  # a read-only search POST
     assert is_idempotent("PATCH", Op("company.update", write=True))
     assert is_idempotent("GET", Op("lead.get"))
-    assert not is_idempotent("POST", Op("function.run"), Clay.paid_reads)
+    assert not is_idempotent("POST", Op("organizations.search"), Apollo.paid_reads)
     assert not is_idempotent("POST", Op("people.bulk_match"), Apollo.paid_reads)
     assert is_idempotent("POST", Op("people.search"), Apollo.paid_reads)  # free
 
@@ -187,7 +186,8 @@ def test_a_public_get_follows_redirects_and_head_never_does():
     t, s = transport(FakeResponse(200), FakeResponse(200))
     public = Public(Guard(bounds=Boundaries()), t)
     public.get("https://boards-api.greenhouse.io/v1/boards/acme/jobs")
-    public.resolve_redirect("https://acme.com")
+    public.request("HEAD", "https://boards-api.greenhouse.io/v1/boards/acme/jobs",
+                   Op("get", target="boards-api.greenhouse.io"), raw=True)
     assert [c["allow_redirects"] for c in s.calls] == [True, False]
 
 

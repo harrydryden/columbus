@@ -15,7 +15,6 @@ from tests.test_client_claude import FakeSDK
 from us_outbound import labels
 from us_outbound.clients.claude import BudgetExceeded
 from us_outbound.context import Secrets
-from us_outbound.learn.daily_post import period
 from us_outbound.settings.defaults import default_tabs
 from us_outbound.settings.model import Override
 from us_outbound.settings.validate import validate_all
@@ -310,13 +309,39 @@ def test_apply_writes_the_changed_columns_and_one_fact_per_new_decision():
     # The same decision again, from the stored verdict: nothing to write.
     again = labels.apply(ctx, row, d, v, rules=ind("Adtech & martech"), stored=fact["value"])
     assert again == {} and len(ctx.store.select("signal_events", {"source": "label_check"})) == 1
-    # A disqualification excludes the company, as `us-outbound relabel` does.
+    # A disqualification excludes the company, as `us-outbound relabel` does, with its code (W1-4): a public body is
+    # left out for good, so status disqualified and status_reason public_body, the code leading tier_reason.
     out = labels.decide(ind("Fintech"), verdict("none", "high", "public_body"), DEFAULT)
     labels.apply(ctx, row, out, verdict("none", "high", "public_body"), stored=fact["value"])
     row = ctx.store.get("accounts", account_id="a1")
-    assert (row["status"], row["tier"], row["tier_reason"]) == (
-        "disqualified", "Excluded", "a public body, never prospected (the label check)")
+    assert (row["status"], row["tier"], row["status_reason"], row["tier_reason"]) == (
+        "disqualified", "Excluded", "public_body", "public_body: a public body, never prospected (the label check)")
     assert len(ctx.store.select("signal_events", {"source": "label_check"})) == 2
+
+
+def test_an_industry_switched_off_parks_the_company_and_every_other_disqualification_has_its_code():
+    """W1-4 (code-verify-labels B2; ~50 companies on 13 Oct): a company left out because its industry is switched off
+    is parked, not disqualified, so it can come back when the industry is switched on. The code is outside Decision
+    equality and as_dict, so the stored decisions written before codes existed still compare equal (no fact is
+    rewritten for them)."""
+    cases = [
+        (verdict("Physician practices", "high"), "industry_off", "parked"),
+        (verdict("Professional Services", "low"), "industry_off", "parked"),
+        (verdict("none", "low", "public_body"), "public_body", "disqualified"),
+        (verdict("Fintech", "medium", "association"), "association", "disqualified"),
+        (verdict("Fintech", "high", "other"), "label_other", "disqualified"),
+        (verdict("none", "high", what="crop insurance"), "no_label", "disqualified"),
+    ]
+    for v, code, status in cases:
+        d = labels.decide(ind("Fintech"), v, DEFAULT)
+        assert (d.action, d.code) == ("disqualify", code)
+        cols = labels.columns(acct(), d)
+        assert (cols["status"], cols["status_reason"], cols["tier"]) == (status, code, "Excluded")
+        assert cols["tier_reason"] == f"{code}: {d.reason}"
+        assert "code" not in d.as_dict() and d == dataclasses.replace(d, code="")
+    # A verdict that verifies has no code, and its columns no status.
+    d = labels.decide(ind("Fintech"), verdict("Fintech", "high"), DEFAULT)
+    assert d.code == "" and "status" not in labels.columns(acct(), d)
 
 
 # -- asking the model -----------------------------------------------------------------------------------------------
@@ -438,12 +463,20 @@ def test_a_dry_run_command_asks_nothing():
     assert ctx.clients.claude_task.client.calls == []
 
 
-@pytest.mark.parametrize("trouble, why", [
-    ("cap", "the monthly Claude cap is reached"),
-    ("error", "Claude did not answer"),
-    ("key", "no Claude API key"),
+@pytest.mark.parametrize("trouble, why, calls", [
+    # Systemic: the next company would fail the same way, so nothing more is asked this run. The cap and a missing
+    # key refuse before any call (0 calls); an outage is the one call that failed after the SDK's retries (1).
+    ("cap", "the monthly Claude cap is reached", 0),
+    ("outage", "Claude did not answer", 1),
+    ("rate_limit", "Claude did not answer", 1),
+    ("connection", "Claude did not answer", 1),
+    ("key", "no Claude API key", 0),
 ])
-def test_the_model_unavailable_says_why_once_and_asks_nothing_more(trouble, why):
+def test_the_model_unavailable_says_why_once_and_asks_nothing_more(trouble, why, calls):
+    import anthropic
+
+    from tests.test_client_claude import sdk_error
+
     sdk = FakeSDK(text=model_answer())
     ctx = make_context(DEFAULT, now=NOW, claude_sdk=None if trouble == "key" else sdk)
     if trouble == "key":
@@ -451,15 +484,43 @@ def test_the_model_unavailable_says_why_once_and_asks_nothing_more(trouble, why)
     elif trouble == "cap":
         ctx.store.insert("credit_ledger", [{"entry_id": "e1", "system": "claude", "job": "classify", "usd": 9.99,
                                             "credits": 0.0, "occurred_at": NOW}])
+    elif trouble == "outage":
+        sdk.raises = sdk_error(anthropic.InternalServerError, 503)
+    elif trouble == "rate_limit":
+        sdk.raises = sdk_error(anthropic.RateLimitError, 429)
     else:
-        sdk.stop_reason = "max_tokens"
+        sdk.raises = sdk_error(anthropic.APIConnectionError)
     ch = labels.Checker(ctx)
     v, got, asked = ch.verdict(acct(), EVENTS)
     assert (v, asked) == (None, False) and got.startswith(why) and ch.unavailable == got
     assert "US_OUTBOUND_CLAUDE_API_KEY" in got if trouble == "key" else True  # the variable, never a value
-    calls = len(sdk.calls)
+    assert len(sdk.calls) == calls and ch.failed == {}
     assert ch.verdict(acct("a2"), EVENTS)[1] == got and len(sdk.calls) == calls  # not asked again this run
+    assert ctx.store.select("signal_events") == []  # an outage is no fact about the company
     assert isinstance(BudgetExceeded("x"), Exception)
+
+
+@pytest.mark.parametrize("answer_kind", ["max_tokens", "refusal", "not_json"])
+def test_one_companys_unusable_answer_is_that_companys_alone(answer_kind):
+    """W1-4 (code-verify-labels B1). This was test_the_model_unavailable_says_why_once_and_asks_nothing_more's "error"
+    case, which pinned the defect: one max_tokens answer set unavailable and refused every later company, so a
+    company whose material the model could not finish blocked the queue every run (it sorts first again). Now the
+    call counts against the run's share, a label_failed fact is kept under the run's labels_hash, and the next
+    company is asked."""
+    sdk = FakeSDK(text="not json" if answer_kind == "not_json" else model_answer(),
+                  stop_reason=answer_kind if answer_kind != "not_json" else "end_turn")
+    ctx = make_context(DEFAULT, now=NOW, claude_sdk=sdk)
+    ch = labels.Checker(ctx)
+    v, why, asked = ch.verdict(acct(), EVENTS)
+    assert (v, asked, ch.unavailable) == (None, False, "") and why.startswith("the label check could not use")
+    assert list(ch.failed) == ["a1"] and ch.budget.made == 1  # the call was made, and billed: it counts
+    [fact] = ctx.store.select("signal_events")
+    assert (fact["account_id"], fact["source"], fact["fact"]) == ("a1", "label_check", "label_failed")
+    assert fact["value"]["labels_hash"] == ch.hash and labels.failures([fact], ch.hash) == 1
+    assert labels.failures([fact], "another") == 0 and labels.failed_hash([fact]) == ch.hash
+    sdk.stop_reason, sdk.text = "end_turn", model_answer()
+    v, why, asked = ch.verdict(acct("a2"), EVENTS)  # the next company is asked, and answered
+    assert (v.label, why, asked) == ("Fintech", "", True) and len(sdk.calls) == 2
 
 
 def test_judge_lets_an_override_stand_and_decides_an_empty_company_on_the_rules():
@@ -502,7 +563,9 @@ def test_the_gold_set(row):
     m = labels.Material.of(a, ev)
     v = labels.check_answer(row["model_answer"], m, NAMES)
     assert v.evidence_verified and v.what_they_do == row["model_answer"]["what_they_do"]
-    d = labels.decide(labels.rules_label(a, ev, DEFAULT), v, DEFAULT)
+    # As production decides it (W3-2; code-verify-labels B5): none of the cards' rows has a home page on file, so a
+    # sure label earns its group's copy, and ledgerchain's and crestline's expectations say so.
+    d = labels.decide(labels.rules_label(a, ev, DEFAULT), v, DEFAULT, page=bool(row.get("home")))
     want = row["expect"]
     assert d.action == want["action"]
     if want["accept"]:
@@ -538,13 +601,119 @@ def test_the_eval_scores_the_gold_set_and_passes_with_right_answers():
     ctx = eval_ctx(gold_sdk(), True)
     labels.evaluate(ctx, labels.gold_rows())
     assert {r["job"] for r in ctx.store.select("credit_ledger")} == {"label_eval"}  # apart from the checks
-    assert ctx.store.select("signal_events") == [] and ctx.store.select("accounts") == []  # it changes nothing
+    assert ctx.store.select("accounts") == []  # it changes no company
+    # W3-2 (code-verify-labels B5): its scores are kept, one fact under the labels_hash it was asked with.
+    [fact] = ctx.store.select("signal_events")
+    h = labels.labels_hash(DEFAULT)
+    assert (fact["source"], fact["fact"], fact["account_id"]) == ("label_eval", "label_eval", None)
+    assert fact["event_id"].startswith(f"label_eval:{h}:")
+    v = fact["value"]
+    assert (v["labels_hash"], v["rows"], v["checked"], v["acceptable"], v["wrong"], v["unsafe"], v["passed"]) == (
+        h, 13, 13, 13, 0, 0, True)
+    assert v["scores"]["ledgerchain.io"] == "acceptable" and len(v["scores"]) == 13
+    labels.evaluate(ctx, labels.gold_rows())  # the same hash and rows: replaced, not added
+    assert len(ctx.store.select("signal_events")) == 1
 
 
-def test_a_specific_pitch_to_the_wrong_company_is_unsafe_and_fails_the_eval(capsys):
+def test_two_passes_in_one_run_each_count_their_own_spend():
+    """code-verify-labels B14: definition_suggestions runs two answer-key passes under one run, and the second
+    pass's usd summed every ledger row written at the run's time, the first pass's too (twice the spend). Each
+    Checker now counts the rows of its run written since it began: the same 13 calls, the same usd."""
+    ctx = eval_ctx(gold_sdk(), True)
+    first = labels.evaluate(ctx, labels.gold_rows())
+    second = labels.evaluate(ctx, labels.gold_rows())
+    assert first["usd"] == second["usd"] > 0
+    assert {r["run_id"] for r in ctx.store.select("credit_ledger")} == {ctx.run_id}  # written by the run
+
+
+def test_the_eval_decides_as_production_does_on_every_gold_row():
+    """Acceptance (W3-2; B5): for each gold row, with and without a home page on file, the eval's decision is the one
+    labels.judge (verify_accounts) makes on the same facts and the same answer. Before, the eval decided as if every
+    row had its page (decide's default page=True), so a sure answer earned the label's own copy in the eval and its
+    group's in production."""
+    for with_page in (False, True):
+        rows = [{**r, "home": {"title": r["name"], "text": r["description"]}} if with_page else dict(r)
+                for r in labels.gold_rows()]
+        out = labels.evaluate(eval_ctx(gold_sdk(), True), rows)
+        said = {r["domain"]: r["decision"] for r in out["results"]}
+        ctx = make_context(DEFAULT, now=NOW, claude_sdk=gold_sdk(), live=True, job="verify_accounts")
+        checker = labels.Checker(ctx)
+        for r in rows:
+            account = {"account_id": f"gold:{r['domain']}", "domain": r["domain"], "clean_name": r["name"],
+                       "industry": r["went_out_as"]}
+            d, *_ = labels.judge(checker, account, labels.gold_events(r))
+            assert said[r["domain"]] == f"{d.action}: {d.label} ({d.source}, {d.copy} copy)", (with_page, r["domain"])
+        copies = {r["domain"]: r["decision"] for r in out["results"]}
+        assert copies["crestlinegames.com"].endswith(("(model, label copy)" if with_page else "(umbrella, group copy)"))
+
+
+def test_a_judged_row_with_no_home_page_scores_the_groups_copy_as_production_does():
+    """A company judged Fintech in the label sample, with no home page on file, and a sure Fintech answer: production
+    gives the group's own label and copy (umbrella), so the eval does too; it is acceptable (the group's label is
+    accepted for a judged row: its copy is true of it), where with page=True it would have scored Fintech's copy."""
+    sdk = gold_sdk()
+    sdk.answers["payco.com"] = {"label": "Fintech", "confidence": "high", "entity": "company",
+                                "evidence": "Payments software", "what_they_do": "payments software"}
+    ctx = make_context(DEFAULT, now=NOW, live=True, job="labels_eval", claude_sdk=sdk)
+    ctx.store.insert("accounts", [{"account_id": "p1", "domain": "payco.com", "clean_name": "PayCo",
+                                   "industry": TECH}])
+    ctx.store.insert("signal_events", facts("p1", naics=["522320"], description="Payments software for shops."))
+    rows = labels.judged_rows(ctx, [("payco.com", ind("Fintech"))])
+    assert rows[0]["home"] is None
+    out = labels.evaluate(ctx, rows)
+    [r] = out["results"]
+    assert r["decision"] == f"verify: {TECH} (umbrella, group copy)" and r["score"] == "acceptable"
+    [fact] = [e for e in ctx.store.select("signal_events") if e["fact"] == "label_eval"]
+    assert fact["value"]["labels_hash"] == labels.labels_hash(DEFAULT)
+
+
+def test_an_outside_company_joins_the_eval_as_a_negative():
+    """W3-2 (B11): a company judged outside our industries is expected left out; the model's none leaves it out
+    (acceptable), a sure label would not (wrong)."""
+    ctx = make_context(DEFAULT, now=NOW, live=True, job="labels_eval")
+    ctx.store.insert("accounts", [{"account_id": "o1", "domain": "outside.org", "clean_name": "Outside"}])
+    ctx.store.insert("signal_events", facts("o1", description="A church choir."))
+    [row] = labels.judged_rows(ctx, [("outside.org", "outside")])
+    assert row["expect"] == {"accept": [], "action": "disqualify"}
+    assert labels.score(D(None, None, "disputed", "high", "general", "disqualify"), row["expect"]) == "acceptable"
+    assert labels.score(D(TECH, TECH, "umbrella", "high", "group"), row["expect"]) == "wrong"
+
+
+def test_an_eval_with_a_time_budget_stops_when_it_is_spent(monkeypatch):
+    """W2-3: evaluate(seconds=...) stops a pass once its time is spent, with an error, as at a model error, and returns
+    what it had. The clock moves 301 seconds with each of the model's answers, so with 600 seconds the third row finds
+    602 spent: 2 of the 13 gold rows are checked."""
+    import time as time_
+
+    clock = [1000.0]
+    monkeypatch.setattr(time_, "monotonic", lambda: clock[0])
+    sdk = gold_sdk()
+    real_ask = labels.Checker.ask
+
+    def ask(self, material):
+        clock[0] += 301
+        return real_ask(self, material)
+
+    monkeypatch.setattr(labels.Checker, "ask", ask)
+    out = labels.evaluate(eval_ctx(sdk, True), labels.gold_rows(), seconds=600)
+    assert out["acceptable"] + out["wrong"] + out["unsafe"] == 2 and len(sdk.calls) == 2
+    assert out["error"] == "the answer key ran out of its 10 minutes" and out["passed"] is False
+    assert labels.evaluate(eval_ctx(gold_sdk(), True), labels.gold_rows())["acceptable"] == 13  # no budget: all 13
+
+
+def test_a_specific_pitch_to_the_wrong_company_is_unsafe_and_fails_the_eval(capsys, monkeypatch):
+    """The society's home page is on file (the eval decides as production does, W3-2: only with the page does a sure
+    label earn its own copy), so a sure AI & deep tech answer is a specific pitch to the wrong company. Without the
+    page production gives the group's copy: wrong, not unsafe."""
     from us_outbound.ops import cli
 
     bad = {"spinesurgeons-society.org": {"label": "AI & deep tech", "entity": "company"}}
+    without = labels.evaluate(eval_ctx(gold_sdk(bad), True), labels.gold_rows())
+    [row] = [r for r in without["results"] if r["domain"] == "spinesurgeons-society.org"]
+    assert (row["score"], without["unsafe"]) == ("wrong", 0)
+    gold = [{**r, "home": {"title": "Society", "text": r["description"]}} if r["domain"] == "spinesurgeons-society.org"
+            else r for r in labels.gold_rows()]
+    monkeypatch.setattr(labels, "gold_rows", lambda: gold)
     out = labels.evaluate(eval_ctx(gold_sdk(bad), True), labels.gold_rows())
     [row] = [r for r in out["results"] if r["domain"] == "spinesurgeons-society.org"]
     assert row["score"] == "unsafe" and out["unsafe"] == 1 and out["passed"] is False
@@ -587,152 +756,6 @@ def test_score(d, expect, verdict):
     assert labels.score(d, expect) == verdict
 
 
-# -- measurement: the daily post's Labels block, its asks and the readout -----------------------------------------------
-
-TUE_9 = datetime(2026, 10, 27, 9, 0, tzinfo=UTC)  # 09:00 UK, Tue 27 Oct: the post covers Monday 26 Oct
-MON = datetime(2026, 10, 26, 14, 0, tzinfo=UTC)
-
-
-def checked_fact(i, source, *, action="verify", rules="Fintech", model="Fintech", group=TECH, at=MON):
-    return {"event_id": f"v{i}", "account_id": f"a{i}", "source": "label_check", "fact": "label_verdict",
-            "value": {"rules": rules, "rules_group": group, "model": model, "asked": True,
-                      "decision": {"source": source, "action": action}}, "observed_at": at}
-
-
-def correction(i, frm, to, at=MON):
-    return {"event_id": f"c{i}", "account_id": f"a{i}", "source": "label_check", "fact": "label_corrected",
-            "value": {"from": frm, "to": to, "by": "U_HARRY", "via": "thread"}, "observed_at": at}
-
-
-def decided(i, approval="approved", at=MON):
-    return {"event_id": f"send-approval:{i}", "type": "send_approval", "approval": approval, "occurred_at": at}
-
-
-def measured(facts_=(), events=(), verify_labels=None, now=TUE_9):
-    ctx = make_context(DEFAULT, now=now)
-    ctx.store.insert("signal_events", list(facts_))
-    ctx.store.insert("events", list(events))
-    if verify_labels is not None:
-        ctx.store.insert("heartbeats", [{"run_id": "v1", "job": "verify_accounts", "status": "ok",
-                                         "started_at": now - timedelta(hours=4), "detail": {"labels": verify_labels}}])
-    return ctx
-
-
-def test_the_daily_posts_labels_block():
-    facts_ = [*(checked_fact(i, "rules+model") for i in range(5)), checked_fact(5, "model", model="Edtech"),
-              checked_fact(6, "umbrella", model="Edtech"), checked_fact(7, "disputed", action="hold"),
-              checked_fact(8, "disputed", action="disqualify", model="none"),
-              checked_fact(9, "rules+model", at=MON - timedelta(days=3)),  # before the period
-              {**checked_fact(10, "model"), "value": {**checked_fact(10, "model")["value"], "asked": False}},  # re-decided
-              correction(1, "Games studios", "Technology & Startups")]
-    events = [*(decided(i) for i in range(18)), decided(30, "company_rejected"), decided(31, "expired")]
-    ctx = measured(facts_, events, {"unchecked": 3, "unavailable_reason": "the monthly Claude cap is reached"})
-    start, end, _ = period(ctx)
-    assert labels.post_lines(ctx, start, end) == [
-        "  Checked: 9 (of the 9 the rules labelled, the model agreed on the label for 5 and the group for 8, 89%; "
-        "no rules label 0; model overruled 1; group copy 1; General copy 0; held 1; disqualified 1; waiting "
-        "unchecked 3).",
-        "  The label check could not ask the model at the last verify run: the monthly Claude cap is reached.",
-        "  Cards: 1 industry correction of 20 decided (95% right): Games studios → Technology & Startups.",
-    ]
-    assert labels.post_lines(measured(), start, end)[-1] == "  Cards: none decided."
-
-
-def test_the_daily_post_carries_the_block():
-    from tests.test_daily_post import world as post_world
-    from us_outbound.learn import daily_post
-
-    ctx, _ = post_world()
-    lines, _ = daily_post.build(ctx)
-    i = lines.index("*Labels*")
-    assert lines[i + 1].startswith("  Checked: 0 (of the 0 the rules labelled, the model agreed on the label for 0 "
-                                   "and the group for 0, n/a;") and lines.index("*Mailboxes*") > i
-
-
-def test_the_asks_trip_once_a_day_on_corrections_and_an_unavailable_check():
-    facts_ = [*(correction(i, "Adtech & martech", "Fintech") for i in range(3)),
-              *(checked_fact(10 + i, "rules+model") for i in range(10)),
-              *(checked_fact(30 + i, "model", rules="Adtech & martech", model="Marketing agencies") for i in range(12)),
-              *(checked_fact(50 + i, "model", rules="Adtech & martech", model="Fintech") for i in range(3))]
-    ctx = measured(facts_, [decided(i) for i in range(20)], {"unchecked": 4, "unavailable_reason": "Claude did not answer"})
-    got = dict(labels.asks(ctx))
-    tab = "<https://docs.google.com/spreadsheets/d/sheet-test/edit|Industries tab>"
-    assert got["labels_corrections:2026-10-27"] == (
-        ":warning: *Industry labels: approvers corrected the industry on 3 of 23 email cards since the last send day.*\n"
-        "Corrections: Adtech & martech → Fintech (3).\n"
-        f"*What to do:* check those industries' definitions on the {tab}: a sharper line fixes the next ones. A "
-        "changed definition has every company checked again by itself; nothing to run.")
-    # The rules' disagreement with the model is no ask any more (12 Oct 2026): the model's label decides the email.
-    assert "labels_agreement:2026-10-27" not in got and "labels_no_rules:2026-10-27" not in got
-    assert got["labels_unavailable:2026-10-27"].startswith(
-        ":rotating_light: *Industry labels: the AI check (Claude) could not run, so 4 new companies wait unchecked.*\n"
-        "Why: Claude did not answer. While `label_check` is `required` (General tab), a company is not emailed")
-    assert labels.asks(measured([checked_fact(1, "rules+model")], [decided(1)])) == []
-
-
-def test_a_company_asked_twice_counts_once_by_its_latest_check():
-    """Thu 8 Oct 2026: two audits and the home-page second look asked about the same companies, and the ask said
-    "1172 companies"."""
-    first = checked_fact(1, "disputed", action="hold", model="Edtech", at=MON - timedelta(hours=3))
-    again = {**checked_fact(1, "rules+model"), "event_id": "v1-again"}
-    t = labels.tally(measured([first, again]), MON - timedelta(days=1), TUE_9)
-    assert (t.checked, t.labelled, t.agreed, t.decisions) == (1, 1, 1, {"rules+model": 1})
-
-
-def test_no_rules_label_is_counted_apart_from_disagreement():
-    """A company the rules gave no label cannot agree with the model: the tally keeps it apart, and it is no ask."""
-    facts_ = [*(checked_fact(i, "rules+model") for i in range(20)),
-              *(checked_fact(100 + i, "disputed", action="hold", rules=None, group=None, model="Fintech")
-                for i in range(15)),
-              *(checked_fact(200 + i, "model", rules=None, group=None, model="Edtech") for i in range(6)),
-              checked_fact(300, "disputed", action="hold", rules=None, group=None, model="none")]
-    naics = [{"event_id": f"n{i}", "account_id": f"a{i}", "source": "apollo_org", "fact": "naics",
-              "value": ["522320"] if i < 112 else [], "observed_at": MON - timedelta(days=5)} for i in range(100, 115)]
-    naics += [{"event_id": f"n{i}", "account_id": f"a{i}", "source": "apollo_org", "fact": "naics",
-               "value": ["611710", "541990"], "observed_at": MON - timedelta(days=5)} for i in range(200, 206)]
-    ctx = measured([*facts_, *naics], [decided(i) for i in range(5)])
-    assert dict(labels.asks(ctx)) == {}  # a gap in the rules is no ask (12 Oct 2026): the model labels them
-    t = labels.tally(ctx, *period(ctx)[:2])
-    assert (t.checked, t.labelled, t.share_agreed()) == (42, 20, 1.0)
-
-
-def test_the_asks_go_out_with_the_spend_asks():
-    from us_outbound.learn import spend
-
-    ctx = measured([correction(i, "Games studios", "Fintech") for i in range(3)], [decided(1)])
-    sp = spend.read(ctx)
-    keys = [k for k, _ in spend.asks(ctx, sp)]
-    assert "labels_corrections:2026-10-27" in keys
-
-
-def test_the_readout_block():
-    start, end = datetime(2026, 10, 19, tzinfo=UTC), datetime(2026, 10, 26, tzinfo=UTC)
-    at = datetime(2026, 10, 21, 12, tzinfo=UTC)
-    facts_ = [*(checked_fact(i, "rules+model", at=at) for i in range(8)), checked_fact(8, "disputed", action="hold", at=at),
-              correction(1, "Games studios", "Technology & Startups", at=at),
-              correction(2, "Games studios", "Technology & Startups", at=at)]
-    ctx = measured(facts_, [decided(i, at=at) for i in range(38)], now=datetime(2026, 10, 26, 7, 30, tzinfo=UTC))
-    lines = labels.readout_lines(ctx, start, end)
-    assert lines[1] == ("*Industry labels* (how often the industry on a send card was right, going by the approvers' "
-                        "corrections; target 95%)")
-    assert lines[2] == "  Right: last week 38 of 40 (95%, met) · so far 38 of 40 (95%, met)"
-    assert lines[3] == "  Corrected last week: Games studios → Technology & Startups (2)"
-    assert lines[4] == ("  Checked last week by the AI model against our industry-code rules: 9 · agreeing on the "
-                        "group for 100% · held for the hand-check 1 · disqualified 0")
-    few = labels.readout_lines(measured([correction(1, "a", "b", at=at)], [decided(1, at=at)]), start, end)
-    assert few[2] == "  Right: last week 1 of 2 (too few to read) · so far 1 of 2 (too few to read)"
-    none = labels.readout_lines(measured([], []), start, end)
-    assert none == ["", lines[1] + ": no card decided and no company checked yet."]
-
-
-def test_the_monday_readout_carries_the_block():
-    from us_outbound.learn import readout
-
-    ctx = make_context(DEFAULT, now=datetime(2026, 10, 26, 7, 30, tzinfo=UTC))
-    lines, _ = readout.build(ctx)
-    assert any(x.startswith("*Industry labels*") for x in lines)
-
-
 def test_a_stored_verdict_is_written_and_read_in_one_shape():
     """labels.StoredVerdict (9 Oct 2026): what verdict_value writes reads back the same, key for key, and its outcome
     is counted as verify's tally counts a decision."""
@@ -764,3 +787,80 @@ def test_a_label_the_model_gives_alone_needs_the_home_page_for_its_own_copy():
     # The rules agreeing makes no difference (11 Oct 2026): they only source companies.
     agreed = labels.decide(ind("Fintech"), v, DEFAULT, page=False)
     assert (agreed.source, agreed.copy) == (labels.UMBRELLA, labels.GROUP_COPY)
+
+
+# -- the label policy (W3-2; L4; Harry's D20, built and not applied) ---------------------------------------------------
+
+
+@pytest.mark.parametrize("exact, n, level", [
+    (20, 21, "label"),  # rules+model in October: 0.952, Wilson lower bound 0.773 >= 0.75
+    (6, 9, "group"),  # the model alone: 0.667
+    (5, 10, "group"),  # umbrella: 0.5
+    (18, 19, "group"),  # 0.947 and lower bound 0.754, but n 19 < 20
+    (19, 20, "label"),  # 0.95, lower bound 0.764
+    (18, 20, "group"),  # 0.90 exactly, but lower bound 0.699 < 0.75
+    (0, 0, "group"),  # nothing judged: nothing shows its labels are right
+])
+def test_a_source_earns_label_copy_only_on_measured_precision(exact, n, level):
+    assert labels.policy_level(exact, n) == level
+
+
+def with_policy(on: bool):
+    s = dataclasses.replace(DEFAULT, general=dataclasses.replace(DEFAULT.general, copy_level_policy=on))
+    ctx = make_context(s, now=NOW)
+    labels.store_policy(ctx, {"rules+model": (20, 21), "model": (6, 9), "umbrella": (5, 10)}, ["2026-10"])
+    return ctx
+
+
+def test_switched_off_the_policy_changes_no_decision_and_no_copy_level():
+    """General copy_level_policy no (the default): a stored policy that would route the model's labels to group copy
+    changes nothing: decide() gives every gold row the decision it gave before (with and without the page), and
+    copy_level every source its level."""
+    ctx = with_policy(False)
+    assert labels.active_policy(ctx) is None
+    assert labels.stored_policy(ctx)["policy"] == {"rules+model": "label", "model": "group", "umbrella": "group",
+                                                   "rules": "group"}
+    for row in GOLD:
+        ev = facts(row["domain"], naics=row["naics"], keywords=row["keywords"], industry=row["apollo_industry"],
+                   description=row["description"])
+        a = {"account_id": row["domain"], "domain": row["domain"], "clean_name": row["name"]}
+        v = labels.check_answer(row["model_answer"], labels.Material.of(a, ev), NAMES)
+        rules = labels.rules_label(a, ev, DEFAULT)
+        for page in (True, False):
+            assert labels.decide(rules, v, DEFAULT, page=page, policy=labels.active_policy(ctx)) == \
+                labels.decide(rules, v, DEFAULT, page=page)
+    for source in labels.SOURCES:
+        assert labels.copy_level({"label_source": source}, labels.active_policy(ctx)) == \
+            labels.copy_level({"label_source": source})
+
+
+def test_switched_on_a_model_label_with_the_page_gets_its_groups_copy():
+    """copy_level_policy yes: the model alone (6 of 9) is routed to group copy, so a sure Fintech answer read with the
+    home page keeps its label and source but gets its group's copy; rules+model (20 of 21) keeps the label's own; a
+    person's label (override) is never routed."""
+    policy = labels.active_policy(with_policy(True))
+    assert policy is not None and policy["model"] == "group"
+    d = labels.decide(None, verdict("Fintech", "high"), DEFAULT, page=True, policy=policy)
+    assert (d.label, d.source, d.copy, d.action) == ("Fintech", labels.MODEL, labels.GROUP_COPY, labels.VERIFY)
+    assert d.reason.endswith("the label policy gives this source its group's copy")
+    assert labels.copy_level({"label_source": "model"}, policy) == labels.GROUP_COPY
+    assert labels.copy_level({"label_source": "rules+model"}, policy) == labels.LABEL_COPY
+    assert labels.copy_level({"label_source": "override"}, policy) == labels.LABEL_COPY
+    assert labels.decide(None, None, DEFAULT, override="Fintech", policy=policy).copy == labels.LABEL_COPY
+    # An umbrella decision gives its group's copy whatever the policy (it is no more specific).
+    alone = labels.decide(None, verdict("Fintech", "high"), DEFAULT, page=False, policy=policy)
+    assert (alone.source, alone.copy) == (labels.UMBRELLA, labels.GROUP_COPY)
+
+
+def test_the_policy_is_content_only_while_it_applies():
+    """config_version: with the switch no the snapshot, and so every id, is as before; with yes the policy is in
+    `general`, so contacts enrolled under it are a new version (design-final W3-2: the policy fact is content)."""
+    from us_outbound import config_version
+
+    off, on = with_policy(False), with_policy(True)
+    assert config_version.snapshot(off.settings) == config_version.snapshot(DEFAULT)
+    assert config_version.current(off).id == config_version.current(make_context(DEFAULT, now=NOW)).id
+    snap = config_version.current(on).snapshot
+    assert snap["general"]["copy_level_policy"] == ("model: group, rules: group, rules+model: label, "
+                                                    "umbrella: group")
+    assert config_version.current(on).id != config_version.current(off).id

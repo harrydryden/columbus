@@ -15,6 +15,19 @@ from us_outbound.settings.model import Settings
 TEST_SHEET_ID = "sheet-test"
 
 
+def sendable_general_copy(rows):
+    """The Copy rows with the General ones approved and passed by QA in their wording, as on the live sheet (the
+    default sheet's rows are all drafts). pick_contacts counts and searches only the accounts some sendable row can
+    serve (enrol's own check, W1-6), and General rows serve every account."""
+    import dataclasses
+
+    return tuple(
+        dataclasses.replace(c, status="approved", approved_by="Harry Dryden", qa=f"pass {c.content_hash()}")
+        if c.industry == "General" else c
+        for c in rows
+    )
+
+
 @dataclass
 class SentRequest:
     method: str
@@ -78,7 +91,7 @@ def make_context(
     claude_sdk: Any = None,
     google_credentials: Any = None,
 ) -> Context:
-    guard = Guard(live=live, bounds=boundaries_for(settings, TEST_SHEET_ID, job=job), job=job)
+    guard = Guard(live=live, bounds=boundaries_for(settings, TEST_SHEET_ID), job=job)
     transport = transport or FakeTransport()
     store = store or MemoryStore(guard)
     store.guard = guard

@@ -84,18 +84,47 @@ def test_config_version_changes_only_for_content_tabs(monkeypatch):
     reworded = copy_row("agencies-v1", COPY[0].industry, bodies={**{n: COPY[0].step(n).body for n in (1, 2, 3, 4)},
                                                                  2: "A new email 2 for {{first_name}}."})
     assert vid(dataclasses.replace(base, copy=(reworded, COPY[1]))) != first.id
+    # How many are enrolled, and which arm a contact is in, change nothing a contact is sent (W1-6): the same version.
+    g = base.general
+    assert vid(dataclasses.replace(base, general=dataclasses.replace(g, weekly_enrol_cap=300))) == first.id
+    assert vid(dataclasses.replace(base, general=dataclasses.replace(g, explore_share=0.0))) == first.id
+    assert vid(dataclasses.replace(base, general=dataclasses.replace(g, explore_share=0.25))) == first.id
+    # A deploy alone starts no version (W1-6; code-contacts-enrol M7): code_sha is kept beside the id, not hashed.
+    # Before, this asserted deployed.id != first.id, so every one of 50 deploys in 12 days split the cohorts.
     monkeypatch.setenv("RAILWAY_GIT_COMMIT_SHA", "a4c5c27f00ba7e1234567890")
     deployed = config_version.current(make_context(base))
-    assert deployed.id != first.id and deployed.code_sha == "a4c5c27f00ba"
+    assert deployed.id == first.id and deployed.code_sha == "a4c5c27f00ba"
     assert first.code_sha == "dev"
+    # Differing in code_sha and weekly_enrol_cap together: still the same version.
+    capped = config_version.current(make_context(dataclasses.replace(base, general=dataclasses.replace(
+        g, weekly_enrol_cap=75))))
+    assert capped.id == first.id and capped.code_sha == "a4c5c27f00ba"
     assert set(first.snapshot) == {"settings_versions", "copy_hashes", "general", "signature_hash",
-                                   "campaign_fingerprint", "step_days", "code_sha", "labels_hash", "copy_test"}
+                                   "campaign_fingerprint", "step_days", "labels_hash", "copy_test"}
+    assert not {"weekly_enrol_cap", "control_share", "explore_share"} & set(first.snapshot["general"])
     # The label check's definitions decide which copy a new company earns (labels.py; Harry, 7 Oct 2026).
     defined = tuple(dataclasses.replace(i, definition="Payments software.") if i.industry == "Fintech" else i
                     for i in base.industries)
     assert vid(dataclasses.replace(base, industries=defined)) != first.id
     assert first.snapshot["settings_versions"] == {"Signals": t0.isoformat()}
     assert first.snapshot["general"]["send_window"] == "Mon–Fri 09:00–16:00 America/New_York"
+
+
+def test_the_snapshot_s_copy_test_is_the_test_that_draws_arms():
+    """W3-4 r2 (the review's surviving mutation: copy_test reading running_test instead of drawn_test). FIRST_TEST has
+    no start_date, so it reads as started from 21 Oct, pre-registered: it draws under live_split = test alone. Under
+    both it is running but draws nothing, so nothing a contact is sent changes and the snapshot has no copy test;
+    under test it has its id. The same row without its pre-registration (the version in force read leniently) draws
+    nothing either, under test."""
+    from tests.test_render import FIRST_TEST
+
+    paused = make_settings(tests=(FIRST_TEST,), live_split="both")
+    assert paused.running_test() is FIRST_TEST and paused.drawn_test() is None
+    assert config_version.snapshot(paused)["copy_test"] is None
+    assert config_version.snapshot(make_settings(tests=(FIRST_TEST,), live_split="test"))["copy_test"]["test_id"] == (
+        "t1-agencies")
+    bare = dataclasses.replace(FIRST_TEST, metric_id="", definition_version="", test="", alpha=None, look_thresholds="")
+    assert config_version.snapshot(make_settings(tests=(bare,), live_split="test"))["copy_test"] is None
 
 
 def test_a_version_is_recorded_once_and_dry_run_records_it_too():
@@ -107,6 +136,7 @@ def test_a_version_is_recorded_once_and_dry_run_records_it_too():
     [row] = ctx.store.tables["config_versions"]
     assert row["config_version"] == cv.id and row["first_seen"] == NOW and row["copy_hashes"] == {
         c.copy_version: c.content_hash() for c in COPY}
+    assert row["code_sha"] == cv.code_sha  # still a column (W1-6): the deploy that first saw the version
 
 
 def test_a_change_is_logged_only_when_live():
@@ -322,70 +352,49 @@ def test_a_copy_row_reworded_names_the_columns_from_the_settings_history():
         "Copy general-v1: qa pass aaaa1111 → pass bbbb2222, s2_subject Quick one → A quick one"]
 
 
-# -- insights --------------------------------------------------------------------------------------------------------
+# -- no insights (W2-3) ------------------------------------------------------------------------------------------------
 
 
-def test_two_readable_cohorts_are_compared_and_what_changed_is_named():
+def test_a_week_enrolled_across_days_counts_each_company_at_the_ages_it_has_reached():
+    """metrics-audit M1's world: a week's companies reach 14 days on different days. At NOW (Mon 9 Nov 12:00): W43, 40
+    enrolled Mon 19 Oct, has 40 at 7 and at 14 days; W44 has 3 enrolled Mon 26 Oct 11:00 (14 days 1 hour) and 37 on
+    Thu 29 Oct (10 days), so 40 at 7 days and 3 at 14."""
     w = World()
-    w.version("v1", datetime(2026, 9, 28, 11, tzinfo=UTC))
-    w.version("v2", datetime(2026, 10, 5, 11, tzinfo=UTC), general={"price_from": "250", "email1_subject_share": "0.5"})
-    w.cohort(W40, 30, 9, version="v1")
-    w.cohort(W41, 30, 2, version="v2")
-    out = cohorts.insights(w.ctx, cohorts.rows(w.ctx))
-    assert out == ["W41 replies less than W40 at 28 days (6.7% vs 30.0%, p = 0.02).",
-                   "Between them: General price_from: 195 → 250. A coincidence to test, not a cause."]
+    for i in range(40):
+        w.company(datetime(2026, 10, 19, 15, tzinfo=UTC), reply_day=2 if i < 8 else None, cls="objection")
+    for i in range(40):
+        w.company(datetime(2026, 10, 26, 11, tzinfo=UTC) if i < 3 else datetime(2026, 10, 29, 15, tzinfo=UTC))
+    w43, w44 = cohorts.rows(w.ctx)
+    assert (w43.ages[7].matured, w43.ages[14].matured, w44.ages[7].matured, w44.ages[14].matured) == (40, 40, 40, 3)
+    assert (w43.ages[7].replied, w44.ages[7].replied) == (8, 0)
 
 
-def test_nothing_changed_between_them_is_said_too():
-    w = World()
-    w.version("v1", datetime(2026, 9, 28, 11, tzinfo=UTC))
-    w.cohort(W40, 30, 9, version="v1", positive=9)
-    w.cohort(W41, 30, 2, version="v1")
-    out = cohorts.insights(w.ctx, cohorts.rows(w.ctx))
-    assert out[1] == "W41 has positive replies less than W40 at 28 days (0.0% vs 30.0%, p = 0.00)."
-    assert out[-1] == "Nothing changed between them."
-
-
-def test_no_clear_difference_and_too_few_are_said_as_such():
-    w = World()
-    w.cohort(W40, 30, 3)
-    w.cohort(W41, 30, 4)
-    assert cohorts.insights(w.ctx, cohorts.rows(w.ctx)) == [
-        "No clear difference in replies between W41 and W40 at 28 days (13.3% vs 10.0%, p = 0.69)."]
+def test_the_report_judges_no_pair_of_cohorts():
+    """W2-3 (metrics-audit M1, M2): the pairwise verdicts on the pooled z-test and the three-cohorts-running line were
+    chance at these numbers, and a cohort is not a randomised arm. 9 of 30 against 2 of 30, which used to read "W41
+    replies less than W40 (p = 0.02)", is shown as two rows of counts and nothing more."""
     w = World()
     w.cohort(W40, 30, 9)
-    w.cohort(W41, 29, 2)
-    assert cohorts.insights(w.ctx, cohorts.rows(w.ctx)) == [
-        "Too few to read: W41 has 29 companies at 28 days (30 needed on each side to compare W41 with W40)."]
+    w.cohort(W41, 30, 2)
+    out = "\n".join(cohorts.lines(w.ctx))
+    assert "28 days: 9 of 30 replied (30.0%)" in out and "28 days: 2 of 30 replied (6.7%)" in out
+    assert " less than " not in out and "p = " not in out and "Insights" not in out
+    for gone in ("insights", "compare", "run_of_three", "within_week", "common_age"):
+        assert not hasattr(cohorts, gone), gone
 
 
-def test_unstamped_cohorts_never_break_a_comparison():
+def test_a_corrected_reply_class_counts_in_the_cohort():
+    """The cohort reads learn/outcomes.py's classes: an out-of-office reply a person corrected to an objection is a
+    human reply at every age it falls in."""
     w = World()
-    w.version("v2", datetime(2026, 10, 5, 11, tzinfo=UTC))
-    w.cohort(W40, 30, 9)  # enrolled before the stamp
-    w.cohort(W41, 30, 2, version="v2")
-    out = cohorts.insights(w.ctx, cohorts.rows(w.ctx))
-    assert out[0].startswith("W41 replies less than W40")
-    assert out[1] == "What changed between them is not recorded: contacts enrolled before 8 Oct 2026 are unstamped."
-
-
-def test_two_versions_inside_one_week_are_compared():
-    w = World()
-    w.version("v1", datetime(2026, 10, 5, 11, tzinfo=UTC))
-    w.version("v2", datetime(2026, 10, 7, 11, tzinfo=UTC), code_sha="a4c5c27bbbbb")
-    w.cohort(W41, 30, 9, version="v1")
-    w.cohort(W41, 30, 1, version="v2")
-    out = cohorts.within_week(w.ctx, ["2026-W41"])
-    assert out[0].startswith("W41 version v2 replies less than W41 version v1 at 28 days (3.3% vs 30.0%")
-    assert out[1] == "Between them: code 4fbfec5 → a4c5c27. A coincidence to test, not a cause."
-
-
-def test_a_reply_rate_falling_three_cohorts_running_is_said():
-    w = World(now=datetime(2026, 11, 2, 12, tzinfo=UTC))
-    for monday, replied in ((W40, 9), (W41, 6), (W42, 3)):
-        w.cohort(monday, 30, replied)
-    assert cohorts.run_of_three(cohorts.rows(w.ctx)) == (
-        "The 14-day reply rate has fallen three cohorts running: W40 30.0%, W41 20.0%, W42 10.0%.")
+    aid = w.company(datetime(2026, 10, 19, 15, tzinfo=UTC), reply_day=2, cls="out_of_office")
+    [reply] = [e for e in w.ctx.store.select("events", {"type": "replied"}) if e["account_id"] == aid]
+    [c] = cohorts.rows(w.ctx)
+    assert c.ages[7].replied == 0
+    w.ctx.store.insert("events", [{"event_id": "fix", "type": "reply_class_corrected", "source": reply["event_id"],
+                                   "reply_class": "objection", "occurred_at": datetime(2026, 10, 25, tzinfo=UTC)}])
+    [c] = cohorts.rows(w.ctx)
+    assert c.ages[7].replied == 1
 
 
 # -- in flight --------------------------------------------------------------------------------------------------------
@@ -417,13 +426,14 @@ def test_the_readout_has_the_cohort_section_under_20_lines():
     lines, nums = readout.build(w.ctx)
     start = lines.index("*Cohorts* (companies grouped by the week they were enrolled, each at the latest age reached "
                         "after email 1)")
-    end = next(i for i, x in enumerate(lines) if x.startswith("*Industry labels*"))
+    # The cohorts come last before the multiplicity line (W3-1's order: learn/readout.py).
+    end = next(i for i, x in enumerate(lines) if "at 95% in this readout" in x)
     section = lines[start:end - 1]
     assert len(section) < 20, section
     assert section[1] == "  W45 (2–8 Nov): 1 emailed · under 7 days since email 1"
     assert section[3] == ("  W40 (28 Sep–4 Oct): 30 emailed · at 28 days 9 of 30 replied (30.0%) · 0 meetings · "
                           "0 of 30 sends bounced")
-    assert "  W41 replies less than W40 at 28 days (6.7% vs 30.0%, p = 0.02)." in section
+    assert not any(" less than " in x or "p = " in x for x in section)  # no pair is judged (W2-3)
     changes = section.index("*Changes last week* (settings, copy, campaign and code)")
     assert section[changes + 1] == "  General price_from: 195 → 250"
     assert nums["cohorts"]["2026-W41"]["replied"][28] == [2, 30] and nums["settings_changes"] == 1
@@ -433,14 +443,14 @@ def test_the_cli_prints_the_three_forms_and_posts_nothing(capsys):
     from tests.test_cli import Harness
 
     h = Harness()
-    assert h.run("cohorts") == 0
+    assert h.run("report", "cohorts") == 0  # the weekly table is `report cohorts` from W2-4
     assert "No contact has been enrolled yet." in capsys.readouterr().out
     h.store.insert("accounts", [{"account_id": "a1", "domain": "co1.com", "status": "enrolled", "tier": "Priority"}])
     h.store.insert("contacts", [{"contact_id": "c1", "account_id": "a1", "enrolled_at": datetime(2026, 10, 19, 15, tzinfo=UTC),
                                  "instantly_campaign": "US Outbound – Sam Jackson", "instantly_lead_id": "L1"}])
     h.store.insert("events", [{"event_id": "s1", "contact_id": "c1", "account_id": "a1", "type": "sent", "step": 1,
                                "occurred_at": datetime(2026, 10, 19, 15, tzinfo=UTC)}])
-    assert h.run("cohorts", "--cut", "tier", "--age", "7") == 0
+    assert h.run("report", "cohorts", "--cut", "tier", "--age", "7") == 0
     out = capsys.readouterr().out
     assert "Priority: 2026-W43 (19–25 Oct): 1 company enrolled (1 contact), 1 emailed, 1 delivered" in out
     assert "  7 days: 0 of 1 replied (too few to read)" in out and "14 days" not in out
@@ -457,9 +467,10 @@ def test_cohorts_parses():
     from us_outbound.ops import cli
 
     args = cli.build_parser().parse_args(["cohorts", "changes", "v1", "v2"])
-    assert (args.action, args.versions, args.cut, args.weeks) == ("changes", ["v1", "v2"], "all", 8)
-    assert cli.build_parser().parse_args(["cohorts"]).action is None
+    assert (args.action, args.versions) == ("changes", ["v1", "v2"])
+    args = cli.build_parser().parse_args(["report", "cohorts"])
+    assert (args.name, args.cut, args.weeks) == ("cohorts", "all", 8)
     with pytest.raises(SystemExit):
-        cli.build_parser().parse_args(["cohorts", "--cut", "colour"])
-    assert tuple(cli.build_parser()._subparsers._group_actions[0].choices["cohorts"]._option_string_actions[
+        cli.build_parser().parse_args(["report", "cohorts", "--cut", "colour"])
+    assert tuple(cli.build_parser()._subparsers._group_actions[0].choices["report"]._option_string_actions[
         "--cut"].choices) == cohorts.CUTS

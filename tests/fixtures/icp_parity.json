@@ -1,0 +1,4993 @@
+{
+ "cases": [
+  {
+   "account": {
+    "account_id": "co000",
+    "apollo_industry": "Software",
+    "domain": "gmail.com",
+    "employees": 64,
+    "founded_year": 2025,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "AI & deep tech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "hubspot_former_customer": true
+   },
+   "hard_exclusion": "a former customer in HubSpot",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "suppressed",
+    "a personal email domain"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co001",
+    "apollo_industry": "Software",
+    "domain": "co001.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Cleantech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "hubspot_open_deal": true
+   },
+   "hard_exclusion": "an open deal in HubSpot",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "hubspot_open_deal",
+    "an open deal in HubSpot"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co002",
+    "apollo_industry": "Software",
+    "domain": "co002.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NC",
+    "industry": "Startups",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": "HQ state NC is not active",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "state",
+    "HQ state not active"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co003",
+    "apollo_industry": "Software",
+    "domain": "co003.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Advertising agencies",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "us_headcount": 3
+   },
+   "hard_exclusion": "fewer than 5 US-located people found (3)",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co004",
+    "apollo_industry": "Software",
+    "domain": "co004.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Legal Teams",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co005",
+    "apollo_industry": "Software",
+    "domain": "co005.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Gametech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "hq_state": "CA"
+   },
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co006",
+    "apollo_industry": "Software",
+    "domain": "co006.com",
+    "employees": 64,
+    "founded_year": 2025,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Fintech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": "domain suppressed",
+   "facts": {
+    "founded_year": 2025
+   },
+   "hard_exclusion": "founded less than 2 years ago (2025)",
+   "partner": false,
+   "pulled": false,
+   "suppressed": true,
+   "verify_check": [
+    "suppressed",
+    "domain suppressed"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co007",
+    "apollo_industry": "Software",
+    "domain": "co007.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "IL",
+    "industry": "Digital health",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co008",
+    "apollo_industry": "Software",
+    "domain": "co008.com",
+    "employees": 350,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "PR agencies",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": "size outside the General range",
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "size",
+    "outside 10 to 249 employees"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co009",
+    "apollo_industry": "Software",
+    "domain": "co009.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": null,
+    "industry": "AI & deep tech",
+    "naics": "541511",
+    "size_band": "10-19",
+    "source": "apollo"
+   },
+   "account_block": "partner domain",
+   "facts": {},
+   "hard_exclusion": "HQ state unknown",
+   "partner": true,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "partner",
+    "a partner, never prospected"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co010",
+    "apollo_industry": "Software",
+    "domain": "co010.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "Canada",
+    "hq_state": "NY",
+    "industry": "Publishers",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co011",
+    "apollo_industry": "Software",
+    "domain": "gmail.com",
+    "employees": 249,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Legaltech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "suppressed",
+    "a personal email domain"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co012",
+    "apollo_industry": "Software",
+    "domain": "co012.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Creative & design agencies",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co013",
+    "apollo_industry": "Software",
+    "domain": "co013.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": null,
+    "industry": "Games studios",
+    "naics": "541511",
+    "size_band": "10-19",
+    "source": "site_visit"
+   },
+   "account_block": null,
+   "facts": {
+    "hq_state": "CA"
+   },
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co014",
+    "apollo_industry": "Software",
+    "domain": "gmail.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "IL",
+    "industry": "Technology & Startups",
+    "naics": "541511",
+    "size_band": "10-19",
+    "source": "apollo"
+   },
+   "account_block": "held or pulled at this week's hand-check",
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": true,
+   "suppressed": false,
+   "verify_check": [
+    "suppressed",
+    "a personal email domain"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co015",
+    "apollo_industry": "Software",
+    "domain": "co015.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "AI & deep tech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "us_headcount": 40
+   },
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co016",
+    "apollo_industry": "Software",
+    "domain": "co016.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "New York",
+    "industry": "Proptech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": "HQ state NEW YORK is not active",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co017",
+    "apollo_industry": "Software",
+    "domain": "co017.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Legaltech",
+    "naics": "541511",
+    "size_band": "10-19",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co018",
+    "apollo_industry": "Software",
+    "domain": "co018.com",
+    "employees": 350,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Insurtech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": "size outside the General range",
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "size",
+    "outside 10 to 249 employees"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co019",
+    "apollo_industry": "insurance broker",
+    "domain": "co019.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Hospitality",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": "industry switched off",
+   "facts": {
+    "hubspot_other_owner": true
+   },
+   "hard_exclusion": "insurance or benefits broker, a partner (insurance broker)",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "partner",
+    "a partner, never prospected"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co020",
+    "apollo_industry": "Software",
+    "domain": "co020.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Games studios",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co021",
+    "apollo_industry": "Software",
+    "domain": "co021.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "CA",
+    "industry": "Retail & commercial banks",
+    "naics": "541511",
+    "size_band": null,
+    "source": "apollo"
+   },
+   "account_block": "industry switched off",
+   "facts": {},
+   "hard_exclusion": "HQ in CA, which is never contacted",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "state",
+    "HQ in CA or WA"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co022",
+    "apollo_industry": "Software",
+    "domain": "co022.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Events & experiential agencies",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "hubspot_active_sequence": true
+   },
+   "hard_exclusion": "a contact in an active HubSpot sequence",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "hubspot_owner",
+    "a contact in an active HubSpot sequence"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co023",
+    "apollo_industry": "Software",
+    "domain": "co023.com",
+    "employees": 9,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Games studios",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "site_visit"
+   },
+   "account_block": "size outside the General range",
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "size",
+    "outside 10 to 249 employees"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co024",
+    "apollo_industry": "Software",
+    "domain": "co024.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "WA",
+    "industry": "Fintech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": "HQ in WA, which is never contacted",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "state",
+    "HQ in CA or WA"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co025",
+    "apollo_industry": "Software",
+    "domain": "co025.com",
+    "employees": 9,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Insurtech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "site_visit"
+   },
+   "account_block": "size outside the General range",
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "size",
+    "outside 10 to 249 employees"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co026",
+    "apollo_industry": "Software",
+    "domain": "co026.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": null,
+    "hq_state": "NY",
+    "industry": "Events & experiential agencies",
+    "naics": "541511",
+    "size_band": null,
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co027",
+    "apollo_industry": "Software",
+    "domain": "co027.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Games studios",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "ca_wa_share": 0.1,
+    "fl_share": 0.15
+   },
+   "hard_exclusion": "25% of US staff are in CA, WA or FL, which is not active (over 20%)",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co028",
+    "apollo_industry": "Software",
+    "domain": "co028.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "UX & product design agencies",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "ca_wa_share": 0.3
+   },
+   "hard_exclusion": "30% of US staff are in CA or WA (over 20%)",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co029",
+    "apollo_industry": "Software",
+    "domain": "co029.com",
+    "employees": 350,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "UX & product design agencies",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": "size outside the General range",
+   "facts": {
+    "hubspot_customer": false
+   },
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "size",
+    "outside 10 to 249 employees"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co030",
+    "apollo_industry": "Software",
+    "domain": "co030.com",
+    "employees": 64,
+    "founded_year": null,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Publishers",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "hubspot_other_activity_90d": true
+   },
+   "hard_exclusion": "activity by another HubSpot user in the last 90 days",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "hubspot_owner",
+    "activity by another HubSpot user in the last 90 days"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co031",
+    "apollo_industry": "Software",
+    "domain": "co031.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "IL",
+    "industry": "Gametech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": "domain suppressed",
+   "facts": {
+    "hubspot_other_activity_90d": true
+   },
+   "hard_exclusion": "activity by another HubSpot user in the last 90 days",
+   "partner": false,
+   "pulled": false,
+   "suppressed": true,
+   "verify_check": [
+    "suppressed",
+    "domain suppressed"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co032",
+    "apollo_industry": "Software",
+    "domain": "co032.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Edtech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "hubspot_opted_out_or_bounced": true
+   },
+   "hard_exclusion": "a contact opted out or bounced in HubSpot",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "hubspot_opted_out",
+    "a contact opted out or bounced in HubSpot"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co033",
+    "apollo_industry": "Software",
+    "domain": "co033.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "Canada",
+    "hq_state": "NY",
+    "industry": "Insurtech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co034",
+    "apollo_industry": "Software",
+    "domain": "",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Digital health",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": "no domain",
+   "facts": {
+    "hubspot_former_customer": true
+   },
+   "hard_exclusion": "a former customer in HubSpot",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "incomplete",
+    "no domain"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co035",
+    "apollo_industry": "Software",
+    "domain": "co035.com",
+    "employees": 350,
+    "founded_year": 2010,
+    "hq_country": null,
+    "hq_state": "NY",
+    "industry": "Legal Teams",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": "size outside the General range",
+   "facts": {
+    "hq_state": "NY"
+   },
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "size",
+    "outside 10 to 249 employees"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co036",
+    "apollo_industry": "Software",
+    "domain": "co036.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Fintech",
+    "naics": "541511",
+    "size_band": "10-19",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co037",
+    "apollo_industry": "Software",
+    "domain": "co037.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Healthtech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "declined_in_slack": true
+   },
+   "hard_exclusion": "dropped by an approver at a send approval in Slack",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co038",
+    "apollo_industry": "Software",
+    "domain": "co038.com",
+    "employees": 250,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Advertising agencies",
+    "naics": "541511",
+    "size_band": "10-19",
+    "source": "site_visit"
+   },
+   "account_block": "size outside the General range",
+   "facts": {
+    "hubspot_active_sequence": true
+   },
+   "hard_exclusion": "a contact in an active HubSpot sequence",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "size",
+    "outside 10 to 249 employees"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co039",
+    "apollo_industry": "Software",
+    "domain": "co039.com",
+    "employees": 9,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Pharma & medical devices",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": "industry switched off",
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "size",
+    "outside 10 to 249 employees"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co040",
+    "apollo_industry": "Software",
+    "domain": "co040.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "IL",
+    "industry": "Proptech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co041",
+    "apollo_industry": "Software",
+    "domain": "co041.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Events & experiential agencies",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "naics": "5242"
+   },
+   "hard_exclusion": "insurance or benefits broker, a partner (NAICS 5242)",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "partner",
+    "a partner, never prospected"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co042",
+    "apollo_industry": "Software",
+    "domain": "co042.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "Canada",
+    "hq_state": "NY",
+    "industry": "Fintech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co043",
+    "apollo_industry": "Software",
+    "domain": "co043.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Marketing & Creative Agencies",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "hubspot_other_owner": true
+   },
+   "hard_exclusion": "owned by someone else in HubSpot",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "hubspot_owner",
+    "owned by someone else in HubSpot"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co044",
+    "apollo_industry": "Software",
+    "domain": "co044.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Marketing agencies",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "hubspot_open_deal": true
+   },
+   "hard_exclusion": "an open deal in HubSpot",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "hubspot_open_deal",
+    "an open deal in HubSpot"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co045",
+    "apollo_industry": "Software",
+    "domain": "co045.com",
+    "employees": null,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Healthtech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": "domain suppressed",
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": true,
+   "verify_check": [
+    "suppressed",
+    "domain suppressed"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co046",
+    "apollo_industry": "Software",
+    "domain": "co046.com",
+    "employees": 64,
+    "founded_year": null,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Cleantech",
+    "naics": "541810",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": "held or pulled at this week's hand-check",
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": true,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co047",
+    "apollo_industry": "Software",
+    "domain": "co047.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Marketing agencies",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "hq_state": "CA"
+   },
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co048",
+    "apollo_industry": "Software",
+    "domain": "co048.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "WA",
+    "industry": "Edtech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": "domain suppressed",
+   "facts": {},
+   "hard_exclusion": "HQ in WA, which is never contacted",
+   "partner": false,
+   "pulled": false,
+   "suppressed": true,
+   "verify_check": [
+    "suppressed",
+    "domain suppressed"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co049",
+    "apollo_industry": "Software",
+    "domain": "co049.com",
+    "employees": 10,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Publishers",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co050",
+    "apollo_industry": "Software",
+    "domain": "co050.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "New York",
+    "industry": "PR agencies",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": "HQ state NEW YORK is not active",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co051",
+    "apollo_industry": "Software",
+    "domain": "co051.com",
+    "employees": 250,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Gametech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": "size outside the General range",
+   "facts": {
+    "founded_year": 2025
+   },
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "size",
+    "outside 10 to 249 employees"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co052",
+    "apollo_industry": "Software",
+    "domain": "co052.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "Canada",
+    "hq_state": "NY",
+    "industry": "Technology & Startups",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "hubspot_opted_out_or_bounced": true
+   },
+   "hard_exclusion": "a contact opted out or bounced in HubSpot",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "hubspot_opted_out",
+    "a contact opted out or bounced in HubSpot"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co053",
+    "apollo_industry": "Software",
+    "domain": "co053.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": null,
+    "industry": "Legal Teams",
+    "naics": "541511",
+    "size_band": "250-499",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": "HQ state unknown",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "state_unknown",
+    "HQ state unknown"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co054",
+    "apollo_industry": "Software",
+    "domain": "co054.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Legal Teams",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "hubspot_customer": true
+   },
+   "hard_exclusion": "a customer in HubSpot",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "hubspot_customer",
+    "a customer in HubSpot"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co055",
+    "apollo_industry": "Software",
+    "domain": "co055.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Adtech & martech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "founded_year": 2025
+   },
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co056",
+    "apollo_industry": "Software",
+    "domain": "co056.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Research & market intelligence",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": "held or pulled at this week's hand-check",
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": true,
+   "suppressed": false,
+   "verify_check": [
+    "industry_off",
+    "industry switched off"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co057",
+    "apollo_industry": "Software",
+    "domain": "co057.com",
+    "employees": 350,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "PR agencies",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": "size outside the General range",
+   "facts": {
+    "hubspot_open_deal": true
+   },
+   "hard_exclusion": "an open deal in HubSpot",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "size",
+    "outside 10 to 249 employees"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co058",
+    "apollo_industry": "Software",
+    "domain": "co058.com",
+    "employees": 250,
+    "founded_year": 2010,
+    "hq_country": null,
+    "hq_state": "NY",
+    "industry": "Proptech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": "size outside the General range",
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "size",
+    "outside 10 to 249 employees"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co059",
+    "apollo_industry": "Software",
+    "domain": "co059.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "FL",
+    "industry": "Production studios",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": "HQ state FL is not active",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "state",
+    "HQ state not active"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co060",
+    "apollo_industry": "Software",
+    "domain": "co060.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Publishers",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": "partner domain",
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": true,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "partner",
+    "a partner, never prospected"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co061",
+    "apollo_industry": "Software",
+    "domain": "co061.com",
+    "employees": null,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Marketing agencies",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "us_headcount": 40
+   },
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co062",
+    "apollo_industry": "Software",
+    "domain": "co062.com",
+    "employees": 249,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Games studios",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co063",
+    "apollo_industry": "Software",
+    "domain": "co063.com",
+    "employees": 9,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Technology & Startups",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": "domain suppressed",
+   "facts": {
+    "founded_year": 2025
+   },
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": true,
+   "verify_check": [
+    "suppressed",
+    "domain suppressed"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co064",
+    "apollo_industry": "Software",
+    "domain": "co064.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Agritech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "hubspot_other_activity_90d": true
+   },
+   "hard_exclusion": "activity by another HubSpot user in the last 90 days",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "hubspot_owner",
+    "activity by another HubSpot user in the last 90 days"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co065",
+    "apollo_industry": "Software",
+    "domain": "co065.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Digital health",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "hubspot_former_customer": true
+   },
+   "hard_exclusion": "a former customer in HubSpot",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "hubspot_customer",
+    "a former customer in HubSpot"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co066",
+    "apollo_industry": "Software",
+    "domain": "co066.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Legaltech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "site_visit"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co067",
+    "apollo_industry": "Software",
+    "domain": "co067.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": null,
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "no_label",
+    "no Industries label"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co068",
+    "apollo_industry": "Software",
+    "domain": "co068.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "New York",
+    "industry": "Agritech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "hubspot_customer": false
+   },
+   "hard_exclusion": "HQ state NEW YORK is not active",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co069",
+    "apollo_industry": "Software",
+    "domain": "gmail.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "FL",
+    "industry": "Gametech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": "HQ state FL is not active",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "suppressed",
+    "a personal email domain"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co070",
+    "apollo_industry": "Software",
+    "domain": "co070.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": null,
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "no_label",
+    "no Industries label"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co071",
+    "apollo_industry": "Software",
+    "domain": "co071.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Agritech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co072",
+    "apollo_industry": "Software",
+    "domain": "co072.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Advertising agencies",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co073",
+    "apollo_industry": "Software",
+    "domain": "co073.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": null,
+    "naics": "541511",
+    "size_band": "250-499",
+    "source": "apollo"
+   },
+   "account_block": "held or pulled at this week's hand-check",
+   "facts": {
+    "founded_year": 2025
+   },
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": true,
+   "suppressed": false,
+   "verify_check": [
+    "no_label",
+    "no Industries label"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co074",
+    "apollo_industry": "Software",
+    "domain": "co074.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "WA",
+    "industry": "Startups",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": "held or pulled at this week's hand-check",
+   "facts": {
+    "hubspot_former_customer": true
+   },
+   "hard_exclusion": "a former customer in HubSpot",
+   "partner": false,
+   "pulled": true,
+   "suppressed": false,
+   "verify_check": [
+    "state",
+    "HQ in CA or WA"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co075",
+    "apollo_industry": "Software",
+    "domain": "co075.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "Canada",
+    "hq_state": "NY",
+    "industry": "Technology & Startups",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co076",
+    "apollo_industry": "Software",
+    "domain": "co076.com",
+    "employees": 64,
+    "founded_year": 2025,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Legal Teams",
+    "naics": "541511",
+    "size_band": "250-499",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "keywords": [
+     "payroll"
+    ]
+   },
+   "hard_exclusion": "HR-tech vendor, a partner (payroll)",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "partner",
+    "a partner, never prospected"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co077",
+    "apollo_industry": "Software",
+    "domain": "co077.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Not a label",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": "partner domain",
+   "facts": {
+    "keywords": [
+     "payroll"
+    ]
+   },
+   "hard_exclusion": "HR-tech vendor, a partner (payroll)",
+   "partner": true,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "partner",
+    "a partner, never prospected"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co078",
+    "apollo_industry": "Software",
+    "domain": "co078.com",
+    "employees": 9,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Agritech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": "size outside the General range",
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "size",
+    "outside 10 to 249 employees"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co079",
+    "apollo_industry": "Software",
+    "domain": "co079.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": null,
+    "industry": "Legaltech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": "HQ state unknown",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "state_unknown",
+    "HQ state unknown"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co080",
+    "apollo_industry": "Software",
+    "domain": "co080.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "New York",
+    "industry": "PR agencies",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "hubspot_active_sequence": true
+   },
+   "hard_exclusion": "a contact in an active HubSpot sequence",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "hubspot_owner",
+    "a contact in an active HubSpot sequence"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co081",
+    "apollo_industry": "Software",
+    "domain": "",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": null,
+    "industry": "Creative & design agencies",
+    "naics": "541511",
+    "size_band": "10-19",
+    "source": "apollo"
+   },
+   "account_block": "no domain",
+   "facts": {
+    "hubspot_open_deal": true
+   },
+   "hard_exclusion": "an open deal in HubSpot",
+   "partner": false,
+   "pulled": false,
+   "suppressed": true,
+   "verify_check": [
+    "incomplete",
+    "no domain"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co082",
+    "apollo_industry": "Software",
+    "domain": "co082.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Not a label",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "site_visit"
+   },
+   "account_block": "partner domain",
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": true,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "partner",
+    "a partner, never prospected"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co083",
+    "apollo_industry": "Software",
+    "domain": "co083.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Events & experiential agencies",
+    "naics": "541511",
+    "size_band": "250-499",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co084",
+    "apollo_industry": null,
+    "domain": "co084.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": null,
+    "hq_state": "NY",
+    "industry": "Traveltech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "hubspot_active_sequence": true
+   },
+   "hard_exclusion": "a contact in an active HubSpot sequence",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "hubspot_owner",
+    "a contact in an active HubSpot sequence"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co085",
+    "apollo_industry": "Software",
+    "domain": "co085.com",
+    "employees": 350,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Content agencies",
+    "naics": "541511",
+    "size_band": "250-499",
+    "source": "apollo"
+   },
+   "account_block": "size outside the General range",
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "size",
+    "outside 10 to 249 employees"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co086",
+    "apollo_industry": "Software",
+    "domain": "co086.com",
+    "employees": null,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Cybersecurity",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "ca_wa_share": 0.3
+   },
+   "hard_exclusion": "30% of US staff are in CA or WA (over 20%)",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co087",
+    "apollo_industry": "Software",
+    "domain": "co087.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": null,
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "declined_in_slack": true
+   },
+   "hard_exclusion": "dropped by an approver at a send approval in Slack",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "no_label",
+    "no Industries label"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co088",
+    "apollo_industry": "Software",
+    "domain": "co088.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "CA",
+    "industry": "Technology & Startups",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": "HQ in CA, which is never contacted",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "state",
+    "HQ in CA or WA"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co089",
+    "apollo_industry": "Software",
+    "domain": "",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "CA",
+    "industry": null,
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": "no domain",
+   "facts": {
+    "hubspot_active_sequence": true
+   },
+   "hard_exclusion": "a contact in an active HubSpot sequence",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "incomplete",
+    "no domain"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co090",
+    "apollo_industry": "Software",
+    "domain": "co090.com",
+    "employees": 64,
+    "founded_year": 2025,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Gametech",
+    "naics": "541511",
+    "size_band": null,
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "us_headcount": 3
+   },
+   "hard_exclusion": "fewer than 5 US-located people found (3)",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co091",
+    "apollo_industry": "Software",
+    "domain": "co091.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": null,
+    "industry": "Marketing & Creative Agencies",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": "HQ state unknown",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "state_unknown",
+    "HQ state unknown"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co092",
+    "apollo_industry": "Software",
+    "domain": "co092.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "FL",
+    "industry": "Digital health",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": "HQ state FL is not active",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "state",
+    "HQ state not active"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co093",
+    "apollo_industry": "Software",
+    "domain": "co093.com",
+    "employees": 64,
+    "founded_year": 2025,
+    "hq_country": "Canada",
+    "hq_state": "NY",
+    "industry": "Publishers",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": "founded less than 2 years ago (2025)",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co094",
+    "apollo_industry": "Software",
+    "domain": "co094.com",
+    "employees": null,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "CA",
+    "industry": "UX & product design agencies",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": "HQ in CA, which is never contacted",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "state",
+    "HQ in CA or WA"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co095",
+    "apollo_industry": "Software",
+    "domain": "co095.com",
+    "employees": 250,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Technology & Startups",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "site_visit"
+   },
+   "account_block": "size outside the General range",
+   "facts": {
+    "us_headcount": 3
+   },
+   "hard_exclusion": "fewer than 5 US-located people found (3)",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "size",
+    "outside 10 to 249 employees"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co096",
+    "apollo_industry": "Software",
+    "domain": "co096.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": null,
+    "industry": "Gametech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "founded_year": 2025
+   },
+   "hard_exclusion": "HQ state unknown",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "state_unknown",
+    "HQ state unknown"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co097",
+    "apollo_industry": "Software",
+    "domain": "co097.com",
+    "employees": 10,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Agritech",
+    "naics": "541511",
+    "size_band": "10-19",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "declined_in_slack": true
+   },
+   "hard_exclusion": "dropped by an approver at a send approval in Slack",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co098",
+    "apollo_industry": "Software",
+    "domain": "co098.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Content agencies",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co099",
+    "apollo_industry": "Software",
+    "domain": "co099.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Digital health",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co100",
+    "apollo_industry": "Software",
+    "domain": "co100.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Marketing agencies",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "us_headcount": 40
+   },
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co101",
+    "apollo_industry": "Software",
+    "domain": "co101.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Marketing & Creative Agencies",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "founded_year": 2025
+   },
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co102",
+    "apollo_industry": "Software",
+    "domain": "co102.com",
+    "employees": 64,
+    "founded_year": 2025,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Fintech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": "founded less than 2 years ago (2025)",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co103",
+    "apollo_industry": "Software",
+    "domain": "co103.com",
+    "employees": null,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "CA",
+    "industry": "Traveltech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": "HQ in CA, which is never contacted",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "state",
+    "HQ in CA or WA"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co104",
+    "apollo_industry": "Software",
+    "domain": "co104.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "WA",
+    "industry": "Content agencies",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "hubspot_customer": true
+   },
+   "hard_exclusion": "a customer in HubSpot",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "state",
+    "HQ in CA or WA"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co105",
+    "apollo_industry": "Software",
+    "domain": "co105.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Production studios",
+    "naics": "541511",
+    "size_band": "250-499",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co106",
+    "apollo_industry": "Software",
+    "domain": "co106.gov",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Edtech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": "a public body, never prospected",
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "public_body",
+    "a public body, never prospected"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co107",
+    "apollo_industry": "Software",
+    "domain": "co107.com",
+    "employees": 249,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "WA",
+    "industry": "Events & experiential agencies",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": "HQ in WA, which is never contacted",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "state",
+    "HQ in CA or WA"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co108",
+    "apollo_industry": "Software",
+    "domain": "co108.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Digital health",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co109",
+    "apollo_industry": "Software",
+    "domain": "co109.com",
+    "employees": 249,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Insurtech",
+    "naics": "541511",
+    "size_band": "250-499",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "hubspot_former_customer": true
+   },
+   "hard_exclusion": "a former customer in HubSpot",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "hubspot_customer",
+    "a former customer in HubSpot"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co110",
+    "apollo_industry": "Software",
+    "domain": "co110.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "IL",
+    "industry": "Cybersecurity",
+    "naics": "541511",
+    "size_band": "10-19",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co111",
+    "apollo_industry": "Software",
+    "domain": "co111.com",
+    "employees": 249,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Agritech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co112",
+    "apollo_industry": "Software",
+    "domain": "co112.com",
+    "employees": null,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Content agencies",
+    "naics": "541511",
+    "size_band": "10-19",
+    "source": "apollo"
+   },
+   "account_block": "domain suppressed",
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": true,
+   "pulled": false,
+   "suppressed": true,
+   "verify_check": [
+    "suppressed",
+    "domain suppressed"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co113",
+    "apollo_industry": "Software",
+    "domain": "co113.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Content agencies",
+    "naics": "541511",
+    "size_band": "250-499",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "us_headcount": 3
+   },
+   "hard_exclusion": "fewer than 5 US-located people found (3)",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co114",
+    "apollo_industry": "Software",
+    "domain": "co114.com",
+    "employees": 64,
+    "founded_year": 2025,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Legaltech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "hubspot_open_deal": true
+   },
+   "hard_exclusion": "an open deal in HubSpot",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "hubspot_open_deal",
+    "an open deal in HubSpot"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co115",
+    "apollo_industry": "behavioral health",
+    "domain": "co115.com",
+    "employees": 64,
+    "founded_year": null,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Games studios",
+    "naics": "541511",
+    "size_band": "250-499",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "ca_wa_share": 0.3
+   },
+   "hard_exclusion": "behavioral-health provider, a partner (behavioral health)",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "partner",
+    "a partner, never prospected"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co116",
+    "apollo_industry": "Software",
+    "domain": "gmail.com",
+    "employees": 249,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Production studios",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "suppressed",
+    "a personal email domain"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co117",
+    "apollo_industry": "Software",
+    "domain": "co117.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "New York",
+    "industry": "Creative & design agencies",
+    "naics": "541511",
+    "size_band": "250-499",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": "HQ state NEW YORK is not active",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co118",
+    "apollo_industry": "Software",
+    "domain": "co118.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Legal Teams",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "hubspot_former_customer": true
+   },
+   "hard_exclusion": "a former customer in HubSpot",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "hubspot_customer",
+    "a former customer in HubSpot"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co119",
+    "apollo_industry": "Software",
+    "domain": "co119.com",
+    "employees": 64,
+    "founded_year": null,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Technology & Startups",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co120",
+    "apollo_industry": "Software",
+    "domain": "co120.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "FL",
+    "industry": "Technology & Startups",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "hubspot_other_activity_90d": true
+   },
+   "hard_exclusion": "activity by another HubSpot user in the last 90 days",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "state",
+    "HQ state not active"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co121",
+    "apollo_industry": "Software",
+    "domain": "co121.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NC",
+    "industry": "Agritech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "hubspot_former_customer": true
+   },
+   "hard_exclusion": "a former customer in HubSpot",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "state",
+    "HQ state not active"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co122",
+    "apollo_industry": "Software",
+    "domain": "co122.com",
+    "employees": 350,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "FL",
+    "industry": "Events & experiential agencies",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": "size outside the General range",
+   "facts": {},
+   "hard_exclusion": "HQ state FL is not active",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "state",
+    "HQ state not active"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co123",
+    "apollo_industry": "Software",
+    "domain": "co123.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Healthtech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": "domain suppressed",
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": true,
+   "verify_check": [
+    "suppressed",
+    "domain suppressed"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co124",
+    "apollo_industry": "Software",
+    "domain": "co124.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Healthtech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "hubspot_opted_out_or_bounced": true
+   },
+   "hard_exclusion": "a contact opted out or bounced in HubSpot",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "hubspot_opted_out",
+    "a contact opted out or bounced in HubSpot"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co125",
+    "apollo_industry": "Software",
+    "domain": "co125.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Publishers",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "ca_wa_share": 0.3
+   },
+   "hard_exclusion": "30% of US staff are in CA or WA (over 20%)",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co126",
+    "apollo_industry": "Software",
+    "domain": "co126.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Agritech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": "domain suppressed",
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": true,
+   "pulled": false,
+   "suppressed": true,
+   "verify_check": [
+    "suppressed",
+    "domain suppressed"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co127",
+    "apollo_industry": "Software",
+    "domain": "co127.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "PR agencies",
+    "naics": "541511",
+    "size_band": "10-19",
+    "source": "apollo"
+   },
+   "account_block": "held or pulled at this week's hand-check",
+   "facts": {
+    "ca_wa_share": 0.3
+   },
+   "hard_exclusion": "30% of US staff are in CA or WA (over 20%)",
+   "partner": false,
+   "pulled": true,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co128",
+    "apollo_industry": "Software",
+    "domain": "co128.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Startups",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "hq_state": "NY"
+   },
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co129",
+    "apollo_industry": "Software",
+    "domain": "co129.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NC",
+    "industry": "Insurtech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "hubspot_open_deal": true
+   },
+   "hard_exclusion": "an open deal in HubSpot",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "state",
+    "HQ state not active"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co130",
+    "apollo_industry": "Software",
+    "domain": "co130.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Digital health",
+    "naics": null,
+    "size_band": "50-99",
+    "source": "site_visit"
+   },
+   "account_block": null,
+   "facts": {
+    "hubspot_active_sequence": true
+   },
+   "hard_exclusion": "a contact in an active HubSpot sequence",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "hubspot_owner",
+    "a contact in an active HubSpot sequence"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co131",
+    "apollo_industry": "Software",
+    "domain": "co131.gov",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Healthtech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": "a public body, never prospected",
+   "facts": {
+    "us_headcount": 3
+   },
+   "hard_exclusion": "fewer than 5 US-located people found (3)",
+   "partner": true,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "public_body",
+    "a public body, never prospected"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co132",
+    "apollo_industry": "Software",
+    "domain": "co132.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Adtech & martech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co133",
+    "apollo_industry": "Software",
+    "domain": "co133.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Traveltech",
+    "naics": "5242",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": "insurance or benefits broker, a partner (NAICS 5242)",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "partner",
+    "a partner, never prospected"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co134",
+    "apollo_industry": "Software",
+    "domain": "co134.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "CA",
+    "industry": "Insurtech",
+    "naics": "541511",
+    "size_band": "10-19",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": "HQ in CA, which is never contacted",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "state",
+    "HQ in CA or WA"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co135",
+    "apollo_industry": "Software",
+    "domain": "co135.com",
+    "employees": null,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Marketing agencies",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co136",
+    "apollo_industry": "Software",
+    "domain": "co136.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Content agencies",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co137",
+    "apollo_industry": "Software",
+    "domain": "co137.com",
+    "employees": 9,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "WA",
+    "industry": "Proptech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": "size outside the General range",
+   "facts": {
+    "us_headcount": 3
+   },
+   "hard_exclusion": "HQ in WA, which is never contacted",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "state",
+    "HQ in CA or WA"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co138",
+    "apollo_industry": "Software",
+    "domain": "co138.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Games studios",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "hubspot_other_owner": true
+   },
+   "hard_exclusion": "owned by someone else in HubSpot",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "hubspot_owner",
+    "owned by someone else in HubSpot"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co139",
+    "apollo_industry": "Software",
+    "domain": "co139.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Legal Teams",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co140",
+    "apollo_industry": "Software",
+    "domain": "co140.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "Canada",
+    "hq_state": "IL",
+    "industry": "Adtech & martech",
+    "naics": "541511",
+    "size_band": "10-19",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co141",
+    "apollo_industry": "Software",
+    "domain": "co141.gov",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Cafes & coffee shops",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": "a public body, never prospected",
+   "facts": {
+    "ca_wa_share": 0.1,
+    "fl_share": 0.15
+   },
+   "hard_exclusion": "25% of US staff are in CA, WA or FL, which is not active (over 20%)",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "public_body",
+    "a public body, never prospected"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co142",
+    "apollo_industry": "Software",
+    "domain": "co142.com",
+    "employees": 250,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Cybersecurity",
+    "naics": "541511",
+    "size_band": null,
+    "source": "apollo"
+   },
+   "account_block": "size outside the General range",
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "size",
+    "outside 10 to 249 employees"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co143",
+    "apollo_industry": "Software",
+    "domain": "co143.com",
+    "employees": 64,
+    "founded_year": null,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Cleantech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "keywords": [
+     "payroll"
+    ]
+   },
+   "hard_exclusion": "HR-tech vendor, a partner (payroll)",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "partner",
+    "a partner, never prospected"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co144",
+    "apollo_industry": "Software",
+    "domain": "co144.com",
+    "employees": 350,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "CA",
+    "industry": "DTC brands",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": "industry switched off",
+   "facts": {},
+   "hard_exclusion": "HQ in CA, which is never contacted",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "state",
+    "HQ in CA or WA"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co145",
+    "apollo_industry": "Software",
+    "domain": "co145.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Marketing agencies",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co146",
+    "apollo_industry": "Software",
+    "domain": "co146.com",
+    "employees": 9,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Production studios",
+    "naics": "541511",
+    "size_band": null,
+    "source": "apollo"
+   },
+   "account_block": "domain suppressed",
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": true,
+   "verify_check": [
+    "suppressed",
+    "domain suppressed"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co147",
+    "apollo_industry": "Software",
+    "domain": "co147.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": null,
+    "hq_state": "New York",
+    "industry": "Digital health",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": "HQ state NEW YORK is not active",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co148",
+    "apollo_industry": "Software",
+    "domain": "co148.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": null,
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "no_label",
+    "no Industries label"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co149",
+    "apollo_industry": "Software",
+    "domain": "co149.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "IL",
+    "industry": "Content agencies",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co150",
+    "apollo_industry": "Software",
+    "domain": "co150.com",
+    "employees": 350,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "CA",
+    "industry": "Adtech & martech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": "size outside the General range",
+   "facts": {},
+   "hard_exclusion": "HQ in CA, which is never contacted",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "state",
+    "HQ in CA or WA"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co151",
+    "apollo_industry": "Software",
+    "domain": "co151.com",
+    "employees": 249,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Creative & design agencies",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "hq_state": "NY"
+   },
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co152",
+    "apollo_industry": "Software",
+    "domain": "co152.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "WA",
+    "industry": "PR agencies",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": "HQ in WA, which is never contacted",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "state",
+    "HQ in CA or WA"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co153",
+    "apollo_industry": "Software",
+    "domain": "gmail.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Startups",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "suppressed",
+    "a personal email domain"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co154",
+    "apollo_industry": "Software",
+    "domain": "co154.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Startups",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "keywords": [
+     "payroll"
+    ]
+   },
+   "hard_exclusion": "HR-tech vendor, a partner (payroll)",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "partner",
+    "a partner, never prospected"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co155",
+    "apollo_industry": "Software",
+    "domain": "co155.com",
+    "employees": 10,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Marketing agencies",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": "held or pulled at this week's hand-check",
+   "facts": {
+    "hubspot_customer": false
+   },
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": true,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co156",
+    "apollo_industry": "behavioral health",
+    "domain": "co156.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "IL",
+    "industry": "UX & product design agencies",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "us_headcount": 40
+   },
+   "hard_exclusion": "behavioral-health provider, a partner (behavioral health)",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "partner",
+    "a partner, never prospected"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co157",
+    "apollo_industry": "Software",
+    "domain": "co157.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NC",
+    "industry": "Healthtech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "site_visit"
+   },
+   "account_block": null,
+   "facts": {
+    "hubspot_opted_out_or_bounced": true
+   },
+   "hard_exclusion": "a contact opted out or bounced in HubSpot",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "hubspot_opted_out",
+    "a contact opted out or bounced in HubSpot"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co158",
+    "apollo_industry": "Software",
+    "domain": "co158.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "FL",
+    "industry": "Advertising agencies",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "hubspot_open_deal": true
+   },
+   "hard_exclusion": "an open deal in HubSpot",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "state",
+    "HQ state not active"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co159",
+    "apollo_industry": "Software",
+    "domain": "co159.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Advertising agencies",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "ca_wa_share": 0.1,
+    "fl_share": 0.15
+   },
+   "hard_exclusion": "25% of US staff are in CA, WA or FL, which is not active (over 20%)",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co160",
+    "apollo_industry": "Software",
+    "domain": "co160.com",
+    "employees": 250,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "CA",
+    "industry": "Creative & design agencies",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": "size outside the General range",
+   "facts": {},
+   "hard_exclusion": "HQ in CA, which is never contacted",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "state",
+    "HQ in CA or WA"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co161",
+    "apollo_industry": "Software",
+    "domain": "co161.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Healthtech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "hubspot_active_sequence": true
+   },
+   "hard_exclusion": "a contact in an active HubSpot sequence",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "hubspot_owner",
+    "a contact in an active HubSpot sequence"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co162",
+    "apollo_industry": "Software",
+    "domain": "co162.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "UX & product design agencies",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "hubspot_active_sequence": true
+   },
+   "hard_exclusion": "a contact in an active HubSpot sequence",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "hubspot_owner",
+    "a contact in an active HubSpot sequence"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co163",
+    "apollo_industry": "Software",
+    "domain": "co163.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "Canada",
+    "hq_state": "NY",
+    "industry": "Digital health",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co164",
+    "apollo_industry": "Software",
+    "domain": "co164.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Creative & design agencies",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "hubspot_open_deal": true
+   },
+   "hard_exclusion": "an open deal in HubSpot",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "hubspot_open_deal",
+    "an open deal in HubSpot"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co165",
+    "apollo_industry": "Software",
+    "domain": "co165.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Content agencies",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co166",
+    "apollo_industry": "Software",
+    "domain": "co166.com",
+    "employees": 64,
+    "founded_year": 2025,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Not a label",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": "partner domain",
+   "facts": {
+    "declined_in_slack": true
+   },
+   "hard_exclusion": "dropped by an approver at a send approval in Slack",
+   "partner": true,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "partner",
+    "a partner, never prospected"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co167",
+    "apollo_industry": "Software",
+    "domain": "co167.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "FL",
+    "industry": "PR agencies",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": "partner domain",
+   "facts": {
+    "declined_in_slack": true
+   },
+   "hard_exclusion": "dropped by an approver at a send approval in Slack",
+   "partner": true,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "partner",
+    "a partner, never prospected"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co168",
+    "apollo_industry": "Software",
+    "domain": "",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Marketing agencies",
+    "naics": "541511",
+    "size_band": "10-19",
+    "source": "apollo"
+   },
+   "account_block": "no domain",
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "incomplete",
+    "no domain"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co169",
+    "apollo_industry": "Software",
+    "domain": "co169.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Proptech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "hubspot_other_owner": true
+   },
+   "hard_exclusion": "owned by someone else in HubSpot",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "hubspot_owner",
+    "owned by someone else in HubSpot"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co170",
+    "apollo_industry": "Software",
+    "domain": "co170.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Community colleges",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": "industry switched off",
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "industry_off",
+    "industry switched off"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co171",
+    "apollo_industry": "Software",
+    "domain": "co171.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Games studios",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co172",
+    "apollo_industry": "Software",
+    "domain": "co172.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Gametech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co173",
+    "apollo_industry": "Software",
+    "domain": "co173.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Cleantech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "hubspot_active_sequence": true
+   },
+   "hard_exclusion": "a contact in an active HubSpot sequence",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "hubspot_owner",
+    "a contact in an active HubSpot sequence"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co174",
+    "apollo_industry": "Software",
+    "domain": "co174.com",
+    "employees": 9,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Cleantech",
+    "naics": "541511",
+    "size_band": "10-19",
+    "source": "apollo"
+   },
+   "account_block": "domain suppressed",
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": true,
+   "verify_check": [
+    "suppressed",
+    "domain suppressed"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co175",
+    "apollo_industry": "Software",
+    "domain": "co175.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": null,
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "no_label",
+    "no Industries label"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co176",
+    "apollo_industry": "Software",
+    "domain": "co176.com",
+    "employees": 350,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": null,
+    "industry": "Healthtech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": "size outside the General range",
+   "facts": {},
+   "hard_exclusion": "HQ state unknown",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "state_unknown",
+    "HQ state unknown"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co177",
+    "apollo_industry": "Software",
+    "domain": "co177.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Adtech & martech",
+    "naics": "541511",
+    "size_band": null,
+    "source": "apollo"
+   },
+   "account_block": "partner domain",
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": true,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "partner",
+    "a partner, never prospected"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co178",
+    "apollo_industry": "Software",
+    "domain": "co178.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": null,
+    "hq_state": "NY",
+    "industry": "Events & experiential agencies",
+    "naics": "541511",
+    "size_band": "10-19",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "us_headcount": 3
+   },
+   "hard_exclusion": "fewer than 5 US-located people found (3)",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co179",
+    "apollo_industry": "Software",
+    "domain": "co179.com",
+    "employees": 9,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Plumbing & HVAC",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": "industry switched off",
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "size",
+    "outside 10 to 249 employees"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co180",
+    "apollo_industry": "Software",
+    "domain": "gmail.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Proptech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "suppressed",
+    "a personal email domain"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co181",
+    "apollo_industry": "Software",
+    "domain": "co181.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Legal Teams",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "us_headcount": 3
+   },
+   "hard_exclusion": "fewer than 5 US-located people found (3)",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co182",
+    "apollo_industry": "Software",
+    "domain": "co182.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Publishers",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "site_visit"
+   },
+   "account_block": null,
+   "facts": {
+    "hubspot_other_activity_90d": true
+   },
+   "hard_exclusion": "activity by another HubSpot user in the last 90 days",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "hubspot_owner",
+    "activity by another HubSpot user in the last 90 days"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co183",
+    "apollo_industry": "Software",
+    "domain": "co183.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "Canada",
+    "hq_state": "New York",
+    "industry": "Creative & design agencies",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "hubspot_customer": true
+   },
+   "hard_exclusion": "a customer in HubSpot",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "hubspot_customer",
+    "a customer in HubSpot"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co184",
+    "apollo_industry": "Software",
+    "domain": "co184.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "Canada",
+    "hq_state": "NY",
+    "industry": "Creative & design agencies",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": "partner domain",
+   "facts": {
+    "hubspot_other_activity_90d": true
+   },
+   "hard_exclusion": "activity by another HubSpot user in the last 90 days",
+   "partner": true,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "partner",
+    "a partner, never prospected"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co185",
+    "apollo_industry": "Software",
+    "domain": "co185.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "New York",
+    "industry": "Events & experiential agencies",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "ca_wa_share": 0.1,
+    "fl_share": 0.15
+   },
+   "hard_exclusion": "HQ state NEW YORK is not active",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co186",
+    "apollo_industry": "Software",
+    "domain": "co186.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Legal Teams",
+    "naics": "541810",
+    "size_band": null,
+    "source": "apollo"
+   },
+   "account_block": "partner domain",
+   "facts": {
+    "naics": "5242"
+   },
+   "hard_exclusion": "insurance or benefits broker, a partner (NAICS 5242)",
+   "partner": true,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "partner",
+    "a partner, never prospected"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co187",
+    "apollo_industry": "Software",
+    "domain": "gmail.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": null,
+    "industry": "Startups",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "hq_state": "CA"
+   },
+   "hard_exclusion": "HQ in CA, which is never contacted",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "suppressed",
+    "a personal email domain"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co188",
+    "apollo_industry": "Software",
+    "domain": "co188.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Gametech",
+    "naics": "561330",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "hubspot_open_deal": true
+   },
+   "hard_exclusion": "PEO, a partner (NAICS 561330)",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "partner",
+    "a partner, never prospected"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co189",
+    "apollo_industry": "Software",
+    "domain": "co189.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NC",
+    "industry": "Healthtech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "founded_year": 2025
+   },
+   "hard_exclusion": "HQ state NC is not active",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "state",
+    "HQ state not active"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co190",
+    "apollo_industry": "Software",
+    "domain": "co190.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Publishers",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "hubspot_other_activity_90d": true
+   },
+   "hard_exclusion": "activity by another HubSpot user in the last 90 days",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "hubspot_owner",
+    "activity by another HubSpot user in the last 90 days"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co191",
+    "apollo_industry": "Software",
+    "domain": "co191.com",
+    "employees": null,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Technology & Startups",
+    "naics": "541511",
+    "size_band": null,
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "incomplete",
+    "employee count unknown"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co192",
+    "apollo_industry": "Software",
+    "domain": "co192.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Adtech & martech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "naics": "5242"
+   },
+   "hard_exclusion": "insurance or benefits broker, a partner (NAICS 5242)",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "partner",
+    "a partner, never prospected"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co193",
+    "apollo_industry": "Software",
+    "domain": "co193.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Insurtech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co194",
+    "apollo_industry": "Software",
+    "domain": "co194.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": null,
+    "industry": "Content agencies",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": "HQ state unknown",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "state_unknown",
+    "HQ state unknown"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co195",
+    "apollo_industry": "Software",
+    "domain": "co195.gov",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Marketing & Creative Agencies",
+    "naics": "541511",
+    "size_band": null,
+    "source": "site_visit"
+   },
+   "account_block": "a public body, never prospected",
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "public_body",
+    "a public body, never prospected"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co196",
+    "apollo_industry": "Software",
+    "domain": "co196.com",
+    "employees": 10,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NC",
+    "industry": "Agritech",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "site_visit"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co197",
+    "apollo_industry": "Software",
+    "domain": "co197.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "CA",
+    "industry": "Plumbing & HVAC",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": "industry switched off",
+   "facts": {},
+   "hard_exclusion": "HQ in CA, which is never contacted",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "state",
+    "HQ in CA or WA"
+   ]
+  },
+  {
+   "account": {
+    "account_id": "co198",
+    "apollo_industry": "Software",
+    "domain": "co198.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "NY",
+    "industry": "Proptech",
+    "naics": "541511",
+    "size_band": null,
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {
+    "hq_state": "CA"
+   },
+   "hard_exclusion": null,
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": null
+  },
+  {
+   "account": {
+    "account_id": "co199",
+    "apollo_industry": "Software",
+    "domain": "co199.com",
+    "employees": 64,
+    "founded_year": 2010,
+    "hq_country": "United States",
+    "hq_state": "FL",
+    "industry": "Digital health",
+    "naics": "541511",
+    "size_band": "50-99",
+    "source": "apollo"
+   },
+   "account_block": null,
+   "facts": {},
+   "hard_exclusion": "HQ state FL is not active",
+   "partner": false,
+   "pulled": false,
+   "suppressed": false,
+   "verify_check": [
+    "state",
+    "HQ state not active"
+   ]
+  }
+ ],
+ "recorded_at": "wave2 379ba97, before W2-2",
+ "settings": "validate_all(default_tabs())",
+ "today": "2026-10-27"
+}

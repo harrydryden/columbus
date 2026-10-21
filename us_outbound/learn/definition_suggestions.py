@@ -12,13 +12,16 @@ Each month, after the label sample is scored (ops/label_sample.monthly):
      Harry sets decision to approve; settings_sync then writes it to the Industries tab (settings/definitions.py).
 
 It asks the models only with --live (the monthly job's scheduled run): one writing call and two answer-key runs, about
-$0.01 a company each. A changed definition makes every stored verdict stale, so the queue is asked again after an
+$0.01 a company each. The draft and both answer-key passes share one deadline, SECONDS (10 minutes from the
+draft's start, inside the monthly job's 15-minute timeout; W2-3, code-learn-reporting B7): a pass that runs out stops
+short, and a short pass is never scored (incomplete), so the budget, not the scheduler's timeout, ends a slow month. A changed definition makes every stored verdict stale, so the queue is asked again after an
 approved change (labels_hash), which the Slack post says.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import time
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -28,10 +31,12 @@ from us_outbound.clients.claude import BudgetExceeded, ClaudeError
 from us_outbound.clients.sheets import read_tab, write_tab
 from us_outbound.context import ConfigError, Context
 from us_outbound.logs import log
-from us_outbound.settings.definitions import COLUMNS, TAB
+from us_outbound.settings.definitions import COLUMNS, SUGGESTION_COLUMNS, SUGGESTIONS_TAB, TAB
 from us_outbound.settings.model import Industry, Settings
 
 PURPOSE = "definition_suggestions"
+SECONDS = 600.0  # the draft and both answer-key passes together: 10 minutes, inside the monthly job's 15 (W2-3; B7)
+_clock = time.monotonic  # the deadline's clock (a test sets it)
 MAX_LABELS = 4
 MAX_CHARS = 320
 MAX_TOKENS, EFFORT, TIMEOUT = 2000, "medium", 120.0
@@ -134,6 +139,22 @@ def _score(out: Mapping[str, Any]) -> str:
             f"{out.get(labels.UNSAFE, 0)} unsafe")
 
 
+def _checked(out: Mapping[str, Any]) -> int:
+    return sum(int(out.get(k, 0) or 0) for k in (labels.ACCEPTABLE, labels.WRONG, labels.UNSAFE))
+
+
+def incomplete(now: Mapping[str, Any], later: Mapping[str, Any], size: int) -> str | None:
+    """"k of N" when either answer-key pass stopped short, else None. labels.evaluate stops at the first model error
+    and returns what it had, with an error; the two passes must cover the same companies to be compared, or a
+    baseline cut short after 5 rows ("4 of 5 right") makes a draft scored on all 40 look like an improvement
+    (W0, 19 Oct 2026; code-learn-reporting B7). k is the shorter pass's count."""
+    counts = (_checked(now), _checked(later))
+    asked = (now.get("asked"), later.get("asked"))
+    if now.get("error") or later.get("error") or min(counts) < size or asked[0] != asked[1]:
+        return f"{min(counts)} of {size}"
+    return None
+
+
 def suggest(ctx: Context, sample_rows: Sequence[Mapping[str, str]], answer_key: Sequence[Mapping[str, Any]],
             month: str) -> dict[str, Any]:
     """Draft, score and write this month's suggestions (the models are asked only with --live)."""
@@ -145,15 +166,27 @@ def suggest(ctx: Context, sample_rows: Sequence[Mapping[str, str]], answer_key: 
     if not ctx.live:
         out["error"] = "dry-run: no model asked"
         return out
+    deadline = _clock() + SECONDS
+
+    def left() -> float:
+        return max(0.0, deadline - _clock())
+
     try:
         drafts = draft(ctx, misses, chosen)
         if not drafts:
             return out
-        now = labels.evaluate(ctx, answer_key)
-        later = labels.evaluate(dataclasses.replace(ctx, settings=with_definitions(ctx.settings, drafts)), answer_key)
+        now = labels.evaluate(ctx, answer_key, seconds=left())
+        later = labels.evaluate(dataclasses.replace(ctx, settings=with_definitions(ctx.settings, drafts)), answer_key,
+                                seconds=left())
     except (ClaudeError, BudgetExceeded, ConfigError) as exc:
         out["error"] = f"the model could not be asked ({str(exc)[:160]})"
         log(PURPOSE + "_failed", run_id=ctx.run_id, error=out["error"])
+        return out
+    if (short := incomplete(now, later, len(answer_key))) is not None:
+        out["answer_key_incomplete"] = short
+        out["error"] = f"the answer key was not checked in full ({short} companies), so nothing is scored"
+        log(PURPOSE + "_incomplete", run_id=ctx.run_id, month=month, answer_key=short, now_error=now.get("error"),
+            later_error=later.get("error"))
         return out
     rows = [{"id": f"{month}:{d['label']}", "month": month, "label": d["label"], "current_definition": d["current"],
              "suggested_definition": d["suggested"], "why": d["why"], "answer_key_now": _score(now),
@@ -171,3 +204,27 @@ def suggest(ctx: Context, sample_rows: Sequence[Mapping[str, str]], answer_key: 
     log(PURPOSE, run_id=ctx.run_id, month=month, misses=len(misses), drafted=len(rows), now=out["now"],
         later=out["later"])
     return out
+
+
+# -- the Suggestions tab (W3-2, 20 Oct 2026): the ICP rules proposed from the hand-check -----------------------------
+
+
+def write_suggestions(ctx: Context, rows: Sequence[Mapping[str, str]]) -> dict[str, Any]:
+    """Add proposal rows (settings/definitions.SUGGESTION_COLUMNS; learn/precision.propose drafts the kinds
+    definition_not, exclude_naics and entity_text) to the Suggestions tab. Live only. Append-only: a row whose id is
+    on the tab already is left exactly as it is, Harry's status with it, so a rerun of the month never undoes a
+    decision; the tab is written whole only when it has no rows (new, or only its header). A read refused for any
+    reason but "no such tab" raises (clients/sheets.read_tab), so the tab is never replaced by this month's rows."""
+    sheet_id = ctx.guard.bounds.settings_sheet_id
+    if not ctx.live or not sheet_id or not rows:
+        return {"added": 0, "written": False}
+    kept = read_tab(ctx.clients.sheets, sheet_id, SUGGESTIONS_TAB)
+    there = {str(r.get("id") or "").strip().casefold() for r in kept or []}
+    added = [{c: str(r.get(c) or "") for c in SUGGESTION_COLUMNS} for r in rows
+             if str(r.get("id") or "").strip().casefold() not in there]
+    if not kept:
+        write_tab(ctx.clients.sheets, sheet_id, SUGGESTIONS_TAB, SUGGESTION_COLUMNS, added, kept)
+    elif added:
+        ctx.clients.sheets.append_rows(sheet_id, SUGGESTIONS_TAB, added)
+    log("suggestions_written", run_id=ctx.run_id, added=len(added), kept=len(kept or []))
+    return {"added": len(added), "written": bool(added)}

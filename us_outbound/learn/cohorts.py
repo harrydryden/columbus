@@ -24,13 +24,14 @@ starting, stopping or changing: Harry, 7 Oct 2026) and the settings
 table's history (the content tabs' rows then in force), and the campaign changes made under leads in flight
 between them (config_log).
 
-Insights (insights): consecutive cohorts compared at the latest age both have reached, with signal_review's
-two-proportion test, only from MIN_COMPANIES (30) companies a side: "W42 replies less than W41 at 14 days (2.9%
-vs 6.2%, p = 0.07)" and then what changed between them, "a coincidence to test, not a cause"; two versions inside
-one week, likewise; and a reply rate that has risen or fallen three cohorts running. Nothing re-weights or decides:
-a line points at a change worth a pre-registered test on the Tests tab.
+There are no insights (W2-3, 20 Oct 2026): the pairwise cohort verdicts ("W42 replies less than W41 at 14 days, p =
+0.07", on the pooled z-test) and the "three cohorts running" line were chance at these numbers (metrics-audit M1, M2:
+run_of_three fired 15% of the time with nothing changed), and a cohort is not a randomised arm. The table and what
+changed are kept; a change worth reading is a pre-registered test on the Tests tab (learn/looks.py).
 
-Shown in the Monday readout (readout_lines, after the cuts) and by `us-outbound cohorts` (lines, changes_lines,
+Step 1 and delivered are learn/outcomes.py's (the one definition); a reply's class takes its latest correction.
+
+Shown in the Monday readout (readout_lines, after the cuts) and by `us-outbound report cohorts` (lines, changes_lines,
 in_flight_lines). Read-only: it writes nothing. Python over the tables, like learn/looks.py, so it runs on a
 MemoryStore as on Postgres.
 """
@@ -48,16 +49,15 @@ from us_outbound.base import say
 from us_outbound.context import UK, Context
 from us_outbound.enrol import capacity
 from us_outbound.enrol.enrol import iso_week
-from us_outbound.learn import signal_review
+from us_outbound.learn import outcomes
 from us_outbound.replies import kinds
 from us_outbound.timeparse import et_day, uk_day, utc
 
 AGES = (7, 14, 21, 28)  # days after email 1; 28 is the reply window (instantly.REPLY_WINDOW_DAYS)
 CUTS = ("all", "tier", "angle", "industry_group", "sender", "copy_version", "subject_arm", "opener_arm",
         "config_version")
-MIN_COMPANIES = signal_review.MIN_COMPANIES  # 30: a rate on fewer companies is "too few to read"
+MIN_COMPANIES = outcomes.MIN_MATURED  # 30: a rate on fewer companies is "too few to read"
 MIN_SENDS = 100  # a bounce rate on fewer sends moves a lot with one bounce (as the readout)
-P_VALUE = signal_review.P_VALUE  # 0.10
 WEEKS = 8  # the CLI's default
 READOUT_WEEKS = 4
 READOUT_CHANGES = 8  # change lines in the readout before "and N more"
@@ -158,18 +158,21 @@ def companies(ctx: Context) -> list[Company]:
         out[aid] = Company(aid, iso_week(day), day - timedelta(days=day.weekday()), at, len(people),
                            _values(ctx, accounts.get(aid, {}), first), str(first.get("code_sha") or ""))
     account_of = {str(c["contact_id"]): str(c["account_id"]) for c in contacts}
-    for e in store.select("events", {"type": list(EVENT_TYPES)}):
+    events = store.select("events", {"type": sorted({*EVENT_TYPES, *outcomes.EVENT_TYPES})})
+    cls = outcomes.classes(events)  # a reply's class after its latest correction
+    for e in events:
         t = utc(e.get("occurred_at"))
         co = out.get(str(e.get("account_id") or "") or account_of.get(str(e.get("contact_id") or ""), ""))
-        if t is not None and co is not None:
+        if t is not None and co is not None and e.get("type") in EVENT_TYPES:
+            if e.get("type") == REPLIED:
+                e = {**e, "reply_class": cls.get(str(e["event_id"]), e.get("reply_class"))}
             co.events.append({**e, "at": t})
+    step1 = {o.account_id: o for o in outcomes.per_company(ctx, events)}
     for co in out.values():
         co.events.sort(key=lambda e: (e["at"], str(e.get("event_id"))))
-        step1 = next((e for e in co.events if e["type"] == SENT and e.get("step") == 1), None)
-        if step1 is not None:
-            co.step1_at = step1["at"]
-            co.delivered = not any(e["type"] == BOUNCED and e.get("contact_id") == step1.get("contact_id")
-                                   and e.get("step") in (1, None) for e in co.events)
+        o = step1.get(co.account_id)
+        if o is not None:
+            co.step1_at, co.delivered = o.step1_at, o.delivered
         co.events = [e for e in co.events if e["type"] != REPLIED or kinds.is_human(e.get("reply_class"))]
     return sorted(out.values(), key=lambda c: (c.enrolled_at, c.account_id))
 
@@ -462,105 +465,6 @@ def week_changes(ctx: Context, start: datetime, end: datetime) -> list[str]:
     return out + log_lines(ctx, start, end)
 
 
-# -- insights ---------------------------------------------------------------------------------------------------------
-
-
-def common_age(a: Cohort, b: Cohort) -> int | None:
-    """The latest age both cohorts have companies at."""
-    return max((x for x in AGES if a.ages[x].matured and b.ages[x].matured), default=None)
-
-
-def _compare(what: str, verb: str, label_a: str, label_b: str, age: int, a: tuple[int, int], b: tuple[int, int],
-             always: bool) -> str | None:
-    """One verdict line: b against a (k of n each). always: also say so when there is no clear difference."""
-    (ka, na), (kb, nb) = a, b
-    p = signal_review.p_value(na, ka, nb, kb)
-    numbers = f"{fmt.pct(kb, nb)} vs {fmt.pct(ka, na)}" + (f", p = {p:.2f}" if p is not None else "")
-    if p is not None and p < P_VALUE:
-        more = "more" if kb / nb > ka / na else "less"
-        return f"{label_b} {verb} {more} than {label_a} at {age} days ({numbers})."
-    return f"No clear difference in {what} between {label_b} and {label_a} at {age} days ({numbers})." if always else None
-
-
-def compare(ctx: Context, older: Cohort, newer: Cohort, label_a: str = "", label_b: str = "") -> list[str]:
-    """newer against older at the latest age both have reached: replies, then positive replies and bounces when
-    they differ; and what changed between them when something does. Nothing until both have 30 companies."""
-    label_a, label_b = label_a or older.label, label_b or newer.label
-    age = common_age(older, newer)
-    if age is None:
-        return []
-    a, b = older.ages[age], newer.ages[age]
-    if min(a.matured, b.matured) < MIN_COMPANIES:
-        label, small = (label_b, b) if b.matured < MIN_COMPANIES else (label_a, a)
-        return [f"Too few to read: {label} has {fmt.plural(small.matured, 'company', 'companies')} at {age} days "
-                f"({MIN_COMPANIES} needed on each side to compare {label_b} with {label_a})."]
-    out = [_compare("replies", "replies", label_a, label_b, age, (a.replied, a.matured), (b.replied, b.matured), True)]
-    out.append(_compare("positive replies", "has positive replies", label_a, label_b, age,
-                        (a.positive, a.matured), (b.positive, b.matured), False))
-    if min(a.sends, b.sends) >= MIN_SENDS:
-        out.append(_compare("bounces", "bounces", label_a, label_b, age, (a.bounced, a.sends), (b.bounced, b.sends),
-                            False))
-    out = [line for line in out if line]
-    if any(not line.startswith("No clear") for line in out):
-        a_v, b_v = older.last_version(), newer.last_version()
-        found = changes(ctx, a_v, b_v)
-        if UNSTAMPED in (a_v, b_v):
-            out.append("What changed between them is not recorded: contacts enrolled before 8 Oct 2026 are unstamped.")
-        else:
-            out.append("Nothing changed between them." if found == ["No change."]
-                       else f"Between them: {'; '.join(found)}. A coincidence to test, not a cause.")
-    return out
-
-
-def run_of_three(cohorts: Sequence[Cohort], age: int = 14) -> str | None:
-    """The latest three cohorts readable at `age` whose reply rate rose, or fell, each time."""
-    ok = [c for c in cohorts if c.ages[age].matured >= MIN_COMPANIES]
-    if len(ok) < 3:
-        return None
-    last = ok[-3:]
-    rates = [c.ages[age].replied / c.ages[age].matured for c in last]
-    if not (rates[0] < rates[1] < rates[2] or rates[0] > rates[1] > rates[2]):
-        return None
-    way = "risen" if rates[2] > rates[0] else "fallen"
-    shown = ", ".join(f"{c.label} {fmt.pct(c.ages[age].replied, c.ages[age].matured)}" for c in last)
-    return f"The {age}-day reply rate has {way} three cohorts running: {shown}."
-
-
-def within_week(ctx: Context, weeks: Iterable[str], found: Sequence[Company] | None = None) -> list[str]:
-    """Two config versions inside one week, each with 30 companies at a common age: compared, naming the change."""
-    by_week: dict[str, list[Cohort]] = defaultdict(list)
-    for c in rows(ctx, "config_version", found=found):
-        if c.value != UNSTAMPED:
-            by_week[c.week].append(c)
-    first_seen = {str(v["config_version"]): i for i, v in enumerate(versions(ctx))}
-    out: list[str] = []
-    for week in weeks:
-        parts = sorted(by_week.get(week, ()), key=lambda c: first_seen.get(c.value, len(first_seen)))
-        for older, newer in zip(parts, parts[1:]):
-            age = common_age(older, newer)
-            if age is None or min(older.ages[age].matured, newer.ages[age].matured) < MIN_COMPANIES:
-                continue
-            out += compare(ctx, older, newer, f"{short_week(week)} version {older.value}",
-                           f"{short_week(week)} version {newer.value}")
-    return out
-
-
-def insights(ctx: Context, cohorts: Sequence[Cohort], found: Sequence[Company] | None = None,
-             latest_only: bool = False) -> list[str]:
-    """Verdicts with their numbers over the `all` cut's cohorts, oldest first: each consecutive pair (latest_only: the
-    latest pair that has a common age), the weeks with two versions, and a three-cohort run."""
-    out: list[str] = []
-    for older, newer in reversed(list(zip(cohorts, cohorts[1:]))):
-        pair = compare(ctx, older, newer)
-        out = pair + out
-        if latest_only and pair:
-            break
-    weeks = [c.week for c in cohorts]
-    out += within_week(ctx, weeks[-2:] if latest_only else weeks, found)
-    three = run_of_three(cohorts)
-    return out + ([three] if three else [])
-
-
 # -- in flight --------------------------------------------------------------------------------------------------------
 
 
@@ -618,7 +522,7 @@ def cohort_head(c: Cohort) -> str:
 
 
 def lines(ctx: Context, cut: str = "all", age: int | None = None, weeks: int = WEEKS) -> list[str]:
-    """`us-outbound cohorts`: each week (the latest first) and cut value at each age, then the insights."""
+    """`us-outbound report cohorts`: each week (the latest first) and cut value at each age."""
     found = companies(ctx)
     cohorts = rows(ctx, cut, weeks, found)
     out = [f"Cohorts by enrolment week (UK), by {cut}: each company counts in the week its first contact was enrolled, "
@@ -634,8 +538,6 @@ def lines(ctx: Context, cut: str = "all", age: int | None = None, weeks: int = W
             head = cohort_head(c)
             out.append(head if cut == "all" else f"{c.value}: {head}")
             out += [f"  {age_line(c.ages[a])}" for a in ages]
-    said = insights(ctx, rows(ctx, "all", weeks, found), found)
-    out += ["", "Insights (each a lead to test, not a cause):", *(f"  {x}" for x in said or ["Nothing to compare yet."])]
     return out + ["", spend_line(ctx)]
 
 
@@ -656,7 +558,7 @@ def changes_lines(ctx: Context, a: str | None = None, b: str | None = None) -> l
 
 
 def readout_lines(ctx: Context, start: datetime, end: datetime) -> tuple[list[str], dict[str, Any]]:
-    """The readout's section: the last four cohorts in a line each, the insights, and last week's changes."""
+    """The readout's section: the last four cohorts in a line each, and last week's changes."""
     found = companies(ctx)
     cohorts = rows(ctx, "all", READOUT_WEEKS, found)
     head = "*Cohorts* (companies grouped by the week they were enrolled, each at the latest age reached after email 1)"
@@ -670,7 +572,6 @@ def readout_lines(ctx: Context, start: datetime, end: datetime) -> tuple[list[st
         emailed = (f"{c.emailed:,} emailed" if c.emailed == c.enrolled
                    else f"{c.enrolled:,} enrolled, {c.emailed:,} emailed")
         out.append(f"  {c.label} ({week_days(c.week_start)}): {emailed}{tail}")
-    out += [f"  {x}" for x in insights(ctx, cohorts, found, latest_only=True)]  # the CLI has every pair
     changed = week_changes(ctx, start, end)
     if not changed:
         out += ["", "*Changes last week* (settings, copy, campaign and code): none recorded."]

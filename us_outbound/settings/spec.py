@@ -62,7 +62,7 @@ SPEC: dict[str, tuple[Col, ...]] = {
         Col("counts_for_days"), Col("active"), NOTE,
     ),
     "Angles": (Col("angle", key=True, required=True), Col("order", parse=p.parse_int, required=True),
-               Col("argument", required=True), Col("default_opener"),  # required while the angle is active
+               Col("argument", required=True), Col("default_opener"),  # read by nothing since W2-2: optional
                Col("landing_page_override", parse=p.https), Col("active", parse=p.parse_bool, required=True), NOTE),
     "Industries": (
         Col("industry", key=True, required=True), Col("industry_group", required=True),
@@ -109,16 +109,22 @@ SPEC: dict[str, tuple[Col, ...]] = {
         # A variant test's (enrol/variants.py): blank on any other kind.
         *_cols("email", "change", "text_a", "text_b", "find", optional=True, since="2026-10-07"),
         Col("share_a", optional=True, since="2026-10-08"),  # an uneven split: blank is 50%
+        # The pre-registration (W3-4; settings/model.PRE_REGISTRATION): required before a test started from 21 Oct
+        # 2026 may run, blank on the rows written before.
+        *_cols("metric_id", "definition_version", "test", "alpha", "look_thresholds", optional=True, since="2026-10-21"),
     ),
     "Focus": (Col("industry_group", key=True, ref="Industries", required=True),
               Col("share", parse=p.parse_share, required=True), NOTE),
-    "Named accounts": (Col("domain", key=True, parse=p.root_domain, required=True), Col("name"), NOTE),
 }
 assert tuple(SPEC) == TABS
 assert not any(c.optional and c.required for cols in SPEC.values() for c in cols)  # a missing column reads blank
 
-# General's apollo_enrich_groups names Industries groups from a value, not a column (9 Oct 2026).
-EXTRA_DEPENDS: dict[str, tuple[str, ...]] = {"General": ("Industries",)}
+# A tab whose values name another tab's rows, beyond its columns' ref= (none since W2-4, 20 Oct 2026: General's
+# apollo_enrich_groups, which named Industries groups, is a constant in code now). Never General: a tab kept back keeps
+# the tabs it depends on with it, and General carries live_sending = no and the brakes, which always come into force
+# (W0). So whether General live_split lets a Tests row draw arms is decided where arms are drawn
+# (Settings.drawn_test), not in validation (W3-4 r1, 21 Oct 2026).
+EXTRA_DEPENDS: dict[str, tuple[str, ...]] = {}
 
 
 def columns(tab: str) -> list[str]:

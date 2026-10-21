@@ -2,6 +2,7 @@
 
 import copy
 from datetime import date, time
+from pathlib import Path
 
 import pytest
 
@@ -11,6 +12,7 @@ from us_outbound.settings.validate import (
     FIRST_DATA_ROW,
     HEADER_ROW,
     RowError,
+    general_warnings,
     natural_key,
     parse_blackout_dates,
     parse_bool,
@@ -217,32 +219,211 @@ def test_several_errors_on_one_row_are_all_reported(tabs):
 # -- General ------------------------------------------------------------------------
 
 
-def test_general_unknown_and_duplicate_keys(tabs):
-    tabs["General"].append({"key": "live_sendng", "value": "no", "note": ""})
+def _no_errors(errors):
+    return {t: [str(e) for e in errs] for t, errs in errors.items() if errs}
+
+
+def test_an_unknown_key_warns_and_a_duplicate_key_still_fails_the_sync(tabs):
+    """W1-1 (RS P0-2): an unknown key was an error, so a rollback after Harry added a new key's row (or a package
+    that added one) left General unusable and stopped every job, the brakes included (11 Oct 2026). It warns now,
+    with the same hint, and its row is not read; a duplicate key still fails the sheet sync (strict)."""
+    tabs["General"].append({"key": "live_sendng", "value": "yes", "note": ""})
+    n = len(tabs["General"]) + 1  # the typo's sheet row
+    settings, errors = validate_all(tabs)
+    assert _no_errors(errors) == {} and settings.general.live_sending is False  # the typo's "yes" is never read
+    [w] = general_warnings(tabs["General"])
+    assert w.row == n and w.column == "key" and "unknown key" in w.message and "did you mean live_sending" in w.message
     tabs["General"].append({"key": "weekly_enrol_cap", "value": "20", "note": ""})
-    errs = _errors(tabs, "General")
-    by_row = {e.row: e for e in errs}
-    n = len(tabs["General"]) + 1
-    assert "unknown key" in by_row[n - 1].message and "did you mean live_sending" in by_row[n - 1].message
-    assert "already on row" in by_row[n].message
-    assert all(e.column == "key" for e in errs)
+    e = _one(tabs, "General", "key")
+    assert e.row == n + 1 and "already on row" in e.message
 
 
-def test_renamed_keys_say_what_replaced_them(tabs):
+def test_renamed_keys_warn_and_say_what_replaced_them(tabs):
+    # clay_weekly_credits was renamed clay_monthly_credits, and both are retired with Clay (W2-1, Harry's D18).
     for old, new, why in (("daily_enrol_cap", "weekly_enrol_cap", "Monday to Sunday"),
-                          ("clay_weekly_credits", "clay_monthly_credits", "monthly, like Clay's own"),
                           ("apollo_weekly_credits", "apollo_monthly_credits", "monthly, like Apollo's own")):
         t = copy.deepcopy(BASE)
         t["General"].append({"key": old, "value": "30", "note": ""})
-        e = _one(t, "General", "key")
-        assert f"'{old}' is now '{new}'" in e.message and why in e.message
+        settings, errors = validate_all(t)
+        assert _no_errors(errors) == {} and settings is not None
+        [w] = general_warnings(t["General"])
+        assert f"'{old}' is now '{new}'" in w.message and why in w.message and "this row is not read" in w.message
+
+
+@pytest.mark.parametrize("strict", [False, True])
+def test_unknown_renamed_and_retired_keys_warn_in_both_modes_and_a_bad_value_fails(tabs, strict):
+    """The W1-1 case as the plan gives it: a retired key (control_share, retired by W1-C with explore_share in its
+    place), a renamed one (daily_enrol_cap) and an unknown one: 3 warnings and 0 errors, strict or not. The retired
+    row's value is not read: General has no control_share since W2-2, and explore_share keeps its default."""
+    for key, value in (("control_share", "0.4"), ("daily_enrol_cap", "30"), ("made_up_key", "x")):
+        tabs["General"].append({"key": key, "value": value, "note": ""})
+    settings, errors = validate_all(tabs, strict=strict)
+    assert _no_errors(errors) == {} and settings is not None
+    assert not hasattr(settings.general, "control_share") and settings.general.explore_share == 0.15
+    warned = general_warnings(tabs["General"], strict=strict)
+    assert sorted(w.label for w in warned) == ["control_share", "daily_enrol_cap", "made_up_key"]
+    [retired] = [w for w in warned if w.label == "control_share"]
+    assert "no longer used" in retired.message and "explore_share" in retired.message
+    # A value that does not parse fails in both modes: leniency is about key names, never about values.
+    _, row = _row(tabs, "General", key="weekly_enrol_cap")
+    row["value"] = "abc"
+    _, errors = validate_all(tabs, strict=strict)
+    [e] = errors["General"]
+    assert e.label == "weekly_enrol_cap" and e.column == "value" and "whole number" in e.message
+
+
+def test_a_duplicate_key_in_the_stored_version_is_read_leniently(tabs):
+    """strict=False (load_current re-reading the version in force) keeps the first row of a duplicated key."""
+    tabs["General"].append({"key": "weekly_enrol_cap", "value": "20", "note": ""})
+    settings, errors = validate_all(tabs, strict=False)
+    assert _no_errors(errors) == {} and settings.general.weekly_enrol_cap == 150  # the first row's value
+    [w] = general_warnings(tabs["General"], strict=False)
+    assert "already on row" in w.message
+
+
+LIVE_KEYS = [line.strip() for line in
+             (Path(__file__).parent / "fixtures" / "general_keys_live.txt").read_text().splitlines()
+             if line.strip() and not line.startswith("#")]
+# The live General values that differ from the code defaults (data-crm-settings, 19 Oct 2026); ids are stand-ins.
+# second_contact stays yes here although Harry sets it to no before W2-1 deploys (D15): either way it is retired.
+LIVE_VALUES = {"live_sending": "yes", "auto_send": "yes", "priority_threshold": "40", "approver_slack_ids": "U0LIVE01",
+               "optout_tested": "yes", "hubspot_pipeline_id": "1001", "hubspot_deal_stage": "Demo requested",
+               "hubspot_deal_stage_id": "2002", "hubspot_owner_id": "3003", "second_contact": "yes",
+               "max_employees": "350", "claude_monthly_cap_usd": "50"}
+
+
+def test_every_live_general_key_is_known_retired_or_renamed():
+    from us_outbound.settings.validate import RENAMED_GENERAL, RETIRED_GENERAL, _GENERAL_TYPES
+
+    assert len(LIVE_KEYS) == 66 == len(set(LIVE_KEYS))
+    unknown = [k for k in LIVE_KEYS if k not in _GENERAL_TYPES and k not in RETIRED_GENERAL and k not in RENAMED_GENERAL]
+    assert unknown == []
+
+
+# The live values of the keys W2-1 retired (no longer among the build's rows): their old build defaults, as the live
+# sheet has them (data-crm-settings: at default), and LIVE_VALUES over them.
+W21_RETIRED_LIVE = {
+    "auto_send": "no", "clay_monthly_credits": "2000", "recontact_person_months": "12", "recontact_account_months": "6",
+    "hubspot_deal_stage": "", "clay_accounts_function_id": "", "clay_contacts_function_id": "",
+    "clay_credits_per_account": "0", "clay_verification": "skip", "clay_email_fallback": "no", "clay_cross_check": "no",
+    "second_contact": "no", "second_contact_min_employees": "50", "second_contact_delay_days": "3",
+    "apollo_credits_per_account": "1", "opener_focus": "no",
+    "opener_focus_line": "I came across {company} and its work on {focus}.",
+}
+# The live values of the six constants W2-4 moved to code (settings/model.py; 20 Oct 2026): the live sheet has each
+# at its default (data-crm-settings: score_cap 100; the others are among the 54 at default).
+W24_RETIRED_LIVE = {
+    "score_cap": "100", "escalation_hours": "24", "apollo_enrich_groups": "Technology & Startups",
+    "site_visit_domain": "spill.chat", "site_visit_us_paths": "/us", "site_visit_intent_paths": "/us/pricing, /us/demo, /us/book",
+}
+# The 17 live keys W2-1 retired, W1-C's control_share, W2-2's three tier keys, W2-4's six constants and W2-3's
+# stop_rule_complaint_rate (no input: nothing reports a complaint): the live sheet's 18 + 3 + 6 + 1 = 28 warnings, in
+# its row order (the fixture's).
+_RETIRED_BY = {"auto_send", "control_share", "priority_threshold", "standard_threshold", "auto_thresholds",
+               "clay_monthly_credits", "recontact_person_months",
+               "recontact_account_months", "hubspot_deal_stage", "clay_accounts_function_id", "clay_contacts_function_id",
+               "clay_credits_per_account", "clay_verification", "clay_email_fallback", "clay_cross_check",
+               "second_contact", "second_contact_min_employees", "second_contact_delay_days",
+               "apollo_credits_per_account", "opener_focus", "opener_focus_line", *W24_RETIRED_LIVE,
+               "stop_rule_complaint_rate"}
+LIVE_RETIRED = [k for k in LIVE_KEYS if k in _RETIRED_BY]
+
+
+def _live_general() -> list[dict]:
+    """The live sheet's General tab: its 66 key names (the fixture) with the 12 changed values, every other value the
+    build's default; control_share (retired by W1-C) at its live 0.15, the keys W2-1 retired at their live values, and
+    the tier keys W2-2 retired at theirs (auto_thresholds yes, standard_threshold 20, priority_threshold 40)."""
+    build = {r["key"]: r["value"] for r in BASE["General"] if r.get("key")}
+    values = {**W21_RETIRED_LIVE, **W24_RETIRED_LIVE, **build, "control_share": "0.15", "standard_threshold": "20",
+              "auto_thresholds": "yes", "stop_rule_complaint_rate": "0.003", **LIVE_VALUES}
+    return [{"key": k, "value": values[k], "note": ""} for k in LIVE_KEYS]
+
+
+def test_the_live_general_keys_less_the_retired_are_38_and_the_build_has_them_all():
+    """W2-1's acceptance (General has at most 48 keys), with W2-2's tier keys, W2-4's six constants in code and W2-3's
+    stop_rule_complaint_rate: 66 live keys less the 28 retired ones (W2-1's 18, W2-2's priority_threshold,
+    standard_threshold and auto_thresholds, W2-4's 6 and W2-3's 1) = 38, every one of them a build key; the build's others are the ones Wave 1 added (explore_share,
+    hand_check_sample, early_warning_pause, hand_check_gate), which the sheet has no row for yet, so they take their
+    code defaults."""
+    from us_outbound.settings.validate import RETIRED_GENERAL
+
+    build = [r["key"] for r in BASE["General"] if r.get("key")]
+    assert set(LIVE_RETIRED) <= set(RETIRED_GENERAL) and len(LIVE_RETIRED) == 18 + 3 + 6 + 1 == len(set(LIVE_RETIRED))
+    kept = [k for k in LIVE_KEYS if k not in RETIRED_GENERAL]
+    assert len(kept) == 66 - 28 == 38 and set(kept) <= set(build)
+    assert not set(build) & set(RETIRED_GENERAL)
+    # W2-4: the constants are in code at the live sheet's values, and the General model no longer has them.
+    from us_outbound.settings import model
+
+    assert (model.SCORE_CAP, model.ESCALATION_HOURS, model.APOLLO_ENRICH_GROUPS) == (100, 24, ("Technology & Startups",))
+    assert (model.SITE_VISIT_DOMAIN, model.SITE_VISIT_US_PATHS, model.SITE_VISIT_INTENT_PATHS) == (
+        "spill.chat", ("/us",), ("/us/pricing", "/us/demo", "/us/book"))
+    assert not any(hasattr(model.General(), k) for k in W24_RETIRED_LIVE)
+
+
+def test_the_live_general_rows_validate_with_no_errors(tabs):
+    """The live sheet's General tab as it is (auto_send = yes, second_contact, clay_verification = skip and
+    control_share included), strict and lenient: no errors; one warning for each retired key, each once (control_share
+    by W1-C; auto_send, the Clay, second-contact and never-read keys by W2-1: their rows can be deleted, and none is
+    read; W2-2's tier keys too); the changed values read as the sheet has them; and the keys W1-C adds take their
+    code defaults, since the sheet has no row for them: explore_share 0.15 (Harry's D7: the random arm, from W2-2,
+    which retired the Control tier's 0.15), hand_check_sample 10, early_warning_pause no."""
+    tabs["General"] = _live_general()
+    assert {r["key"]: r["value"] for r in tabs["General"] if r["key"] in ("auto_send", "clay_verification")} == {
+        "auto_send": "yes", "clay_verification": "skip"}
+    for strict in (True, False):
+        settings, errors = validate_all(tabs, strict=strict)
+        assert _no_errors(errors) == {}
+        warned = [w.label for w in general_warnings(tabs["General"], strict=strict)]
+        assert warned == LIVE_RETIRED  # each retired key once, in the sheet's order
+        g = settings.general
+        assert not any(hasattr(g, k) for k in LIVE_RETIRED)
+        assert (g.live_sending, g.max_employees) == (True, 350)
+        assert (g.explore_share, g.hand_check_sample, g.early_warning_pause) == (0.15, 10, False)
+
+
+def test_the_live_general_rows_with_harry_s_new_values_validate(tabs):
+    """The W1-C acceptance: the live rows plus explore_share = 0.15 (Harry's D7) and hand_check_sample = 20 (his D5)
+    validate, strict and lenient, and read as typed; the retired keys are still the only warnings."""
+    tabs["General"] = _live_general() + [{"key": "explore_share", "value": "0.15", "note": ""},
+                                         {"key": "hand_check_sample", "value": "20", "note": ""},
+                                         {"key": "early_warning_pause", "value": "yes", "note": ""}]
+    for strict in (True, False):
+        settings, errors = validate_all(tabs, strict=strict)
+        assert _no_errors(errors) == {}
+        assert [w.label for w in general_warnings(tabs["General"], strict=strict)] == LIVE_RETIRED
+        g = settings.general
+        assert (g.explore_share, g.hand_check_sample, g.early_warning_pause) == (0.15, 20, True)
+
+
+@pytest.mark.parametrize("key, value, ok", [
+    # explore_share is a share from 0 to 0.25 (MAX_EXPLORE_SHARE), both ends allowed.
+    ("explore_share", "0", True), ("explore_share", "0.25", True), ("explore_share", "0.26", False),
+    ("explore_share", "-0.01", False), ("explore_share", "15%", False),
+    # hand_check_sample is a whole number of rows from 1 to 50.
+    ("hand_check_sample", "1", True), ("hand_check_sample", "50", True), ("hand_check_sample", "0", False),
+    ("hand_check_sample", "51", False), ("hand_check_sample", "12.5", False),
+    ("early_warning_pause", "yes", True), ("early_warning_pause", "maybe", False),
+])
+def test_the_contracts_commit_keys_hold_to_their_ranges(tabs, key, value, ok):
+    """The edges of W1-C's three new keys: a value outside them fails the row (strict or not: leniency is about key
+    names), so a typo can never put a quarter-plus of the day's sends outside the score order."""
+    _row(tabs, "General", key=key)[1]["value"] = value  # the build's row, as `settings load` puts it on the sheet
+    for strict in (True, False):
+        settings, errors = validate_all(tabs, strict=strict)
+        if ok:
+            assert _no_errors(errors) == {}, (key, value)
+        else:
+            [e] = errors["General"]
+            assert (e.label, e.column) == (key, "value"), (key, value, str(e))
 
 
 def test_general_types(tabs):
     for key, value, fragment in [
         ("weekly_enrol_cap", "thirty", "whole number"),
-        ("control_share", "15%", "number"),
-        ("control_share", "1.5", "between 0 and 1"),
+        ("explore_share", "15%", "number"),
+        ("explore_share", "0.5", "between 0 and 0.25"),
+        ("hand_check_sample", "100", "1 to 50"),
         ("live_sending", "maybe", "yes or no"),
         ("send_window", "Mon–Fri 09:00–16:00 America/Nowhere", "time zone"),
         ("send_window", "weekdays", "must look like"),
@@ -282,9 +463,9 @@ def test_general_conversions(tabs):
 
 
 def test_missing_general_keys_take_model_defaults(tabs):
-    tabs["General"] = [r for r in tabs["General"] if r["key"] != "score_cap"]
+    tabs["General"] = [r for r in tabs["General"] if r["key"] != "apollo_floor"]
     settings, _ = validate_all(tabs)
-    assert settings.general.score_cap == 100
+    assert settings.general.apollo_floor == 5000
 
 
 def test_a_missing_blackout_dates_row_keeps_the_spec_blackouts(tabs):
@@ -317,12 +498,6 @@ def test_retired_general_keys_are_skipped_not_errors(tabs):
     settings, errors = validate_all(tabs)
     assert settings is not None and not errors["General"]
     assert not hasattr(settings.general, "postal_address")
-
-
-def test_thresholds_in_order(tabs):
-    _row(tabs, "General", key="standard_threshold")[1]["value"] = "60"
-    e = _one(tabs, "General", "value")
-    assert e.label == "standard_threshold"
 
 
 def test_dev_channel_must_differ_from_alert_channel(tabs):
@@ -643,11 +818,12 @@ def test_a_mistyped_header_is_refused_by_name(tabs):
 
 
 def test_general_lists_split_on_semicolons_too(tabs):
-    """9 Oct 2026: "/us/pricing; /us/demo" was read as one path that never matches."""
-    n, row = _row(tabs, "General", key="site_visit_intent_paths")
-    row["value"] = "/us/pricing; /us/demo"
+    """9 Oct 2026: "/us/pricing; /us/demo" was read as one path that never matches (site_visit_intent_paths, a
+    constant in code since W2-4); every General list splits the same way."""
+    n, row = _row(tabs, "General", key="approver_slack_ids")
+    row["value"] = "U01HARRY; U02OTHER"
     settings, errors = validate_all(tabs)
-    assert not any(errors.values()) and settings.general.site_visit_intent_paths == ("/us/pricing", "/us/demo")
+    assert not any(errors.values()) and settings.general.approver_slack_ids == ("U01HARRY", "U02OTHER")
 
 
 def test_tests(tabs):
@@ -659,6 +835,8 @@ def test_tests(tabs):
     _row(t, "Tests", test_id="t1-eap-opener")[1]["status"] = "running"
     errs = _errors(t, "Tests")
     assert {e.column for e in errs} == {"start_date", "read_date"}
+    # A test started from 21 Oct 2026 runs only as the one split drawing arms (W3-4): General live_split = test.
+    next(r for r in t["General"] if r["key"] == "live_split")["value"] = "test"
     _row(t, "Tests", test_id="t1-eap-opener")[1].update(start_date="2026-11-02", read_date="2026-12-14",
                                                          version_a="cpa-firms-people-v1", version_b="cpa-firms-people-v9")
     errs = _errors(t, "Tests")
@@ -671,7 +849,118 @@ def test_tests(tabs):
     assert settings.running_test().start_date == date(2026, 11, 2)
     second = dict(_row(t, "Tests", test_id="t1-eap-opener")[1], test_id="t2")
     t["Tests"].append(second)
+    # Both started from 21 Oct 2026 (W3-4): one test of any kind runs at a time, and both rows are refused.
+    errs = _errors(t, "Tests")
+    assert [(e.row, e.column) for e in errs] == [(2, "status"), (3, "status")]
+    assert all("only one test runs at a time from 21 Oct 2026 (rows 2, 3 say running)" in e.message for e in errs)
+    # Before 21 Oct (warm-intro-70's rules, kept): the copy-test rule, on the second row only.
+    for r in t["Tests"]:
+        r["start_date"] = "2026-10-12"
+    next(r for r in t["General"] if r["key"] == "live_split")["value"] = "both"
     assert "only one copy test (ab or variant) runs at a time" in _one(t, "Tests", "status").message
+
+
+def _prereg_tabs(tabs, **row):
+    t = copy.deepcopy(tabs)
+    next(r for r in t["General"] if r["key"] == "live_split")["value"] = row.pop("live_split", "test")
+    for c in t["Copy"]:
+        c.update(status="approved", approved_by="Harry")
+    _row(t, "Tests", test_id="t1-eap-opener")[1].update({
+        "status": "running", "start_date": "2026-10-26", "read_date": "2027-02-01",
+        "version_a": "cpa-firms-people-v1", "version_b": "legal-teams-people-v1", **row})
+    return t
+
+
+def test_a_test_started_from_21_oct_needs_its_pre_registration_and_its_split(tabs):
+    """W3-4 (design-final §5 L10; RT §3): the Tests tab is the pre-registration. A test started on or after 21 Oct
+    2026 runs only with metric_id (O3 or O4), definition_version, test, alpha and look_thresholds, and only while
+    General live_split names its split alone (drawn_test; not a validation error since r1); one started before
+    (warm-intro-70, 12 Oct) keeps the rules it started under, so the live sheet's Tests tab still validates and draws
+    with live_split = both."""
+    settings, errors = validate_all(_prereg_tabs(tabs))
+    assert not any(errors.values())
+    t = settings.running_test()
+    assert (t.metric_id, t.test, t.alpha, t.look_thresholds, t.registered) == ("O4", "fisher_exact", 0.10,
+                                                                             "one_look", True)
+    missing = _errors(_prereg_tabs(tabs, metric_id="", alpha=""), "Tests")
+    assert {(e.column, e.message) for e in missing} == {("metric_id", "is required"), ("alpha", "is required")}
+    assert [e.column for e in _errors(_prereg_tabs(tabs, metric_id="O2"), "Tests")] == ["metric_id"]
+    assert [e.column for e in _errors(_prereg_tabs(tabs, alpha="0.6"), "Tests")] == ["alpha"]
+    assert [e.column for e in _errors(_prereg_tabs(tabs, looks="2026-12-01"), "Tests")] == ["looks"]  # one_look
+    of = _prereg_tabs(tabs, look_thresholds="obrien_fleming")
+    assert "needs at least one look before the read_date" in _one(of, "Tests", "looks").message
+    assert not any(validate_all(_prereg_tabs(tabs, look_thresholds="obrien_fleming", looks="2026-12-01"))[1].values())
+    # The split is not checked here (W3-4 r1): an error would keep General back with the Tests tab, live_sending = no
+    # with it. Under both the test validates and draws no arms (Settings.drawn_test; settings_sync says so daily).
+    settings, errors = validate_all(_prereg_tabs(tabs, live_split="both"))
+    assert not any(errors.values()) and settings.drawn_test() is None
+    assert [t.test_id for t in settings.split_mismatches()] == ["t1-eap-opener"]
+    # Started before 21 Oct: no pre-registration needed, and it runs beside both, as warm-intro-70 does.
+    legacy = _prereg_tabs(tabs, live_split="both", start_date="2026-10-12", metric_id="", definition_version="",
+                          test="", alpha="", look_thresholds="")
+    settings, errors = validate_all(legacy)
+    assert not any(errors.values()) and settings.running_test().registered is False
+    assert settings.drawn_test() is settings.running_test() and settings.split_mismatches() == []
+    assert (settings.running_test().metric, settings.running_test().method) == ("O4", "fisher_exact")  # the defaults
+
+
+_BLANK_REGISTRATION = dict(metric_id="", definition_version="", test="", alpha="", look_thresholds="")
+
+
+def test_the_version_in_force_is_read_without_the_pre_registration_rules_and_draws_nothing(tabs):
+    """W3-4 r2 (the review's blocking probe): the code before W3-4 lets a test start on or after 21 Oct with no
+    pre-registration columns, and stores the row. Read again under this code (strict=False: sync.load_current and
+    load_fallback), the row must still validate, or every tab falls back and enrolment and the reply desk stop
+    (spec.py: rows stored under older code validate under newer code). The sheet's own check (strict, the default)
+    still refuses it. A copy test in that state draws no arms, and registration_gaps names what it lacks."""
+    bare = _prereg_tabs(tabs, **_BLANK_REGISTRATION)  # a copy test, started 26 Oct 2026, live_split = test
+    strict = _errors(bare, "Tests")
+    assert sorted((e.column, e.message) for e in strict) == sorted((c, "is required") for c in _BLANK_REGISTRATION)
+    settings, errors = validate_all(bare, strict=False)
+    assert settings is not None and not any(errors.values()), errors
+    t = settings.running_test()
+    assert (t.registered, t.pre_registered) == (True, False)
+    # Under live_split = test it would draw (drawn_test's split rule); without its pre-registration it does not.
+    assert settings.drawn_test() is None
+    assert [(g.test_id, why) for g, why in settings.registration_gaps()] == [
+        ("t1-eap-opener", "needs its pre-registration fields (metric_id, definition_version, test, alpha, "
+                          "look_thresholds)")]
+    # The same row with its five fields draws, and has no gap (the guard is the pre-registration, nothing else).
+    full, _ = validate_all(_prereg_tabs(tabs), strict=False)
+    assert full.drawn_test() is full.running_test() and full.registration_gaps() == []
+
+    # Two running from 21 Oct: a holdout (opener/holdout, 22 Oct) beside the copy test, as the old code allowed.
+    # Strict: both rows refused (the one-test rule). Lenient: both read; each named once, for what it lacks.
+    two = _prereg_tabs(tabs)
+    two["Tests"].append(dict(two["Tests"][0], test_id="h1", kind="holdout", version_a="opener", version_b="holdout",
+                             start_date="2026-10-22", **_BLANK_REGISTRATION))
+    assert [(e.row, e.column) for e in _errors(two, "Tests") if e.column == "status"] == [(2, "status"), (3, "status")]
+    settings, errors = validate_all(two, strict=False)
+    assert settings is not None and not any(errors.values()), errors
+    assert [(g.test_id, why.split(" (")[0]) for g, why in settings.registration_gaps()] == [
+        ("t1-eap-opener", "is not the only test running"), ("h1", "needs its pre-registration fields")]
+
+    # A rule its looks do not fit (one_look with an interim look): strict refuses it; lenient reads it with the
+    # default rule (look_thresholds blank, so not pre-registered: it draws nothing, and its gap is named).
+    unfit = _prereg_tabs(tabs, looks="2026-12-01")
+    assert _one(unfit, "Tests", "looks")
+    settings, errors = validate_all(unfit, strict=False)
+    assert settings is not None and not any(errors.values())
+    assert settings.running_test().look_thresholds == "" and settings.running_test().look_rule == "obrien_fleming"
+    assert settings.drawn_test() is None
+    # Started before 21 Oct (warm-intro-70): no gap, either way.
+    legacy, _ = validate_all(_prereg_tabs(tabs, live_split="both", start_date="2026-10-12", **_BLANK_REGISTRATION),
+                             strict=False)
+    assert legacy.registration_gaps() == [] and legacy.drawn_test() is legacy.running_test()
+
+
+def test_live_split_is_one_of_five(tabs):
+    for value in ("both", "opener", "subject", "test", "none"):
+        next(r for r in tabs["General"] if r["key"] == "live_split")["value"] = value
+        settings, errors = validate_all(tabs)
+        assert not any(errors.values()) and settings.general.live_split == value
+    next(r for r in tabs["General"] if r["key"] == "live_split")["value"] = "holdout"
+    assert "must be one of both, opener, subject, test, none" in _one(tabs, "General", "value").message
 
 
 # -- tab-level ---------------------------------------------------------------------
@@ -706,7 +995,7 @@ def test_validate_tab_alone():
     general, errors = validate_tab("General", BASE["General"])
     assert not errors and general.weekly_enrol_cap == 150
     signals, errors = validate_tab("Signals", BASE["Signals"])
-    assert not errors and len(signals) == len(BASE["Signals"]) == 26
+    assert not errors and len(signals) == len(BASE["Signals"]) == 23  # 26 less W2-2's three dead rows
     bad = [dict(BASE["States"][0], active="sometimes")]
     states, errors = validate_tab("States", bad)
     assert states == () and errors == [RowError("States", 2, "active", "must be yes or no, not 'sometimes'", "AL")]

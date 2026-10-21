@@ -122,21 +122,23 @@ def copy_row(version: str, industry: str, *, status: str = "approved", role: str
 
 
 COPY = (copy_row("agencies-v1", AGENCIES), copy_row("general-v1", "General"))
-FIRST_TEST = ABTest("t1-agencies", "A shorter email 1 beats the first", "agencies-v1", "agencies-v2", 400, "running")
+# No start_date, so it reads as started from 21 Oct 2026, with the pre-registration such a test needs to draw arms
+# (W3-4 r2: Settings.drawn_test; a row without it is the version in force read leniently, and draws none).
+FIRST_TEST = ABTest("t1-agencies", "A shorter email 1 beats the first", "agencies-v1", "agencies-v2", 400, "running",
+                    metric_id="O4", definition_version="2026-10-20", test="fisher_exact", alpha=0.10,
+                    look_thresholds="one_look")
 BLACKOUTS = (DateRange(date(2026, 11, 23), date(2026, 11, 27)), DateRange(date(2026, 12, 18), date(2027, 1, 4)))
 
 
-def make_settings(*, mailboxes=MAILBOXES, copy=COPY, tests=(), overrides=(), focus=(), named_accounts=(),
+def make_settings(*, mailboxes=MAILBOXES, copy=COPY, tests=(), overrides=(), focus=(),
                   industries=INDUSTRIES, **general) -> Settings:
     g = General(
-        hubspot_owner_id="owner-harry",
-        clay_monthly_credits=2000.0, clay_credits_per_account=5.0, blackout_dates=BLACKOUTS,
+        hubspot_owner_id="owner-harry", blackout_dates=BLACKOUTS,
         email1_subject_share=0.0,  # every email 1 keeps the Copy row's subject; the split's tests opt in
     )
     return Settings(
         general=dataclasses.replace(g, **general), angles=ANGLES, industries=tuple(industries), copy=tuple(copy),
         mailboxes=tuple(mailboxes), tests=tuple(tests), overrides=tuple(overrides), focus=tuple(focus),
-        named_accounts=tuple(named_accounts),
     )
 
 
@@ -341,11 +343,10 @@ def test_signature_on_every_email_and_no_data_notice():
 
 
 def test_the_data_record_names_only_the_data_providers_in_use():
-    # Clay is skipped until its functions exist (clay_verification), so the record names Apollo alone.
+    # Clay never ran and was removed (W2-1), so the record names Apollo alone, as it did on every contact so far.
     assert render.data_record(make_settings()) == {
         "contact_data": "Apollo", "company_information": "the company's public website",
         "lawful_basis": "legitimate interests: telling businesses about Spill", "shown_in_email": False}
-    assert render.data_record(make_settings(clay_verification="required"))["contact_data"] == "Apollo and Clay"
 
 
 # -- two links an email (Harry, 6 Oct 2026) ------------------------------------------------------------

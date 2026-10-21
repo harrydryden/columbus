@@ -79,12 +79,13 @@ eight weeks and any test's read date.
 
 Universe rows not refreshed in 12 months (SPEC 6). A company row is refreshed when a source sees the company again:
 source_universe's monthly pass from page 1 writes Apollo's facts for every company it finds again, as do
-apollo_enrich, apollo_people, apollo_signals, the page reader, site visits and the HubSpot checks. last_scored is no
+apollo_enrich, contact_precheck, apollo_signals, the page reader, site visits and the HubSpot checks. last_scored is no
 sign of it (every nightly rescore moves it), and neither are the facts the system derives from what it already holds
 (DERIVED_SOURCES: scoring's matches, the lookalike fit, verify's doubts, the opener's focus phrase). So an account is
 deleted, with its signal_events, when it was first seen more than UNIVERSE_MONTHS ago and no source has observed it
 since, and only when nothing else holds it: no contact, no event and no hitl_items row names it, it was never
-enrolled (status enrolled, engaged, demo_requested or demo_booked) or disqualified, it did not come from the Named
+enrolled (status enrolled, engaged, demo_requested or demo_booked), disqualified or parked (W1-4: a parked company is
+held out by a setting, and comes back when it changes), it did not come from the Named
 accounts tab, and no person's decision is kept on it (an approver's 🚫 at a send approval, declined_in_slack; Harry
 naming it, named). Domain aliases, partners, suppression and the credit ledger stay. A company found again later
 comes in by the front door as a new account. These are companies, not people, so the rule leans to keeping.
@@ -115,14 +116,12 @@ from us_outbound.clients.http import ApiError
 from us_outbound.clients.instantly import LEAD_ACTIVE, LEAD_BOUNCED, LEAD_PAUSED, LEAD_UNSUBSCRIBED, STEP_DAYS
 from us_outbound.context import UK, ConfigError, Context
 from us_outbound.enrol import capacity
-from us_outbound.enrol.openers import FOCUS_SOURCE
 from us_outbound.logs import log, normalise_email, redact
 from us_outbound.replies import optout
-from us_outbound.replies.items import REPLY_KINDS, WAITING
+from us_outbound.replies.desk import REPLY_KINDS, WAITING
 from us_outbound.replies.poll import OOO_KIND
 from us_outbound.scoring.score import SCORING_SOURCE
-from us_outbound.scoring.tiers import DECLINED_IN_SLACK
-from us_outbound.sources import named
+from us_outbound.icp import DECLINED_IN_SLACK
 from us_outbound.sources.lookalikes import SOURCE as LOOKALIKE_SOURCE
 from us_outbound.timeparse import et_day, utc
 from us_outbound.verify import DOUBT_SOURCE
@@ -156,11 +155,16 @@ PURGED = "reply_text_purged_at"  # set on a card's payload once its text is gone
 NOT_A_REPLY = frozenset({OUT_OF_OFFICE, "unsubscribe"})
 WARM_EVENTS = ("meeting_booked", "demo_held", "deal_created")  # a company with one keeps its people
 # Account statuses whose rows are never deleted as universe rows: our history with the company, or a decision.
-KEPT_STATUSES = ("enrolled", "engaged", "demo_requested", "demo_booked", "disqualified")
+KEPT_STATUSES = ("enrolled", "engaged", "demo_requested", "demo_booked", "disqualified", "parked")
+# The source and fact of the removed Named accounts tab (sources/named.py), and the "what they do" opener's stored
+# phrase (enrol/openers.py General opener_focus), both gone in W2-1, 20 Oct 2026: rows they wrote before keep the
+# meaning they had here.
+NAMED_SOURCE = NAMED_FACT = "named"
+FOCUS_SOURCE = "opener_focus"
 # Facts the system derives from what it already holds: they are no sign a source saw the company again.
 DERIVED_SOURCES = (SCORING_SOURCE, LOOKALIKE_SOURCE, DOUBT_SOURCE, FOCUS_SOURCE)
 # A person's decision kept on the account: an approver's 🚫 at a send approval, or Harry naming it.
-DECISION_FACTS = (DECLINED_IN_SLACK, named.FACT)
+DECISION_FACTS = (DECLINED_IN_SLACK, NAMED_FACT)
 EVENTS_TEXT_SQL = "SELECT event_id FROM {schema}.events WHERE reply_text IS NOT NULL AND occurred_at < %(before)s"
 ITEMS_TEXT_SQL = (
     "SELECT item_id, payload FROM {schema}.hitl_items WHERE kind = ANY(%(kinds)s) AND created_at < %(before)s"
@@ -517,7 +521,7 @@ def stale_accounts(ctx: Context, before: datetime) -> list[str]:
     """Accounts first seen before `before` that no source has observed since, and that nothing else holds (the module
     docstring), oldest first."""
     store = ctx.store
-    params = {"before": before, "kept": list(KEPT_STATUSES), "named": named.SOURCE,
+    params = {"before": before, "kept": list(KEPT_STATUSES), "named": NAMED_SOURCE,
               "derived": list(DERIVED_SOURCES), "decisions": list(DECISION_FACTS)}
     try:
         return [str(r["account_id"]) for r in store.query(STALE_ACCOUNTS_SQL.format(schema=store.schema), params)]
@@ -533,7 +537,7 @@ def stale_accounts(ctx: Context, before: datetime) -> list[str]:
         held |= {str(r["account_id"]) for r in store.select(table) if r.get("account_id")}
     found = [(t, str(a["account_id"])) for a in store.select("accounts")
              if (t := utc(a.get("first_seen"))) is not None and t < before
-             and (a.get("status") or "") not in KEPT_STATUSES and (a.get("source") or "") != named.SOURCE
+             and (a.get("status") or "") not in KEPT_STATUSES and (a.get("source") or "") != NAMED_SOURCE
              and str(a["account_id"]) not in held]
     return [aid for _, aid in sorted(found)]
 

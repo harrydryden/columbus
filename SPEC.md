@@ -394,6 +394,7 @@ All times are UK time. Every job writes a heartbeat row; a missed heartbeat aler
 3.  **Suppress.** A Suppress signal adds the domain to suppression for its counts_for_days.
 4.  **Angle.** Use the first angle, in Angles-tab order, that any fresh signal suggests. Control accounts always get General.
 5.  **Opener.** Use the opener template of the signal that set the angle, filled with its evidence. If that signal has no opener, use the angle's default_opener.
+  - Harry's D7 (19 Oct 2026; W2-2, 20 Oct 2026): rules 3 to 5 of the tier are one, Queue: the queue is taken by score, with the random explore arm (General `explore_share`) in place of the Control tier, and the thresholds are retired. Every account gets its angle by step 4 (no Control rule). The opener is chosen at enrol time (enrol/openers.py). The hard exclusions below and verify's checks are one ICP gate (`us_outbound/icp.py`); the CA/WA and FL staff shares and the fewer-than-5-US-people rule went, as nothing measured them.
 ### Hard exclusions (fixed in code)
   - Brokers, insurers, HR-tech vendors, PEOs (NAICS 561330), HR consultancies (541612) and behavioural-health providers. These go on a partner list and are never prospected.
   - Anything in HubSpot matching any of these:
@@ -414,6 +415,7 @@ It is the smallest of:
   - the same calculation for Apollo;
   - the size of the verified queue.
 Of that number, control_share comes from the Control tier. The rest comes from Priority, then Standard, ordered by score, then by size band (20 to 99 first), then by industry priority.
+  - Harry's D7 (19 Oct 2026; W1-6): the Control tier's share gives way to a random explore arm. General `explore_share` (0.15 by default from W2-2, D7's choice; at most 0.25; 0 switches it off) of the accounts pick_contacts wants is drawn at random from the accounts due, within the Focus shares, and stamped `arm = random`; enrol takes `explore_share` of its number from them, the rest in queue order, a shortfall in either filled from the other. Each contact is stamped with its arm, an A/A sham arm, its industry, group and size band, copy level, email 1's subject and a hash of each email. While `explore_share` is 0 every account is taken in queue order.
 ### Test assignment
   - The version is hash(account_id + test_id) % 2. This is deterministic, so each account's version never changes.
   - Both contacts at an account get the same version.
@@ -558,7 +560,7 @@ The reply goes out through Instantly's reply endpoint from the mailbox the prosp
 3.  Add the reply as a note, and a task for Harry due today.
 4.  Set lifecyclestage = lead, hs_lead_status = CONNECTED and hubspot_owner_id = Harry, each only if it is empty.
 5.  Deal. If demo_requested is true, or hubspot_readback sees a meeting booked on Harry's demo link or the website booking page, create one deal named "US Outbound – {clean_name}" in pipeline "Spill 3.0" at its first stage. Only do this if the company has no open deal.
-The six properties, in the group "US Outbound":
+The six properties, in the group "US Outbound" (not written: Harry's D9, W1-2, 19 Oct 2026. They were never created in the portal, so every write naming them failed, and nothing read them; the reply writes send standard properties only, crm/hubspot_writes.py):
 |  |  |
 | :- | :- |
 | **Object** | **Property** |
@@ -580,6 +582,7 @@ One message covering:
   - any kill rule that fired
 ### Weekly hand-check (Monday, before that week's enrolment)
 Ten random queued accounts per active industry group are posted, each with its rendered step-1 email and its evidence. Harry approves them or pulls individual accounts. Enrolment waits until he has.
+  - Harry's D5 (19 Oct 2026; W1-5): the hand-check is a measure, not a gate. `hand_check_draw` (Mondays 05:45 UK) draws General `hand_check_sample` accounts (10 by default; D5 asks for 20) from the ranked accounts the coming send days would take, after today's own, to the Hand-check tab, with a leave-out reason and contact and opener columns. With General `hand_check_gate` = no only the sampled accounts wait, until judged or for 7 days, then they are released and the Monday readout says so; every judgement is kept as a fact, and a changed decision is applied again. `hand_check_gate` = yes (the default until the sheet says no) keeps the gate above.
 ## 12. Learning, kill rules, readout
 ### Copy tests
   - Two versions, split 50/50 by account, running to 400 accounts per version (about six to seven weeks at starting volume).

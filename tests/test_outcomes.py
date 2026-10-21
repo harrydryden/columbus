@@ -1,4 +1,5 @@
-"""sync_outcomes: Instantly's sends, replies, bounces and unsubscribes into events, idempotently (SPEC 6, 11, 13)."""
+"""sync_outcomes: Instantly's sends, bounces and unsubscribes into events, idempotently (SPEC 6, 11, 13). Replies
+are poll_replies' alone from W2-4 (tests/test_poll_replies.py): this job lists no received mail."""
 
 from __future__ import annotations
 
@@ -79,8 +80,11 @@ def test_a_reply_sent_from_the_desk_is_never_a_step(world):
     assert (events["R1"]["type"], events["R1"]["step"]) == ("reply_sent", None)
     assert (events["R0"]["type"], events["R0"]["step"]) == ("sent", None)  # left as it was, not renumbered
     assert out["sent"] == 2 and out["dropped"] == {"sent: a reply sent from the reply desk": 1}
+    from us_outbound.replies import poll
+
     world.reply("E1", at=NOW - timedelta(hours=1))
-    run(world)
+    world.ctx.job = "poll_replies"
+    poll.run(world.ctx)
     assert world.ctx.store.get("events", event_id="E1")["step"] == 2  # the reply answers step 2, not the desk's reply
 
 
@@ -96,30 +100,56 @@ def test_sends_outside_our_campaigns_or_contacts_are_dropped(world):
 # -- replied -------------------------------------------------------------------------------------------
 
 
-def test_a_reply_is_recorded_unclassified_and_engages_the_account(world):
+def test_sync_outcomes_reads_no_received_mail_and_records_no_reply(world):
+    """W2-4 (RS §2 W2-4): poll_replies is the one reader of received mail. sync_outcomes makes no
+    /emails?email_type=received request (both listed it, on an endpoint limited to 20 requests a minute), writes no
+    replied row, and leaves the account enrolled; a later sync never clears the class poll_replies set."""
     world.sent("S1", at=NOW - timedelta(days=10))
-    world.sent("S2", at=NOW - timedelta(days=3))
     world.reply("E1")
     out = run(world)
-    [ev] = world.events("replied")
-    assert ev["event_id"] == "E1" and ev.get("reply_class") is None and ev["step"] == 2 and ev["mailbox"] == HANNAH
-    assert world.ctx.store.get("accounts", account_id="acc-acme")["status"] == "engaged"
-    assert out["replied"] == 1
-    assert "k-jane" in stopped_contacts(world.ctx.store)
-
-
-def test_an_auto_reply_is_left_to_poll_replies(world):
-    world.reply("E1", text="I am out of the office.", is_auto_reply=1)
-    out = run(world)
-    assert world.events("replied") == [] and out["auto_replies_left_to_poll_replies"] == 1
+    email_reads = [r for r in world.transport.requests if r.url.endswith("/api/v2/emails")]
+    assert email_reads and {r.params["email_type"] for r in email_reads} == {"sent"}
+    assert world.events("replied") == [] and "replied" not in out
     assert world.ctx.store.get("accounts", account_id="acc-acme")["status"] == "enrolled"
+    from us_outbound.replies import poll
+
+    world.ctx.job = "poll_replies"
+    poll.run(world.ctx)
+    received = [r for r in world.transport.requests if r.url.endswith("/api/v2/emails")
+                and r.params["email_type"] == "received"]
+    assert sorted(r.params["eaccount"] for r in received) == sorted({HANNAH, HARRY, "sam@meetspill.org",
+                                                                   "harry@tryspill.org"})  # one per mailbox
+    assert world.events("replied")[0]["reply_class"] == "positive"
+    world.ctx.job = "sync_outcomes"
+    run(world)
+    assert world.events("replied")[0]["reply_class"] == "positive"
+
+
+def test_received_reason_names_each_case():
+    reg = frozenset({HANNAH, "harry@meetspill.org"})
+    cases = {
+        "campaign_send": {"ue_type": 1, "from_address_email": JANE},
+        "manual_send": {"ue_type": 3, "from_address_email": JANE},
+        "no_sender": {"from_address_email": ""},
+        "from_self": {"from_address_email": HANNAH},
+        "registry_sender": {"from_address_email": "harry@meetspill.org"},
+        "spill_domain": {"from_address_email": "hello@spill.chat"},
+        "system_sender": {"from_address_email": "postmaster@acmecreative.com"},
+        None: {"from_address_email": JANE, "ue_type": 2},
+    }
+    for want, email in cases.items():
+        assert outcomes.received_reason(email, HANNAH, reg) == want, email
+        assert outcomes.is_received(email, HANNAH, reg) is (want is None)
+    assert set(outcomes.DROP_REASONS) == {k for k in cases if k}
 
 
 def test_engaged_never_moves_a_later_status_back(world):
     world.ctx.store.update("accounts", {"account_id": "acc-acme"}, {"status": "demo_booked"})
-    world.reply("E1")
-    run(world)
+    outcomes.mark_engaged(world.ctx, ["acc-acme"])
     assert world.ctx.store.get("accounts", account_id="acc-acme")["status"] == "demo_booked"
+    world.ctx.store.update("accounts", {"account_id": "acc-acme"}, {"status": "enrolled"})
+    outcomes.mark_engaged(world.ctx, ["acc-acme"])
+    assert world.ctx.store.get("accounts", account_id="acc-acme")["status"] == "engaged"
 
 
 # -- bounced and unsubscribed leads ---------------------------------------------------------------------
@@ -137,6 +167,77 @@ def test_a_bounced_lead_is_recorded_and_suppressed(world):
     assert out["bounced"] == 1
     run(world)
     assert len(world.events("bounced")) == 1
+
+
+def test_the_suppression_is_written_before_the_bounce_event(world, monkeypatch):
+    """W2-3: kill_rules no longer suppresses every bounced contact again each hour, so the bounced event (which tells
+    later runs the lead is done) must never exist without the suppression: a failure between the two leaves no event,
+    and the next run suppresses."""
+    from us_outbound import suppression
+
+    world.sent("S1", at=NOW - timedelta(days=1))
+    world.lead("L-jane", JANE, LEAD_BOUNCED)
+
+    def broken(*a, **k):
+        raise OSError("database went away")
+
+    real = suppression.add
+    monkeypatch.setattr(suppression, "add", broken)
+    with pytest.raises(OSError):
+        run(world)
+    assert world.events("bounced") == []
+    monkeypatch.setattr(suppression, "add", real)
+    world.at(NOW + timedelta(minutes=15))
+    run(world)
+    assert world.suppressed(JANE)[0]["reason"] == "bounce" and len(world.events("bounced")) == 1
+
+
+def _earlier_sends(world, n: int, bounced: int) -> None:
+    """n step-1 sends from Hannah's mailbox two days ago, as earlier runs recorded them; the first `bounced` bounced."""
+    rows = []
+    for i in range(n):
+        at = NOW - timedelta(days=2, minutes=i)
+        rows.append({"event_id": f"old-{i}", "type": "sent", "mailbox": HANNAH, "contact_id": f"c-old-{i}",
+                     "account_id": f"a-old-{i}", "step": 1, "occurred_at": at})
+        if i < bounced:
+            rows.append({"event_id": f"old-b-{i}", "type": "bounced", "mailbox": HANNAH, "contact_id": f"c-old-{i}",
+                         "account_id": f"a-old-{i}", "step": 1, "occurred_at": at + timedelta(minutes=1)})
+    world.ctx.store.insert("events", rows)
+
+
+def test_a_recorded_bounce_runs_the_bounce_kill_rules_within_the_run(default_settings):
+    """W2-3: sync_outcomes runs the bounce kill rules at its end when it recorded a bounce. 39 earlier sends from
+    Hannah with 1 bounce, then S1 to Jane bounces: 2 of 40 = 5% > 3%, with 2 bounces (MIN_BOUNCES), so her mailbox is
+    held within this run (dry-run: the hold and the item, no sheet or Instantly change). The hourly kill_rules the
+    same hour finds the hold open and fires nothing new (K4)."""
+    from us_outbound.base import holds
+    from us_outbound.learn import kill_rules
+
+    w = make_world(default_settings, live=False)
+    w.ctx.job = "sync_outcomes"
+    _earlier_sends(w, 39, bounced=1)
+    w.sent("S1", at=NOW - timedelta(days=1))
+    w.lead("L-jane", JANE, LEAD_BOUNCED)
+    out = outcomes.run(w.ctx)
+    assert out["bounced"] == 1
+    [fired] = out["kill_rules"]["fired"]
+    assert (fired["rule"], fired["target"]) == ("mailbox_bounce_rate", HANNAH)
+    assert "2 of its last 40 sends bounced (5.0%; the limit is 3%)" in fired["reason"]
+    assert holds.held_mailboxes(w.ctx.store) == {HANNAH: fired["reason"]}
+    assert "kill_rule_errors" not in out
+    assert kill_rules.run(w.ctx)["fired"] == []
+    assert len(w.ctx.store.select("hitl_items", {"kind": "kill_rule"})) == 1
+
+
+def test_no_bounce_recorded_runs_no_kill_rule(default_settings):
+    """The same 39 sends with 1 bounce and a delivered S1: nothing recorded, so the rules are not called (and 1 of
+    40 would not fire anyway)."""
+    w = make_world(default_settings, live=False)
+    w.ctx.job = "sync_outcomes"
+    _earlier_sends(w, 39, bounced=1)
+    w.sent("S1", at=NOW - timedelta(days=1))
+    out = outcomes.run(w.ctx)
+    assert out["bounced"] == 0 and "kill_rules" not in out
 
 
 def test_an_instantly_unsubscribe_is_recorded_everywhere_when_live(world):
@@ -194,13 +295,12 @@ def test_leads_of_other_people_are_dropped(world):
 
 def test_a_second_run_adds_nothing(world):
     world.sent("S1", at=NOW - timedelta(days=10))
-    world.reply("E1")
     world.lead("L-bob", BOB, LEAD_BOUNCED, campaign="cmp-harry")
     run(world)
     before = [dict(e) for e in world.events()]
     out = run(world)
     assert world.events() == before
-    assert (out["sent"], out["replied"], out["bounced"]) == (0, 0, 0)
+    assert (out["sent"], out["bounced"]) == (0, 0)
 
 
 def test_it_reads_from_the_last_good_run_and_at_least_two_days_back(world):
@@ -279,7 +379,7 @@ def test_the_last_two_days_are_re_read_once_a_day_and_six_hours_otherwise(world)
 
 
 def test_a_long_outage_is_caught_up_a_week_a_run(world):
-    from us_outbound.ops.heartbeat import run_job
+    from us_outbound.ops.health import run_job
 
     world.honor_until = True
     _beat(world, timedelta(days=20))  # the last good run, before an outage
@@ -313,7 +413,7 @@ def test_every_instantly_read_is_filtered_by_registry_mailbox_or_us_campaign(wor
     assert all(c.target.startswith("US Outbound – ") for c in reads if c.action == "lead.list")
     email_reads = [r for r in world.transport.requests if r.url.endswith("/api/v2/emails")]
     assert {r.params["eaccount"] for r in email_reads} == {HANNAH, HARRY, "sam@meetspill.org", "harry@tryspill.org"}
-    assert {r.params["email_type"] for r in email_reads} == {"sent", "received"}
+    assert {r.params["email_type"] for r in email_reads} == {"sent"}  # received mail is poll_replies' (W2-4)
     lead_lists = [r for r in world.transport.requests if r.url.endswith("/leads/list")]
     assert {r.json["campaign"] for r in lead_lists} == {"cmp-hannah", "cmp-harry", "cmp-sam"}  # never the EU one
 
@@ -324,5 +424,5 @@ def test_dry_run_writes_the_database_and_nothing_else(default_settings):
     world.reply("E1")
     world.lead("L-bob", BOB, LEAD_BOUNCED, campaign="cmp-harry")
     outcomes.run(world.ctx)
-    assert {e["type"] for e in world.events()} == {"sent", "replied", "bounced"}
+    assert {e["type"] for e in world.events()} == {"sent", "bounced"}
     assert world.instantly_writes() == [] and world.hubspot_writes() == []

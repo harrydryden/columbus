@@ -38,7 +38,7 @@ happen on a monthly cadence." It:
          customer's domain or name. A search that did not reach every customer keeps the stored counts,
          so a part-read never skews them.
        * Open accounts in the queue: a fresh headcount_growth_12m fact (apollo_enrich writes it for
-         apollo_enrich_groups) gives the band with no search; the same band search fills the gaps for
+         APOLLO_ENRICH_GROUPS) gives the band with no search; the same band search fills the gaps for
          accounts whose band is missing or older than GROWTH_REFRESH_DAYS. Either way the band is a
          fact (source apollo_org, headcount_growth_band; "unknown" when no band search returned the
          account, so it is not searched again for GROWTH_REFRESH_DAYS).
@@ -51,16 +51,23 @@ happen on a monthly cadence." It:
      so they happen and their credits are recorded, as the other Apollo sources do.
   5. Writes the lookalike facts (apply): for each open account, its lookalike fit, 0 to 100 (FitModel),
      from three parts, each 0 to 1:
-       * industry: the weighted strength of Spill's customers (10 to 249 staff) in the account's
-         industry, over the strongest industry group's (as lookalike_priorities). The industry is the
-         account's website label when Spill's own HubSpot industry field names it apart from its group
-         (FIT_LABELS: Games studios, Staffing agencies, CPA firms...), else its group: HubSpot's field has
-         23 values, most of them a whole group ("Tech"), so an Edtech prospect is read by its group.
+       * industry: how well the account's industry group converts once a buyer has had a demo, from the
+         segment prior (learn/segments.py, segment_prior_monthly; W3-4, 21 Oct 2026; data-icp §8.3): the
+         group's Spill 3.0 win rate shrunk toward PRIOR_MEAN (0.38) with weight PRIOR_WEIGHT (20), over
+         PRIOR_MEAN, clipped to INDUSTRY_FIT_RANGE (0.5 to 1.5): Legal Teams 9 of 15 is (9 + 7.6) ÷ 35 = 0.474,
+         1.25; Construction 5 of 27 is 0.268, 0.705. Before W3-4 it was the weighted strength of Spill's
+         customers in the industry over the strongest group's, which rewarded a group for being common
+         (Technology & Startups has the most customers, not the best conversion). Until the first prior is
+         stored the customers' strength stands in, as before, and the quote says so. With the strength,
+         the industry is the account's website label when Spill's own HubSpot industry field names it
+         apart from its group (FIT_LABELS: Games studios, Staffing agencies, CPA firms...), else its
+         group: HubSpot's field has 23 values, most of them a whole group ("Tech").
        * size: the strength in the account's size band within its group, over the group's best band;
          across every group when the group has fewer than SMALL_GROUP active customers there.
        * growth: the strength in the account's growth band over the most common band, across every
          customer, or within the group once GROWTH_GROUP_MIN of its customers have a known band.
-     fit = 100 x the weighted mean (INDUSTRY_WEIGHT, SIZE_WEIGHT, GROWTH_WEIGHT). A part that is not
+     fit = 100 x the weighted mean (INDUSTRY_WEIGHT, SIZE_WEIGHT, GROWTH_WEIGHT), at most 100 (the industry
+     part may be above 1 from the prior). A part that is not
      known for the account (its growth, or its size) is left out and the weights of the others
      renormalised, so missing data never costs points. The facts are lookalike_fit and the three parts
      (lookalike_industry_fit, lookalike_size_fit, lookalike_growth_fit, null when unknown), with a quote
@@ -69,11 +76,11 @@ happen on a monthly cadence." It:
      customers" signals score lookalike_fit (SPEC 7: facts into signal_events; scoring matches them).
      settings_sync runs apply() every night too, from the stored cells and growth counts with no
      outside call, so an account sourced after the 1st has its facts by the next morning.
-  6. Rescores, so the exclusions and facts are in force before verify_in_clay runs.
+  6. Rescores, so the exclusions and facts are in force before verify_accounts runs.
 
-Also here: report() for `us-outbound lookalikes show`, fit_report() for `us-outbound lookalikes fit` (the
-fits, and the tier mix the build's lookalike rows would give, scored in memory: nothing is written), and
-lookalike_priorities(), for the sourcing job to order industries by how many customers Spill has like them.
+Also here: report() for `us-outbound report lookalikes`, and lookalike_priorities(), for the sourcing job to order
+industries by how many customers Spill has like them. (fit_report(), the `lookalikes fit` command's tier mix under
+other weights, went in W2-4: git history keeps it.)
 
 Not here: the "former Spill buyer now at this company" signal (design review D17). It re-purposes
 personal data and waits on a legal assessment; this module reads companies only.
@@ -81,9 +88,9 @@ personal data and waits on a legal assessment; this module reads companies only.
 
 from __future__ import annotations
 
-import dataclasses
 import json
 import math
+import re
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -114,7 +121,7 @@ ACTIVE_FACT, STRENGTH_FACT = "lookalike_active", "lookalike_strength"
 FIT_FACT = "lookalike_fit"
 INDUSTRY_FIT_FACT, SIZE_FIT_FACT, GROWTH_FIT_FACT = "lookalike_industry_fit", "lookalike_size_fit", "lookalike_growth_fit"
 HUBSPOT_SOURCE = "hubspot"  # the source enrol's HubSpot re-check writes its facts under
-CUSTOMER_FACT, FORMER_FACT = "hubspot_customer", "hubspot_former_customer"  # scoring/tiers.HUBSPOT_EXCLUSIONS
+CUSTOMER_FACT, FORMER_FACT = "hubspot_customer", "hubspot_former_customer"  # icp.HUBSPOT_EXCLUSIONS
 SUPPRESS_SOURCE = "lookalikes"
 SUPPRESS_DAYS = 70  # ten weeks: the monthly job may miss one run (31 + 31 days) before a customer's entry lapses
 REFRESH_DAYS = 90  # an unchanged lookalike fact is written again after this, inside the signals' 120 days
@@ -127,6 +134,13 @@ INDUSTRY_WEIGHT, SIZE_WEIGHT, GROWTH_WEIGHT = 0.45, 0.35, 0.20
 SMALL_GROUP = 5  # active customers at 10 to 249 staff below which a group's own size mix is too thin to read
 GROWTH_GROUP_MIN = 20  # customers with a known growth band before a group's own growth mix is read
 ALL = "*"  # FitModel's key for every customer, whatever the group
+# The segment prior (learn/segments.py, W3-4): its rows in the metrics table, the win rate's shrinkage and the industry
+# part's range. segments.py writes them; FitModel reads PRIOR_WIN per industry group.
+PRIOR_VERSION = "2026-10-21"
+PRIOR_WIN, PRIOR_GBP, PRIOR_DAYS, PRIOR_RETAINED = PRIOR_METRICS = (
+    "segment_prior_won", "segment_prior_median_gbp", "segment_prior_days", "segment_prior_retained")
+PRIOR_MEAN, PRIOR_WEIGHT = 0.38, 20  # Spill 3.0's decided deals with an industry won 38% (data-icp §3.1)
+INDUSTRY_FIT_RANGE = (0.5, 1.5)
 
 # 12-month headcount growth bands. The fact is source apollo_org (it is Apollo's figure), so a Signals row
 # may read it too (settings/model.py SOURCE_FIELDS).
@@ -882,9 +896,11 @@ class Fit:
 class FitModel:
     """What the fit reads: the stored cells (industry and size) and the customers' growth counts, in aggregate."""
 
-    def __init__(self, cells: Iterable[Mapping[str, Any]], growth: Iterable[Mapping[str, Any]] = ()):
+    def __init__(self, cells: Iterable[Mapping[str, Any]], growth: Iterable[Mapping[str, Any]] = (),
+                 prior: Mapping[str, tuple[int, int]] | None = None):
         cells = list(cells)
         self.cells = len(cells)
+        self.prior = dict(prior or {})  # industry group -> (won, decided): the segment prior (W3-4)
         self.groups = group_cells(cells)  # (group, band) -> counts: lookalike_active and lookalike_strength
         self.group_strength: dict[str, float] = defaultdict(float)  # 10 to 249 staff, as lookalike_priorities
         self.label_strength: dict[str, float] = defaultdict(float)
@@ -913,6 +929,8 @@ class FitModel:
                 self.growth[key][band][1] += float(r.get("strength") or 0.0)
 
     def _industry(self, label: str, group: str) -> tuple[float, str]:
+        if self.prior:
+            return self._converts(group)
         key = fit_industry(label, group)
         strength = self.group_strength.get(key, 0.0) if key == group else self.label_strength.get(key, 0.0)
         top = max(self.group_strength.values(), default=0.0)
@@ -921,6 +939,15 @@ class FitModel:
             return value, f"none in {key} ({value:.2f})"
         rank = 1 + sum(s > strength for s in self.group_strength.values())
         return value, f"{key} is {_rank_words(rank, 'strongest industry')} ({value:.2f})"
+
+    def _converts(self, group: str) -> tuple[float, str]:
+        """The industry part from the segment prior (the module docstring): the group's shrunk win rate ÷ PRIOR_MEAN,
+        clipped to INDUSTRY_FIT_RANGE; a group with no decided deal is PRIOR_MEAN itself, 1.0."""
+        won, decided = self.prior.get(group, (0, 0))
+        rate = (won + PRIOR_MEAN * PRIOR_WEIGHT) / (decided + PRIOR_WEIGHT)
+        lo, hi = INDUSTRY_FIT_RANGE
+        value = round(min(hi, max(lo, rate / PRIOR_MEAN)), 3)
+        return value, f"{group} won {won} of {decided} decided deals after a demo ({rate:.0%} shrunk; {value:.2f})"
 
     def _size(self, group: str, label: str, band: str | None) -> tuple[float | None, str]:
         if band is None:
@@ -968,7 +995,7 @@ class FitModel:
         grown, g_text = self._growth(group, growth)
         parts = [(w, v) for w, v in ((INDUSTRY_WEIGHT, industry), (SIZE_WEIGHT, size), (GROWTH_WEIGHT, grown))
                  if v is not None]
-        fit = round(100 * sum(w * v for w, v in parts) / sum(w for w, _ in parts))
+        fit = min(100, round(100 * sum(w * v for w, v in parts) / sum(w for w, _ in parts)))
         return Fit(fit, industry, size, grown, f"Spill's customers: {i_text}; {s_text}; {g_text}. Fit {fit}.")
 
     def wanted(self, settings: Settings, account: Mapping[str, Any], growth: str | None) -> dict[str, tuple[Any, str]]:
@@ -986,10 +1013,36 @@ class FitModel:
                 GROWTH_FIT_FACT: (f.growth, f.quote), ACTIVE_FACT: (cell[0], cell[2]), STRENGTH_FACT: (cell[1], cell[2])}
 
 
+def prior_rows_latest(store: Any) -> list[dict]:
+    """The segment prior's rows of its latest month (metrics table, learn/segments.py), one per (segment, metric):
+    the latest definition_version, then computed_at."""
+    rows = [r for r in store.select("metrics", {"metric": list(PRIOR_METRICS)}) if r.get("day") is not None]
+    if not rows:
+        return []
+    day = max(r["day"] for r in rows)
+    best: dict[tuple[str, str], dict] = {}
+    for r in rows:
+        if r["day"] != day:
+            continue
+        key = (str(r["segment_key"]), str(r["metric"]))
+        rank = (str(r.get("definition_version") or ""), str(r.get("computed_at") or ""))
+        have = best.get(key)
+        if have is None or rank > (str(have.get("definition_version") or ""), str(have.get("computed_at") or "")):
+            best[key] = r
+    return list(best.values())
+
+
+def segment_prior(store: Any) -> dict[str, tuple[int, int]]:
+    """industry group -> (won, decided), the latest month's segment prior; {} before the first is stored."""
+    return {str(r["segment_key"]).partition("=")[2]: (int(r.get("k") or 0), int(r.get("n") or 0))
+            for r in prior_rows_latest(store)
+            if r["metric"] == PRIOR_WIN and str(r["segment_key"]).startswith("group=")}
+
+
 def fit_model(store: Any) -> FitModel | None:
-    """The model from the stored cells and growth counts; None before the first lookalikes run."""
+    """The model from the stored cells, growth counts and segment prior; None before the first lookalikes run."""
     cells = store.select(TABLE)
-    return FitModel(cells, store.select(GROWTH_TABLE)) if cells else None
+    return FitModel(cells, store.select(GROWTH_TABLE), segment_prior(store)) if cells else None
 
 
 def _fact_rows(account_id: str, want: Mapping[str, tuple[Any, str]], now: datetime) -> list[dict]:
@@ -1021,10 +1074,16 @@ def apply(ctx: Context) -> dict[str, int]:
         return {"cells": 0, "accounts": 0, "written": 0}
     accounts, latest, growth = _open_accounts(store)
     facts, written = [], 0
+    edges = fit_edges(ctx.settings)
+    moved: Counter[str] = Counter()  # accounts whose lookalike_fit crossed a Signals threshold, up or down
     for a in accounts:
         aid = a["account_id"]
         want = model.wanted(ctx.settings, a, account_growth(growth, aid, today))
         have = {f: latest.get((aid, f)) for f in want}
+        if FIT_FACT in want and have.get(FIT_FACT) is not None:
+            was, now_ = _band(have[FIT_FACT][1], edges), _band(want[FIT_FACT][0], edges)
+            if was != now_:
+                moved["up" if now_ > was else "down"] += 1
         if not any(v for v, _ in want.values()) and all(h is None or not h[1] for h in have.values()):
             continue  # nothing that scores, and no earlier fact that still does
         same = all(h is not None and h[1] == want[f][0] for f, h in have.items())
@@ -1035,7 +1094,30 @@ def apply(ctx: Context) -> dict[str, int]:
         facts += _fact_rows(aid, want, now)
     if facts:
         store.insert("signal_events", facts)
-    return {"cells": model.cells, "accounts": len(accounts), "written": written}
+    if moved:  # W3-4 r1: the segment prior rescales the industry part, so say how many accounts change band
+        log("lookalike_fit_bands_moved", run_id=ctx.run_id, up=moved["up"], down=moved["down"], edges=list(edges))
+    return {"cells": model.cells, "accounts": len(accounts), "written": written,
+            "bands_moved": {"up": moved["up"], "down": moved["down"]}}
+
+
+_FIT_EDGE = re.compile(rf"{FIT_FACT}\s*>=\s*(\d+(?:\.\d+)?)")
+
+
+def fit_edges(settings: Settings) -> tuple[float, ...]:
+    """The lookalike_fit thresholds the active Signals rows score at ("lookalike_fit >= 70": 70 and 45 today),
+    highest first."""
+    found = {float(m) for s in lookalike_signals(settings) if s.active
+             for m in _FIT_EDGE.findall(f"{s.looks_for} {s.context_rule}")}
+    return tuple(sorted(found, reverse=True))
+
+
+def _band(value: Any, edges: Sequence[float]) -> int:
+    """How many of the edges a lookalike_fit value reaches (0 below them all)."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return 0
+    return sum(v >= e for e in edges)
 
 
 # -- the job ------------------------------------------------------------------------------------------------
@@ -1110,7 +1192,7 @@ def _when(v: Any) -> str:
 
 
 def report(settings: Settings, store: Any, *, top: int = 20, all_bands: bool = False) -> list[str]:
-    """The lines `us-outbound lookalikes show` prints: the top cells, the groups, and what the signal scores."""
+    """The lines `us-outbound report lookalikes` prints: the top cells, the groups, and what the signal scores."""
     rows = store.select(TABLE)
     if not rows:
         return ["No lookalike cells yet. `us-outbound run lookalikes` reads Spill's customers from HubSpot "
@@ -1165,8 +1247,6 @@ def report(settings: Settings, store: Any, *, top: int = 20, all_bands: bool = F
     for s in signals:
         state = "" if s.active else ", inactive on the Signals tab"
         lines.append(f'Signal "{s.signal}" ({s.weight:+d}{state}): {s.looks_for}.')
-    if signals:
-        lines.append("`us-outbound lookalikes fit` shows the accounts' fits and the tier mix the build's rows give.")
     return lines
 
 
@@ -1183,127 +1263,3 @@ def growth_line(store: Any) -> str:
     parts = ", ".join(f"{b} {n[b]}" for b in GROWTH_BANDS)
     return (f"Customers' 12-month headcount growth (Apollo, {_when(computed)}): {parts}; unknown {n[UNKNOWN]} "
             f"({known} of {known + n[UNKNOWN]} known).")
-
-
-# -- `us-outbound lookalikes fit`: judging the weights before the sheet changes -----------------------------
-
-FIT_BANDS = tuple((lo, lo + 9 if lo < 90 else 100) for lo in range(0, 100, 10))
-TIER_ORDER = ("Priority", "Standard", "Control", "Held", "Excluded")
-QUEUE_TIERS = ("Priority", "Standard", "Control")
-
-
-CLOSE_ROW = "Close match to Spill's customers"
-SOME_ROW = "Some match to Spill's customers"
-
-
-def with_build_lookalike_rows(settings: Settings, close: tuple[int, int] | None = None,
-                              some: tuple[int, int] | None | bool = None) -> Settings:
-    """These settings with the build's lookalike rows (settings/defaults.py) in place of the sheet's.
-
-    close and some, (lowest fit, weight), try other cut-offs and weights in memory (`lookalikes fit --close 90:10
-    --some 60:4`): Some match then runs from its own lowest fit up to Close match's. some=False leaves Some match
-    out. Nothing here touches the sheet."""
-    from us_outbound.settings.conditions import parse_condition
-    from us_outbound.settings.defaults import default_tabs
-    from us_outbound.settings.validate import validate_tab
-
-    build, errors = validate_tab("Signals", default_tabs()["Signals"])
-    if errors:  # the build's own rows always validate (tests/test_settings_defaults.py)
-        raise ValueError(f"the build's Signals rows do not validate: {errors}")
-    rows = [s for s in build if SOURCE in s.sources]
-    if close is not None or some is not None:
-        top = close[0] if close else 70
-        out = []
-        for s in rows:
-            if s.signal == CLOSE_ROW and close:
-                looks = f"{FIT_FACT} >= {close[0]}"
-                s = dataclasses.replace(s, looks_for=looks, condition=parse_condition(looks), weight=close[1])
-            elif s.signal == SOME_ROW:
-                if some is False:
-                    continue
-                low, weight = some if isinstance(some, tuple) else (45, s.weight)
-                if low >= top:
-                    raise ValueError(f"Some match must start below Close match's {top}, not at {low}")
-                looks = f"{FIT_FACT} >= {low} AND {FIT_FACT} < {top}"
-                s = dataclasses.replace(s, looks_for=looks, condition=parse_condition(looks), weight=weight)
-            out.append(s)
-        rows = out
-    return dataclasses.replace(settings, signals=(*(s for s in settings.signals if SOURCE not in s.sources), *rows))
-
-
-def _mix(counts: Counter[str], tier: str) -> str:
-    queue = sum(counts[t] for t in QUEUE_TIERS)
-    if tier not in QUEUE_TIERS or not queue:
-        return f"{counts[tier]}"
-    share = counts[tier] / queue
-    flag = "" if 0.05 <= share <= 0.40 else " !"
-    return f"{counts[tier]} ({share:.0%}){flag}"
-
-
-def fit_report(ctx: Context, close: tuple[int, int] | None = None,
-               some: tuple[int, int] | None | bool = None) -> list[str]:
-    """The lines `us-outbound lookalikes fit` prints. Read-only: the database, no outside call, nothing written.
-
-    Each open account's fit is worked out in memory from the stored cells and growth counts (as apply() would
-    write it), then scored twice in memory with score_account: with the Signals rows in force, and with the
-    build's lookalike rows in place of the sheet's. Harry's check that the size-plus-lookalike cliff is gone
-    before the Signals tab is loaded. close and some try other cut-offs and weights for the two graded rows
-    (with_build_lookalike_rows), still in memory.
-    """
-    from us_outbound.scoring.score import score_account
-
-    store, settings, now, today = ctx.store, ctx.settings, ctx.now, ctx.today_uk()
-    model = fit_model(store)
-    if model is None:
-        return ["No lookalike cells yet. `us-outbound run lookalikes` reads Spill's customers from HubSpot "
-                "(read only) and fills them."]
-    accounts, _, growth = _open_accounts(store)
-    events: dict[str, list[dict]] = defaultdict(list)
-    for chunk in _chunks([a["account_id"] for a in accounts]):
-        for e in store.select("signal_events", {"account_id": chunk}):
-            if e.get("source") != SOURCE:
-                events[e["account_id"]].append(e)
-    new = with_build_lookalike_rows(settings, close, some)
-    rows = [s for s in new.signals if SOURCE in s.sources and s.active]
-    names = {s.signal for s in rows}
-    fits: Counter[tuple[int, int]] = Counter()
-    no_fit = with_growth = 0
-    fired: Counter[str] = Counter()
-    before: Counter[str] = Counter()
-    after: Counter[str] = Counter()
-    for a in accounts:
-        aid = a["account_id"]
-        band = account_growth(growth, aid, today)
-        want = model.wanted(settings, a, band)
-        if not settings.industry_group_of(a):
-            no_fit += 1
-        else:
-            fit = int(want[FIT_FACT][0])
-            fits[next(b for b in FIT_BANDS if b[0] <= fit <= b[1])] += 1
-            with_growth += want[GROWTH_FIT_FACT][0] is not None
-        evs = [*events.get(aid, []), *_fact_rows(aid, want, now)]
-        before[score_account(a, evs, settings, today).tier] += 1
-        r = score_account(a, evs, new, today)
-        after[r.tier] += 1
-        fired.update(m.signal.signal for m in r.matches if m.signal.signal in names)
-    fitted = len(accounts) - no_fit
-    cells = [c.get("computed_at") for c in store.select(TABLE) if c.get("computed_at")]
-    lines = [f"Lookalike fit of {len(accounts)} open accounts, worked out now from the cells of "
-             f"{_when(max(cells, key=utc_strict_or_none, default=None))}.",
-             growth_line(store),
-             f"  {'Fit':<8} {'Accounts':>8}"]
-    lines += [f"  {f'{lo}-{hi}':<8} {fits[(lo, hi)]:>8}" for lo, hi in FIT_BANDS]
-    if no_fit:
-        lines.append(f"  {'none':<8} {no_fit:>8}  (no industry group)")
-    lines.append(f"Growth known for {with_growth} of {fitted}; the rest are fitted on industry and size alone.")
-    lines += [f'"{s.signal}" ({s.looks_for}, {s.weight:+d}): {fired[s.signal]} '
-              f'{"account" if fired[s.signal] == 1 else "accounts"}.' for s in rows]
-    lines += ["", f"  {'Tier':<10} {'Now':>12} {'With the new rows':>18}"]
-    lines += [f"  {t:<10} {_mix(before, t):>12} {_mix(after, t):>18}" for t in TIER_ORDER]
-    lines += ["Shares are of Priority, Standard and Control together; ! marks one outside 5-40%, the tier-mix check's "
-              "range (it reads the month's queue).",
-              "Nothing was written. " + (
-                  "These rows were tried in memory only: to use them, set their looks_for and weight on the Signals "
-                  "tab, then `us-outbound sync`." if close is not None or some is not None else
-                  "`us-outbound settings load --tab Signals --live` puts the build's rows on the sheet.")]
-    return lines

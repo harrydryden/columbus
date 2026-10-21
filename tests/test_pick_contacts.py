@@ -200,8 +200,8 @@ def test_at_most_two_reveals_then_no_contact_and_limits_say_so(ctx, transport):
     [outcome] = facts(ctx, pick.OUTCOME_FACT)
     assert outcome["value"]["outcome"] == "none" and outcome["value"]["reason"] == reason
     assert pick.no_contact(ctx.store, ctx.now) == {"acc-1": reason}
-    assert limits.behind_ready(ctx, 0, {s: limits.budget.monthly(ctx.store, ctx.settings, s, ctx.now)
-                                        for s in ("clay", "apollo")}) == (
+    assert limits.behind_ready(ctx, 0, {"apollo": limits.budget.monthly(ctx.store, ctx.settings, "apollo",
+                                                                         ctx.now)}) == (
         "Behind it: 1 verified accounts have no email yet. At 1 of them pick_contacts found no suitable contact "
         f"(mostly: {reason}); it tries again after 14 days.")
 
@@ -260,19 +260,18 @@ def pause_source(ctx, source: str, reason: str = "5% bounced", status: str = "op
 
 
 def test_a_kill_rule_pausing_the_apollo_source_stops_every_reveal_and_says_so(ctx, transport):
-    """Harry, 7 Oct 2026: no Apollo reveal (no credit) while a kill rule pauses the apollo email source, as no Clay
-    lookup is made while it pauses the clay source; and Clay alone is not used meanwhile, even when it is on."""
-    apollo = setup(ctx, transport, [account()], {ORG: TEAM}, everyone_verified(), clay_email_fallback=True)
+    """Harry, 7 Oct 2026: no Apollo reveal (no credit) while a kill rule pauses the apollo email source. (Clay's
+    email waterfall went with W2-1, so there is no other source to fall back on.)"""
+    apollo = setup(ctx, transport, [account()], {ORG: TEAM}, everyone_verified())
     pause_source(ctx, "apollo")
     out = pick.run(ctx)
-    why = ("a kill rule pauses the apollo email source (5% bounced): no Apollo reveals, and Clay alone is not used, "
-           "as it is the fallback for Apollo's misses; `us-outbound killrules clear ITEM_ID --live` lifts it once "
-           "checked")
+    why = ("a kill rule pauses the apollo email source (5% bounced): no Apollo reveals; `us-outbound killrules clear "
+           "ITEM_ID --live` lifts it once checked")
     assert (out["status"], out["reason"], out["apollo_paused"]) == ("skipped", why, why)
-    assert apollo.searches == [] and apollo.revealed == [] and transport.requests == []  # nor Clay, nor the balance
+    assert apollo.searches == [] and apollo.revealed == [] and transport.requests == []  # nor the balance
     assert ctx.store.select("credit_ledger") == [] and ctx.store.select("contacts") == []
     assert facts(ctx, pick.OUTCOME_FACT) == []  # nobody is marked "no contact": it is tried again once cleared
-    # Clay's own pause leaves Apollo's reveals going, as before.
+    # Another source's pause (an old clay hold) leaves Apollo's reveals going.
     pause_source(ctx, "apollo", status="handled")
     pause_source(ctx, "clay")
     out = pick.run(ctx)
@@ -286,10 +285,15 @@ def test_the_heartbeat_says_the_apollo_source_is_paused(default_settings):
     h.store.insert("accounts", [account()])
     FakeApollo(h.transport, {ORG: TEAM}, everyone_verified())
     pause_source(h, "apollo")
-    assert h.run("dry-run", "pick_contacts") == 0
+    assert h.run("run", "pick_contacts") == 0
     [beat] = h.beats("pick_contacts")
-    assert beat["status"] == "ok" and beat["detail"]["status"] == "skipped"
+    # The job said it skipped, so the row says so (W1-1: the heartbeat read only a truthy "skipped" key and stored
+    # this run as ok). A skip for a reason of its own still shows the job alive (base/heartbeats._shows_alive).
+    assert beat["status"] == "skipped" and beat["detail"]["status"] == "skipped"
     assert beat["detail"]["reason"].startswith("a kill rule pauses the apollo email source (5% bounced)")
+    from us_outbound.ops.health import latest_runs
+
+    assert latest_runs(h.store)["pick_contacts"]["last_alive_at"] is not None
 
 
 def test_apollo_balance_at_the_floor_spends_nothing(ctx, transport):
@@ -349,6 +353,104 @@ def test_a_revealed_email_that_may_not_be_sent_is_not_kept(ctx, transport, chang
     assert r["value"]["reason"] == reason
 
 
+# -- contactability (W3-3, 20 Oct 2026; loop L5) ------------------------------------------------------------------
+
+
+def test_at_equal_rank_a_known_us_state_comes_before_none(ctx):
+    """Two Heads of People at 120 staff: the same Roles-tab order, seniority and title cover. The one Apollo puts in
+    New York is ranked first; with no state, a person may be in CA or WA, found only at the reveal."""
+    acct = account(employees=120, size_band="100-249")
+    people = [person("p-a", "Head of People"), person("p-b", "Head of People", state="New York")]
+    cands, _ = pick.rank_candidates(people, acct, ctx.settings, ctx.today_uk())
+    assert [c.id for c in cands] == ["p-b", "p-a"]
+    # Not across role ranks: the senior People leader with no state still comes before an HR Manager in New York.
+    cands, _ = pick.rank_candidates([person("p-hr", "HR Manager", state="New York"), person("p-a", "Head of People")],
+                                    acct, ctx.settings, ctx.today_uk())
+    assert [c.id for c in cands] == ["p-a", "p-hr"]
+
+
+def test_a_reveal_not_at_the_company_s_domain_writes_the_domain_and_two_make_one_alias_row(ctx, transport):
+    """Two CEOs at brightfin.com revealed at example-mail.com: each reveal fact carries rejected_email_domain (the
+    domain, never the address); the weekly proposals make one domain_alias row (seen 2 ≥ ALIAS_SEEN 2)."""
+    team = [person("p-ceo", "CEO"), person("p-coo", "COO")]
+    setup(ctx, transport, [account()], {ORG: team}, {"p-ceo": match("p-ceo", "omar@example-mail.com"),
+                                                     "p-coo": match("p-coo", "ana@Example-Mail.com")})
+    out = pick.run(ctx)
+    assert out["picked"] == 0
+    reveals = facts(ctx, pick.REVEAL_FACT)
+    assert [r["value"]["rejected_email_domain"] for r in reveals] == ["example-mail.com", "example-mail.com"]
+    assert "omar" not in str(reveals)
+    [row] = pick.suggestions(ctx)
+    assert {k: row[k] for k in ("id", "kind", "target", "text", "status")} == {
+        "id": "domain_alias:brightfin.com:example-mail.com", "kind": "domain_alias", "target": "brightfin.com",
+        "text": "example-mail.com", "status": "proposed"}
+
+
+def test_one_rejected_domain_is_no_alias_row(ctx, transport):
+    setup(ctx, transport, [account()], {ORG: [person("p-ceo", "CEO")]}, {"p-ceo": match("p-ceo", "omar@example-mail.com")})
+    pick.run(ctx)
+    assert pick.suggestions(ctx) == []
+
+
+def missed(ctx, n: int, title: str, size_range: str = "50-249"):
+    """n accounts' pick outcomes this week, each with the title left out as not contacted at the size."""
+    ctx.store.insert("accounts", [{"account_id": f"m{i}", "domain": f"m{i}.com"} for i in range(n)])
+    ctx.store.insert("signal_events", [{
+        "event_id": f"o{i}", "account_id": f"m{i}", "source": pick.SOURCE, "fact": pick.OUTCOME_FACT,
+        "value": {"outcome": "none", "missed_titles": [title], "size_range": size_range},
+        "observed_at": ctx.now - timedelta(days=1)} for i in range(n)])
+
+
+def test_twelve_misses_of_a_title_in_a_size_range_make_one_roles_title_row_and_nine_none(ctx):
+    missed(ctx, 12, "Head of Employee Experience")
+    [row] = pick.suggestions(ctx)
+    assert (row["kind"], row["target"], row["text"]) == ("roles_title", "50-249", "Head of Employee Experience")
+    assert row["evidence"] == "left out as not contacted at 50-249 staff at 12 accounts in 28 days"
+    ctx2 = dataclasses.replace(ctx, store=type(ctx.store)(ctx.guard))
+    missed(ctx2, 9, "Head of Employee Experience")
+    assert pick.suggestions(ctx2) == []
+
+
+def test_the_search_records_the_titles_it_left_out_for_the_proposals(ctx, transport):
+    """A Brand Lead is not on the Roles tab at 120 staff: the outcome keeps the title and the Roles-tab size range."""
+    setup(ctx, transport, [account(employees=120, size_band="100-249")], {ORG: [person("p-x", "Brand Lead")]}, {})
+    pick.run(ctx)
+    [outcome] = facts(ctx, pick.OUTCOME_FACT)
+    assert (outcome["value"]["missed_titles"], outcome["value"]["size_range"]) == (["Brand Lead"], "50-249")
+
+
+def candidates_fact(aid: str, n: int, ctx) -> dict:
+    return {"event_id": f"cand-{aid}", "account_id": aid, "source": "contact_precheck",
+            "fact": "contactable_candidates", "value": {"count": n, "titles": [], "run_id": "r"},
+            "observed_at": ctx.now - timedelta(hours=1)}
+
+
+def test_accounts_with_more_candidates_are_tried_first_and_none_are_skipped(ctx, transport, monkeypatch):
+    """explore_share 0: the ranked accounts only. acc-00 (score 100) has 1 candidate, acc-01 (99) 3, acc-02 (98) no
+    precheck yet, acc-03 (97) none (status_reason no_contact_candidates). Tried: acc-01 (3) before acc-00 (1), then
+    acc-02 (not prechecked); acc-03 not at all."""
+    apollo, _ = arm_world(ctx, transport, monkeypatch, n_tech=2, n_creative=2, explore_share=0.0)
+    ctx.store.update("accounts", {"account_id": "acc-03"}, {"status_reason": "no_contact_candidates"})
+    ctx.store.insert("signal_events", [candidates_fact("acc-00", 1, ctx), candidates_fact("acc-01", 3, ctx)])
+    out = pick.run(ctx)
+    assert searched(apollo) == ["co01.com", "co00.com", "co02.com"]
+    assert out["no_contact_candidates"] == 1 and out["picked"] == 3
+
+
+def test_the_random_arm_keeps_its_draw_whatever_the_candidate_counts(ctx, transport, monkeypatch):
+    """The arm is drawn before the candidate order: with every other account at 3 candidates and the random draw's at 1,
+    the drawn accounts are still searched first and stamped random (the same draw as with no counts at all)."""
+    apollo, by_id = arm_world(ctx, transport, monkeypatch, explore_share=0.15)
+    from us_outbound.enrol import queue
+
+    drawn, _ = queue.split(list(by_id.values()), ctx.settings, "pick:2026-10-27", 2)
+    ids = {a["account_id"] for a in drawn}
+    ctx.store.insert("signal_events", [candidates_fact(aid, 1 if aid in ids else 3, ctx) for aid in by_id])
+    pick.run(ctx)
+    assert {f"acc-{d[2:4]}" for d in searched(apollo)[:2]} == ids
+    assert {a["account_id"] for a in ctx.store.select("accounts") if a.get("arm") == "random"} == ids
+
+
 def test_an_alias_of_the_company_domain_is_its_own(ctx, transport):
     ctx.store.insert("domain_aliases", [{"alias": "brightfin.io", "root_domain": "brightfin.com", "source": "redirect"}])
     setup(ctx, transport, [account()], {ORG: [person("p-ceo", "CEO")]}, {"p-ceo": match("p-ceo", "omar@brightfin.io")})
@@ -372,10 +474,191 @@ def test_only_the_next_two_send_days_and_only_accounts_without_a_sendable_contac
                    {"t-ceo": match("t-ceo", "ceo@top.com")}, weekly_enrol_cap=5)
     ctx.store.insert("contacts", [{"contact_id": "k-ready", "account_id": "acc-ready", "email": "jo@ready.com",
                                    "email_status": "verified", "person_state": "NY", "title": "CEO"}])
+    # The order and the hold come from the facts, as the rescore pick_contacts starts with sets them (W1-3a): top.com
+    # is hiring (apollo_signals' open_roles, "Hiring and growth"), so it outranks next.com; a competitor's counselling
+    # on h.com's careers page is the default Signals tab's Hold row ("Modern mental-health vendor named").
+    ctx.store.insert("signal_events", [
+        {"event_id": "top-roles", "account_id": "acc-top", "source": "apollo_jobs", "fact": "open_roles", "value": 5,
+         "quote": "Apollo lists 5 open job postings", "source_url": "", "observed_at": ctx.now},
+        {"event_id": "held-lyra", "account_id": "acc-held", "source": "clay_careers", "fact": "benefit",
+         "value": {"item": "Lyra"}, "quote": "Counseling through Lyra.", "source_url": "https://h.com/careers",
+         "observed_at": ctx.now}])
     out = pick.run(ctx)
+    assert ctx.store.get("accounts", account_id="acc-held")["tier"] == "Held"
     assert (out["ready_before"], out["wanted"], out["waiting"], out["picked"]) == (1, 1, 2, 1)
     assert [s["organization_ids"] for s in apollo.searches] == [[ORG]]  # the top of the queue only
     assert pick.run(ctx)["reason"] == "enough accounts are ready for the next two send days"
+
+
+def test_ready_accounts_are_the_ones_with_a_sendable_contact_in_queue_order(ctx):
+    """The W1-C contract (19 Oct 2026): ready_accounts(ctx) is the ready set itself, in enrol's order, and waiting()
+    is built on the same read. Four verified Priority accounts: b (score 90) and a (40) have a sendable contact; c (70)
+    has only a contact in CA, whom enrol may never email (SPEC 1.5), so it still needs one; d (99) has a sendable
+    contact but is a partner, which enrol never takes. queue.order_key is tier, then score high first, so the ready
+    set is [b, a] (90 before 40), waiting() is ([c], 2), and d is in neither."""
+    ctx.store.insert("accounts", [
+        account(account_id="acc-a", domain="a.com", score=40),
+        account(account_id="acc-b", domain="b.com", score=90),
+        account(account_id="acc-c", domain="c.com", score=70),
+        account(account_id="acc-d", domain="d.com", score=99),
+    ])
+    ctx.store.insert("partners", [{"domain": "d.com", "name": "D", "reason": "a partner"}])
+    ctx.store.insert("contacts", [
+        {"contact_id": f"k-{x}", "account_id": f"acc-{x}", "email": f"jo@{x}.com", "email_status": "verified",
+         "person_state": "CA" if x == "c" else "NY", "title": "CEO"} for x in "abcd"])
+    assert [a["account_id"] for a in pick.ready_accounts(ctx)] == ["acc-b", "acc-a"]
+    need, ready = pick.waiting(ctx)
+    assert ([a["account_id"] for a in need], ready) == (["acc-c"], 2)
+
+
+# -- the random explore arm and enrol's gates (W1-6) -------------------------------------------------------------
+
+
+def arm_world(ctx, transport, monkeypatch, n_tech=15, n_creative=15, **general):
+    """n_tech Technology & Startups and n_creative Marketing & Creative Agencies accounts, verified, none with a
+    contact, each with a CEO Apollo reveals; scores 100 down (Tech and Creative alternate), and kept as set (no
+    rescore). weekly_enrol_cap 25 over 5 send days: a lookahead of 2 × ceil(25 ÷ 5) = 10."""
+    monkeypatch.setattr(pick, "_rescore", lambda ctx: {})
+    accounts, people, matches = [], {}, {}
+    for i in range(n_tech + n_creative):
+        tech = i % 2 == 0 if i < 2 * min(n_tech, n_creative) else n_tech > n_creative
+        group = "Technology & Startups" if tech else "Marketing & Creative Agencies"
+        industry = "Fintech" if tech else "Advertising agencies"
+        aid, domain = f"acc-{i:02d}", f"co{i:02d}.com"
+        accounts.append(account(account_id=aid, domain=domain, apollo_org_id="", score=100 - i, industry=industry,
+                                industry_group=group))
+        people[domain] = [person(f"p-{i:02d}", "CEO")]
+        matches[f"p-{i:02d}"] = match(f"p-{i:02d}", f"ceo@{domain}")
+    apollo = setup(ctx, transport, accounts, people, matches, weekly_enrol_cap=25, **general)
+    return apollo, {a["account_id"]: a for a in accounts}
+
+
+def searched(apollo) -> list[str]:
+    return [s["q_organization_domains_list"][0] for s in apollo.searches]
+
+
+def test_explore_share_0_picks_in_queue_order_and_stamps_ranked(ctx, transport, monkeypatch):
+    """explore_share 0 on the sheet (no random arm; the code default is 0.15 since W2-2): the lookahead's 10 are the
+    top 10 by score, as before W1-6, and each picked account's arm is ranked."""
+    apollo, _ = arm_world(ctx, transport, monkeypatch, explore_share=0.0)
+    out = pick.run(ctx)
+    assert (out["wanted"], out["picked"]) == (10, 10)
+    assert searched(apollo) == [f"co{i:02d}.com" for i in range(10)]
+    assert out["explore"] == {"share": 0.0, "target": 0, "drawn": 0, "picked": 0, "realised": None, "by_group": {}}
+    arms = {a["account_id"]: a.get("arm") for a in ctx.store.select("accounts")}
+    assert {arms[f"acc-{i:02d}"] for i in range(10)} == {"ranked"}
+    assert {arms[f"acc-{i:02d}"] for i in range(10, 30)} == {None}  # not picked: no arm
+
+
+def test_the_random_arm_is_drawn_first_within_the_focus_shares(ctx, transport, monkeypatch):
+    """explore_share 0.15, want 10: k = explore_count(10, 0.15, 30) = round(1.5) = 2 (half up). The default Focus tab
+    is Tech 50%, Creative 30%, Legal 20%: apportion(2) gives exact 1.0, 0.6, 0.4, whole parts 1, 0, 0, and the place
+    left to Creative's 0.6, so 1 Tech and 1 Creative, drawn at random over all 30 (seed "pick:2026-10-27"), searched
+    first; then the top 8 of the rest by score. The 2 are stamped random and the 8 ranked."""
+    apollo, by_id = arm_world(ctx, transport, monkeypatch, explore_share=0.15)
+    out = pick.run(ctx)
+    assert out["picked"] == 10 and out["explore"]["drawn"] == 2 and out["explore"]["picked"] == 2
+    assert out["explore"]["by_group"] == {"Technology & Startups": 1, "Marketing & Creative Agencies": 1}
+    first_two = searched(apollo)[:2]
+    random_ids = sorted(a["account_id"] for a in ctx.store.select("accounts") if a.get("arm") == "random")
+    assert sorted(f"acc-{d[2:4]}" for d in first_two) == random_ids and len(random_ids) == 2
+    assert {by_id[a]["industry_group"] for a in random_ids} == {"Technology & Startups", "Marketing & Creative Agencies"}
+    rest = [f"co{i:02d}.com" for i in range(30) if f"co{i:02d}.com" not in first_two][:8]
+    assert searched(apollo)[2:] == rest
+    assert sum(a.get("arm") == "ranked" for a in ctx.store.select("accounts")) == 8
+    # The draw is the day's: the same seed as queue.split would use, so a rerun draws the same accounts.
+    from us_outbound.enrol import queue
+
+    drawn, _ = queue.split(list(by_id.values()), ctx.settings, "pick:2026-10-27", 2)
+    assert sorted(a["account_id"] for a in drawn) == random_ids
+
+
+def test_a_random_account_with_nobody_to_contact_is_replaced_from_its_own_group(ctx, transport, monkeypatch):
+    """The whole-wave review's scenario 5: half of each group's accounts have nobody at Apollo. explore_share
+    0.15, want 10: k = 2 places, 1 Tech and 1 Creative (as above). Before, the 2 drawn were tried once each and an
+    account with nobody was not replaced, so the arm kept about p_contact × 2 (2 in only a quarter of days). Now each
+    stratum's accounts are tried in their random order (queue.strata, seed "pick:2026-10-27") until its place has a
+    contact: the arm keeps exactly 2, one of each group, each the first account with a contact in its group's order,
+    and the accounts tried before it are the ones with nobody (recorded, so they cool off like any). The other 8
+    contacts are ranked; the summary reports the realised share, 2 of 10."""
+    from us_outbound.enrol import queue
+
+    apollo, by_id = arm_world(ctx, transport, monkeypatch, explore_share=0.15)
+    def has_contact(i: int) -> bool:  # arm_world alternates Tech (even i) and Creative (odd i): half of each
+        return (i // 2) % 2 == 0
+
+    for i in range(30):
+        if not has_contact(i):
+            apollo.people[f"co{i:02d}.com"] = []
+    out = pick.run(ctx)
+    assert out["picked"] == 10
+    ex = out["explore"]
+    assert (ex["target"], ex["picked"], ex["realised"]) == (2, 2, 0.2)
+    assert ex["by_group"] == {"Technology & Startups": 1, "Marketing & Creative Agencies": 1}
+    random_ids = sorted(a["account_id"] for a in ctx.store.select("accounts") if a.get("arm") == "random")
+    expected, tried = [], set()
+    for _, places, pool in queue.strata(list(by_id.values()), ctx.settings, "pick:2026-10-27", 2):
+        assert places == 1
+        firsts = [a for a in pool if has_contact(int(a["account_id"][-2:]))]
+        expected.append(firsts[0]["account_id"])
+        tried |= {a["account_id"] for a in pool[: pool.index(firsts[0]) + 1]}
+    assert random_ids == sorted(expected)
+    assert ex["drawn"] == len(tried)
+    assert {f"acc-{d[2:4]}" for d in searched(apollo)[: len(tried)]} == tried  # the random lane is searched first
+    assert sum(a.get("arm") == "ranked" for a in ctx.store.select("accounts")) == 8
+
+
+def test_a_kill_rule_stopping_a_group_frees_the_lookahead_for_the_others(ctx, transport, monkeypatch):
+    """L1 (code-contacts-enrol): 60 Tech accounts ready (each with a sendable contact) and 5 Creative accounts
+    waiting, under a kill rule that stops Technology & Startups. Before W1-6 waiting() counted the 60 as ready, 60 >=
+    the lookahead of 60 (weekly 150 over 5 days: 2 × 30), so "enough accounts are ready" and nothing was revealed;
+    enrol could email none of them. Now the stopped group's accounts are in neither list: ready 0, want 60, and the 5
+    Creative accounts are searched and picked."""
+    from us_outbound.base import holds
+
+    monkeypatch.setattr(pick, "_rescore", lambda ctx: {})
+    tech = [account(account_id=f"t{i:02d}", domain=f"t{i:02d}.com", apollo_org_id="", score=90) for i in range(60)]
+    creative = [account(account_id=f"c{i}", domain=f"c{i}.com", apollo_org_id="", score=50,
+                        industry="Advertising agencies", industry_group="Marketing & Creative Agencies")
+                for i in range(5)]
+    people = {f"c{i}.com": [person(f"pc{i}", "CEO")] for i in range(5)}
+    matches = {f"pc{i}": match(f"pc{i}", f"ceo@c{i}.com") for i in range(5)}
+    apollo = setup(ctx, transport, tech + creative, people, matches)
+    ctx.store.insert("contacts", [{"contact_id": f"k-{a['account_id']}", "account_id": a["account_id"],
+                                   "email": f"jo@{a['domain']}", "email_status": "verified", "person_state": "NY",
+                                   "title": "CEO", "role": "Founder or executive"} for a in tech])
+    assert pick.waiting(ctx)[1] == 60  # no kill rule yet: all 60 ready
+    ctx.store.insert("hitl_items", [{"item_id": "kr-1", "kind": holds.KIND, "status": "open", "created_at": ctx.now,
+                                     "payload": {"action": holds.STOP_GROUP, "target": "Technology & Startups",
+                                                 "reason": "low replies"}}])
+    need, ready = pick.waiting(ctx)
+    assert (sorted(a["account_id"] for a in need), ready) == ([f"c{i}" for i in range(5)], 0)
+    out = pick.run(ctx)
+    assert (out["ready_before"], out["wanted"], out["picked"]) == (0, 60, 5)
+    assert sorted(searched(apollo)) == [f"c{i}.com" for i in range(5)]
+
+
+def test_a_paused_source_s_contact_is_not_ready_and_no_copy_means_no_search(ctx, transport, monkeypatch):
+    """enrol.eligible's other gates: an account whose only contact came from an email source a kill rule paused needs
+    a contact (enrol would leave the contact out); an account no sendable Copy row could serve is in neither list."""
+    import dataclasses
+
+    from us_outbound.base import holds
+
+    ctx.store.insert("accounts", [account(account_id="acc-clay", domain="clay.com"),
+                                  account(account_id="acc-ok", domain="ok.com")])
+    ctx.store.insert("contacts", [
+        {"contact_id": "k-clay", "account_id": "acc-clay", "email": "jo@clay.com", "email_status": "verified",
+         "person_state": "NY", "title": "CEO", "email_source": "clay"},
+        {"contact_id": "k-ok", "account_id": "acc-ok", "email": "jo@ok.com", "email_status": "verified",
+         "person_state": "NY", "title": "CEO", "email_source": "apollo"}])
+    ctx.store.insert("hitl_items", [{"item_id": "kr-2", "kind": holds.KIND, "status": "open", "created_at": ctx.now,
+                                     "payload": {"action": holds.PAUSE_SOURCE, "target": "clay", "reason": "bounces"}}])
+    need, ready = pick.waiting(ctx)
+    assert ([a["account_id"] for a in need], ready) == (["acc-clay"], 1)
+    no_copy = tuple(dataclasses.replace(c, status="draft") for c in ctx.settings.copy)
+    ctx.settings = dataclasses.replace(ctx.settings, copy=no_copy)
+    assert pick.waiting(ctx) == ([], 0) and pick.ready_accounts(ctx) == []
 
 
 def test_dry_run_writes_contacts_and_makes_only_apollo_reads(ctx, transport):
@@ -386,6 +669,39 @@ def test_dry_run_writes_contacts_and_makes_only_apollo_reads(ctx, transport):
     apollo_calls = [c for c in ctx.guard.calls if c.system == "apollo"]
     assert apollo_calls and all(not c.write and c.sent and c.action in APOLLO_READ_ACTIONS for c in apollo_calls)
     assert {c.action for c in apollo_calls} == {"usage.credits", "people.search", "people.bulk_match"}
+
+
+def test_it_rescores_once_before_it_reads_the_queue(ctx, transport, monkeypatch):
+    """W1-3a (RS P0-8): apollo_enrich and apollo_signals no longer rescore; pick_contacts rescores once, first, so
+    the queue it reads is in the order the morning's facts give. The rescore is called exactly once, and before
+    the first Apollo search."""
+    from us_outbound.scoring import score
+
+    apollo = setup(ctx, transport, [account()], {ORG: TEAM}, everyone_verified())
+    calls: list[int] = []
+    real = score.rescore
+
+    def counted(c):
+        calls.append(len(apollo.searches))  # how many searches were made before the rescore
+        return real(c)
+
+    monkeypatch.setattr(score, "rescore", counted)
+    out = pick.run(ctx)
+    assert calls == [0] and out["picked"] == 1 and "tiers" in out["rescore"]
+
+
+def test_a_failed_rescore_is_reported_and_the_contacts_are_still_found(ctx, transport, monkeypatch):
+    from us_outbound.scoring import score
+
+    setup(ctx, transport, [account()], {ORG: TEAM}, everyone_verified())
+
+    def broken(c):
+        raise RuntimeError("deadlock detected")
+
+    monkeypatch.setattr(score, "rescore", broken)
+    out = pick.run(ctx)
+    # The error under "error" is what heartbeat_check reads as a caught failure (ops/health.py).
+    assert out["rescore"] == {"error": "RuntimeError: deadlock detected"} and out["picked"] == 1
 
 
 def test_the_job_is_wired_before_enrol():
@@ -401,7 +717,7 @@ def test_the_cli_runs_it_with_a_heartbeat(default_settings):
     h = Harness(default_settings)
     h.store.insert("accounts", [account()])
     FakeApollo(h.transport, {ORG: TEAM}, everyone_verified())
-    assert h.run("dry-run", "pick_contacts") == 0
+    assert h.run("run", "pick_contacts") == 0
     [beat] = h.beats("pick_contacts")
     assert beat["status"] == "ok" and beat["dry_run"] is True
     assert (beat["detail"]["picked"], beat["detail"]["picked_by_row"]) == (1, {"Founder or executive": 1})
@@ -427,10 +743,11 @@ def test_the_search_writes_people_leader_facts_for_the_people_signals(ctx, trans
 
 
 @pytest.mark.parametrize("searched_days_ago, written", [(None, True), (5, False), (31, True)])
-def test_the_pick_leaves_apollo_people_s_fresher_full_search_alone(ctx, transport, searched_days_ago, written):
-    """Harry, 5 Oct 2026: apollo_people searches every account without the email filter, and may write a count of 0
-    and the days in title. pick_contacts' narrower view does not overwrite that within its 30 days."""
-    from us_outbound.sources import apollo_people
+def test_the_pick_leaves_the_precheck_s_fresher_full_search_alone(ctx, transport, searched_days_ago, written):
+    """Harry, 5 Oct 2026: the People search without the email filter (apollo_people's; contact_precheck's from W3-3)
+    may write a count of 0 and the days in title. pick_contacts' narrower view does not overwrite that within its 30
+    days."""
+    from us_outbound.contacts import precheck as apollo_people
 
     setup(ctx, transport, [account()], {ORG: TEAM}, everyone_verified())
     if searched_days_ago is not None:

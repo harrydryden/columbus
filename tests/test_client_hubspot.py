@@ -38,8 +38,9 @@ def test_search_companies_by_domain_exact_root_and_paginates():
         {"propertyName": "domain", "operator": "EQ", "value": "acme.com"},
         {"propertyName": "domain", "operator": "EQ", "value": "www.acme.com"},
     ]
-    for prop in ("name", "domain", "lifecyclestage", "hs_lead_status", "hubspot_owner_id", "us_outbound_account_id"):
+    for prop in ("name", "domain", "lifecyclestage", "hs_lead_status", "hubspot_owner_id"):
         assert prop in first.json["properties"]
+    assert not [p for p in first.json["properties"] if p.startswith("us_outbound_")]  # never created (W1-2)
     assert "after" not in first.json and t.requests[1].json["after"] == "1"
 
 
@@ -90,7 +91,7 @@ def test_open_deals_for_company_drops_closed():
 def test_create_company_live_shape():
     hs, t, _ = make()
     t.route("POST", "/crm/v3/objects/companies", body={"id": "c1", "properties": {}})
-    props = {"name": "Acme", "domain": "acme.com", "us_outbound_tier": "Priority", "lifecyclestage": "lead"}
+    props = {"name": "Acme", "domain": "acme.com", "lifecyclestage": "lead"}
     assert hs.create_company(props, reply_class="positive")["id"] == "c1"
     req = t.requests[0]
     assert (req.method, req.url, req.json) == ("POST", f"{BASE}/crm/v3/objects/companies", {"properties": props})
@@ -145,7 +146,7 @@ def test_update_contact_live_when_empty():
     hs, t, _ = make()
     t.route("GET", "/crm/v3/objects/contacts/k1", body={"id": "k1", "properties": {"hs_lead_status": ""}})
     t.route("PATCH", "/crm/v3/objects/contacts/k1", body={"id": "k1"})
-    props = {"hs_lead_status": "CONNECTED", "us_outbound_reply_class": "positive"}
+    props = {"hs_lead_status": "CONNECTED"}
     assert hs.update_contact("k1", props, current={"hs_lead_status": ""}) == {"id": "k1"}
     assert [(r.method, r.json) for r in t.requests] == [("GET", None), ("PATCH", {"properties": props})]
 
@@ -220,37 +221,27 @@ def test_dry_run_writes_send_nothing():
     hs, t, guard = make(live=False)
     assert hs.create_note("x", [("companies", "c1")]) == {"id": None, "dry_run": True}
     assert hs.create_deal("US Outbound – Acme", "pipe-spill3", "stage-first", "o", "c1") == {"id": None, "dry_run": True}
-    assert hs.update_contact("k1", {"us_outbound_angle": "General v1"}, current={}) == {
-        "id": "k1", "dry_run": True, "properties": {"us_outbound_angle": "General v1"}
+    assert hs.update_contact("k1", {"lifecyclestage": "lead"}, current={"lifecyclestage": ""}) == {
+        "id": "k1", "dry_run": True, "properties": {"lifecyclestage": "lead"}
     }
     hs.associate("contacts", "k1", "companies", "c1")
     hs.unsubscribe("jane@acme.com")
-    assert t.requests == []
+    assert t.writes() == [] and [r.method for r in t.requests] == ["GET"]  # the empty-only field re-read, a read
     assert len(guard.writes("hubspot", sent=False)) == 5
 
 
-def test_property_group_created_only_when_missing():
+def test_the_retired_custom_properties_are_refused_and_their_setup_is_gone():
+    """W1-2 (Harry's D9): the six us_outbound_* properties were never created, so the guard refuses them as any other
+    property outside the allowlist, and the client has no property-group or property create left."""
     hs, t, _ = make()
-    t.route("GET", "/crm/v3/properties/companies/groups", body={"results": [{"name": "companyinformation"}]})
-    hs.ensure_property_group("companies")
-    post = t.writes()[0]
-    assert post.url == f"{BASE}/crm/v3/properties/companies/groups"
-    assert post.json == {"name": "us_outbound", "label": "US Outbound", "displayOrder": -1}
-
-    t.route("GET", "/crm/v3/properties/contacts/groups", body={"results": [{"name": "us_outbound"}]})
-    hs.ensure_property_group("contacts")
-    assert len(t.writes()) == 1
-
-
-def test_create_property_only_the_six():
-    hs, t, _ = make()
-    spec = {"name": "us_outbound_tier", "label": "US Outbound tier", "type": "string", "fieldType": "text",
-            "groupName": "us_outbound"}
-    hs.create_property("companies", spec)
-    assert (t.requests[0].url, t.requests[0].json) == (f"{BASE}/crm/v3/properties/companies", spec)
-    with pytest.raises(GuardViolation):
-        hs.create_property("companies", {**spec, "name": "annualrevenue"})
-    assert len(t.requests) == 1
+    for prop in ("us_outbound_tier", "us_outbound_account_id"):
+        with pytest.raises(GuardViolation, match=prop):
+            hs.create_company({"name": "Acme", "domain": "acme.com", prop: "x"}, reply_class="positive")
+    with pytest.raises(GuardViolation, match="us_outbound_reply_class"):
+        hs.update_contact("k1", {"us_outbound_reply_class": "positive"}, current={})
+    assert t.requests == []
+    for name in ("ensure_property_group", "create_property", "properties", "property_groups"):
+        assert not hasattr(hs, name), name
 
 
 def test_unsubscribe_and_gdpr_delete_shapes():

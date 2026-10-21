@@ -2,7 +2,8 @@
 
 The database tests need US_OUTBOUND_TEST_DSN: the URL of a Postgres 15 or later whose user
 may create databases, e.g. postgresql://postgres@127.0.0.1:54329/postgres. Without it (or if
-it cannot be reached) they skip. The session creates a fresh database
+it cannot be reached) they skip, unless US_OUTBOUND_REQUIRE_DB is set (CI: .github/workflows/tests.yml, W3-1), where
+that is a failure, so the Postgres tests cannot pass by skipping. The session creates a fresh database
 us_outbound_test_<random>, applies sql/ into it with ops/ddl.apply, and drops it at the end,
 so runs never interfere. Every test starts from empty tables.
 """
@@ -10,6 +11,7 @@ so runs never interfere. Every test starts from empty tables.
 from __future__ import annotations
 
 import os
+import re
 import uuid
 from collections.abc import Iterator
 from datetime import UTC, date, datetime, timedelta
@@ -22,15 +24,17 @@ from psycopg import sql
 from psycopg.conninfo import make_conninfo
 from psycopg.rows import dict_row
 
-from us_outbound.clients.db import JSON_COLUMNS, TABLE_KEYS, MemoryStore, PostgresStore
+from us_outbound.clients.db import JSON_COLUMNS, TABLE_KEYS, LockTimeout, MemoryStore, PostgresStore
 from us_outbound.clients.guard import Guard, GuardViolation
+import us_outbound
 from us_outbound import budget
-from us_outbound.base import heartbeats
+from us_outbound.ops import health
 from us_outbound.ops import ddl, erase
 
 DSN_ENV = "US_OUTBOUND_TEST_DSN"
+REQUIRE_ENV = "US_OUTBOUND_REQUIRE_DB"  # set in CI: no database is a failure, not a skip
 SCHEMA = "us_outbound"
-VIEWS = ("v_account_outcomes", "v_queue", "v_signal_value", "v_readout_weekly", "v_mailbox_health",
+VIEWS = ("v_account_outcomes", "v_queue", "v_readout_weekly", "v_mailbox_health",
          "v_budgets", "v_heartbeats")
 T0 = datetime(2026, 10, 1, 12, 30, tzinfo=UTC)
 
@@ -42,12 +46,13 @@ T0 = datetime(2026, 10, 1, 12, 30, tzinfo=UTC)
 def dsn() -> Iterator[str]:
     """A fresh database with sql/ applied; dropped when the session ends."""
     admin = os.environ.get(DSN_ENV)
+    missing = pytest.fail if os.environ.get(REQUIRE_ENV) else pytest.skip
     if not admin:
-        pytest.skip(f"{DSN_ENV} is not set, so there is no Postgres to test against")
+        missing(f"{DSN_ENV} is not set, so there is no Postgres to test against")
     try:
         conn = psycopg.connect(admin, autocommit=True, connect_timeout=5)
     except psycopg.Error as exc:
-        pytest.skip(f"cannot reach the Postgres in {DSN_ENV}: {exc}")
+        missing(f"cannot reach the Postgres in {DSN_ENV}: {exc}")
     name = f"us_outbound_test_{uuid.uuid4().hex[:12]}"
     with conn:
         if conn.info.server_version < 150000:
@@ -122,14 +127,14 @@ def test_a_second_apply_changes_nothing(db, dsn, store):
 def test_apply_over_views_an_older_version_left(db, dsn):
     """A deploy must apply over the views the last version made, even when their columns
     changed (CREATE OR REPLACE VIEW alone cannot rename a column): this failed on Railway
-    when v_account_outcomes.replied_21d became replied_in_window."""
+    when v_account_outcomes.replied_21d became replied_in_window. W2-3: v_signal_value, retired, still reads
+    v_account_outcomes in production; its DROP runs before the refresh, or v_account_outcomes' DROP would refuse."""
     before = catalog(db)
     db.execute(f"DROP VIEW {SCHEMA}.v_readout_weekly")
-    db.execute(f"DROP VIEW {SCHEMA}.v_signal_value")
     db.execute(f"DROP VIEW {SCHEMA}.v_account_outcomes")
     db.execute(f"DROP VIEW {SCHEMA}.v_budgets")
     db.execute(f"CREATE VIEW {SCHEMA}.v_account_outcomes AS SELECT 'x'::text AS account_id, true AS replied_21d")
-    db.execute(f"CREATE VIEW {SCHEMA}.v_signal_value AS SELECT replied_21d FROM {SCHEMA}.v_account_outcomes")
+    db.execute(f"CREATE VIEW {SCHEMA}.v_signal_value AS SELECT replied_21d FROM {SCHEMA}.v_account_outcomes")  # retired
     db.execute(f"CREATE VIEW {SCHEMA}.v_budgets AS SELECT 'clay'::text AS system, 'week'::text AS period")
     db.execute(f"CREATE VIEW {SCHEMA}.v_credits_month AS SELECT 1 AS n")  # retired, dropped by the apply
     ddl.apply(Guard(), dsn, dry_run=False)
@@ -188,7 +193,7 @@ def fixture_rows(store) -> datetime:
                                                             "status": "Active", "daily_cap": "30"}),
     ])
     store.insert("accounts", [
-        account("law", tier="Priority", score=40, industry="Law firm"),
+        account("law", tier="Queue", score=40, industry="Law firm"),  # a rescore since W2-2 wrote Queue
         account("agency", tier="Priority", score=40, size_band="100-249"),
         account("queued", tier="Standard", score=30, status="queued"),
         account("noscore", tier="Standard", score=None),
@@ -252,19 +257,30 @@ def fixture_rows(store) -> datetime:
 def test_v_queue_on_a_fixture(store, fixture_rows):
     rows = sorted(store.query(f"SELECT * FROM {SCHEMA}.v_queue"), key=lambda r: (r["tier_rank"], r["rank_in_tier"]))
     order = [(r["account_id"], r["tier"], r["rank_in_tier"]) for r in rows]
-    # Priority: equal scores, so size band (20-49 before 100-249); casino's industry is off,
-    # suppressed / aliased / partner are left out; Standard: the unscored account comes last.
+    # One queue taken by score since W2-2 (Harry's D7), whatever tier a row still carries: law and agency 40 (equal,
+    # so size band: 20-49 before 100-249), queued 30, control 0, and the unscored account last. casino's industry is
+    # off, suppressed / aliased / partner are left out, held is Held.
     assert order == [
-        ("law", "Priority", 1), ("agency", "Priority", 2),
-        ("queued", "Standard", 1), ("noscore", "Standard", 2),
-        ("control", "Control", 1),
+        ("law", "Queue", 1), ("agency", "Priority", 2), ("queued", "Standard", 3), ("control", "Control", 4),
+        ("noscore", "Standard", 5),
     ]
+    assert {r["tier_rank"] for r in rows} == {1}
     law = rows[0]
     assert law["verified"] is True and law["industry_priority"] == 1 and law["size_band_rank"] == 1
     assert rows[2]["verified"] is False and rows[2]["industry_priority"] == 2
     assert law["first_seen"].tzinfo == UTC
     assert set(law) >= {"account_id", "domain", "tier", "score", "tier_rank", "size_band_rank", "industry_priority",
                         "rank_in_tier", "verified", "sender", "angle"}
+
+
+def test_v_queue_leaves_out_parked_and_disqualified_accounts(store, fixture_rows):
+    """W1-4: parked (its industry switched off) and disqualified are out of the queue by status, whatever their tier
+    and score: the fixture's five rows, in the same order, and neither of the two added."""
+    store.insert("accounts", [account("parked", tier="Priority", score=99, status="parked"),
+                              account("left-out", tier="Priority", score=99, status="disqualified"),
+                              account("unscored", tier=None, score=99)])  # W2-2: a NULL tier is not in the queue
+    rows = store.query(f"SELECT account_id FROM {SCHEMA}.v_queue")
+    assert sorted(r["account_id"] for r in rows) == ["agency", "control", "law", "noscore", "queued"]
 
 
 def test_v_budgets_on_a_fixture(store, fixture_rows):
@@ -279,11 +295,13 @@ def test_v_budgets_on_a_fixture(store, fixture_rows):
     # The month's pace matches budget.py on the same ledger.
     from us_outbound.settings.model import General, Settings
 
-    s = Settings(general=General(clay_monthly_credits=2000.0))
-    b = budget.monthly(store, s, "clay", now)
-    assert clay["weekdays_in_month"] == b.weekdays_in_month and clay["weekdays_through_today"] == b.weekdays_through_today
-    assert clay["expected_by_now"] == pytest.approx(b.expected_by_now) and clay["pace"] == b.pace
-    assert clay["projected"] == pytest.approx(b.projected)
+    # (The view still reads a clay row from the settings in force; Clay's budget left budget.py with W2-1.)
+    s = Settings(general=General(apollo_monthly_credits=500))
+    b = budget.monthly(store, s, "apollo", now)
+    assert apollo["weekdays_in_month"] == b.weekdays_in_month
+    assert apollo["weekdays_through_today"] == b.weekdays_through_today
+    assert apollo["expected_by_now"] == pytest.approx(b.expected_by_now) and apollo["pace"] == b.pace
+    assert apollo["projected"] == pytest.approx(b.projected)
     assert (clay["used"], clay["budget"], clay["remaining"], clay["entries"]) == (15.0, 2000.0, 1985.0, 2)
     assert clay["share_used"] == pytest.approx(0.0075)
     assert (apollo["used"], apollo["budget"], apollo["remaining"]) == (3.0, 500.0, 497.0)
@@ -298,11 +316,6 @@ def test_the_other_views_on_a_fixture(store, fixture_rows):
     assert outcomes["sent"]["delivered"] and outcomes["sent"]["replied_in_window"] and outcomes["sent"]["positive_in_window"]
     assert outcomes["sent"]["window_closed"] is True
     assert outcomes["control"]["delivered"] is False and outcomes["control"]["window_closed"] is False
-
-    [signal] = q("v_signal_value")
-    assert (signal["signal"], signal["weight"], signal["max_weight"], signal["accounts"]) == ("eap_named", 25, 25, 1)
-    assert (signal["reply_rate"], signal["positive_rate"], signal["below_control"]) == (1.0, 1.0, False)
-    assert signal["control_accounts_delivered"] == 0 and signal["control_reply_rate"] is None
 
     [mailbox] = q("v_mailbox_health")
     assert (mailbox["address"], mailbox["daily_cap"], mailbox["sends_today"], mailbox["cap_left_today"]) == (
@@ -325,22 +338,13 @@ def test_the_other_views_on_a_fixture(store, fixture_rows):
     assert {r["cut_value"] for r in copy} == {"v1"}
 
 
-def test_v_signal_value_judges_what_an_account_showed_when_it_was_enrolled(store, fixture_rows):
-    """Scoring rewrites the matches every run; the contact's snapshot at enrolment wins (Harry, 5 Oct 2026)."""
+def test_the_outcomes_view_keeps_the_enrolment_snapshot(store, fixture_rows):
+    """Scoring rewrites the matches every run; the contact's snapshot at enrolment is what the view carries (Harry, 5
+    Oct 2026), for learn/signal_review.py."""
     q = lambda view: store.query(f"SELECT * FROM {SCHEMA}.{view}")  # noqa: E731
-    # When it was enrolled, "sent" showed no signal and was in Control: today's eap_named match does not count.
     store.update("contacts", {"contact_id": "k-sent"}, {"signals_at_enrol": [], "tier_at_enrol": "Control"})
-    [signal] = q("v_signal_value")
-    assert (signal["signal"], signal["accounts"], signal["accounts_delivered"]) == ("eap_named", 0, 0)
-    assert (signal["control_accounts_delivered"], signal["control_reply_rate"]) == (1, 1.0)
     outcome = {r["account_id"]: r for r in q("v_account_outcomes")}["sent"]
     assert (outcome["signals_at_enrol"], outcome["tier_at_enrol"]) == ([], "Control")
-
-    store.update("contacts", {"contact_id": "k-sent"},
-                 {"signals_at_enrol": [{"signal": "eap_named", "weight": 25}], "tier_at_enrol": "Priority"})
-    [signal] = q("v_signal_value")
-    assert (signal["accounts"], signal["accounts_delivered"], signal["reply_rate"]) == (1, 1, 1.0)
-    assert signal["control_accounts_delivered"] == 0
 
 
 def learning_world(store) -> datetime:
@@ -364,6 +368,9 @@ def learning_world(store) -> datetime:
         contacts.append({"contact_id": f"k{i:02d}", "account_id": aid, "email_sha256": f"h{i}", "copy_version": "v1",
                          "enrolled_at": sent_at - timedelta(hours=1), "angle": accounts[-1]["angle"],
                          "tier_at_enrol": accounts[-1]["tier"],
+                         # The explore arm (W1-6): the eap_named half drawn at random; the rest enrolled before the
+                         # arm existed (NULL, read as ranked).
+                         "arm": "random" if with_it else None,
                          "signals_at_enrol": [{"signal": "eap_named", "weight": 10}] if with_it else []})
         if i == 70:
             continue  # enrolled, step 1 not sent yet
@@ -391,8 +398,9 @@ def learning_world(store) -> datetime:
 
 
 def test_the_learning_loop_views(store):
-    """v_account_outcomes counts a meeting after step 1; v_signal_value compares with and without each signal, with
-    meetings and too_few; v_readout_weekly cuts by tier, angle, sender and step, and counts a booking once."""
+    """v_account_outcomes counts a meeting after step 1 (any time, and within 45 days); v_readout_weekly cuts by
+    explore arm (W2-2, in place of the tier), angle, sender and step, and counts a booking once. (v_signal_value went
+    with W2-3: tests/test_signal_review.py and tests/test_readout.py read the signals from learn/outcomes.py.)"""
     learning_world(store)
     q = lambda view: store.query(f"SELECT * FROM {SCHEMA}.{view}")  # noqa: E731
     outcomes = {r["account_id"]: r for r in q("v_account_outcomes")}
@@ -400,20 +408,14 @@ def test_the_learning_loop_views(store):
     assert not outcomes["a01"]["meeting_booked"]  # booked before we wrote to them
     assert (outcomes["a00"]["angle"], outcomes["a00"]["copy_version"]) == ("Upgrade the EAP", "v1")
 
-    signals = {r["signal"]: r for r in q("v_signal_value")}
-    eap = signals["eap_named"]
-    assert (eap["accounts_enrolled"], eap["accounts_sent"], eap["accounts_delivered"]) == (36, 35, 35)
-    assert (eap["accounts_replied"], eap["accounts_positive"], eap["accounts_meeting"]) == (10, 3, 2)
-    assert (eap["without_delivered"], eap["without_replied"], eap["without_meeting"]) == (34, 2, 0)
-    assert eap["reply_rate"] == 10 / 35 and eap["without_reply_rate"] == 2 / 34 and eap["meeting_rate"] == 2 / 35
-    assert eap["too_few"] is False
-    hiring = signals["hiring"]
-    assert (hiring["accounts_enrolled"], hiring["accounts_sent"], hiring["without_delivered"]) == (0, 0, 69)
-    assert hiring["too_few"] is True and hiring["reply_rate"] is None
+    # a02 booked on day 35: in 45 days; a00 on day 1.
+    assert outcomes["a00"]["meeting_in_45"] and outcomes["a02"]["meeting_in_45"] and not outcomes["a01"]["meeting_in_45"]
+    assert v_signal_value_gone(store)
 
     readout = q("v_readout_weekly")
     cuts = {(r["cut"], r["cut_value"]) for r in readout}
-    assert {("tier", "Priority"), ("tier", "Control"), ("angle", "General"), ("sender", "Hannah Spalding"),
+    assert not any(cut == "tier" for cut, _ in cuts)
+    assert {("arm", "random"), ("arm", "ranked"), ("angle", "General"), ("sender", "Hannah Spalding"),
             ("industry_group", "Marketing & Creative Agencies"), ("step", "step 1"), ("all", "all")} <= cuts
     alls = [r for r in readout if r["cut"] == "all"]
     assert sum(r["sends"] for r in alls) == 70 and sum(r["bounces"] for r in alls) == 1
@@ -424,8 +426,35 @@ def test_the_learning_loop_views(store):
     step = [r for r in readout if r["cut"] == "step"]
     assert sum(r["sends"] for r in step) == 70 and sum(r["replies"] for r in step) == 12
     assert all(r["accounts_enrolled"] == 0 for r in step)  # the step cut has activity only
-    priority = [r for r in readout if (r["cut"], r["cut_value"]) == ("tier", "Priority")]
-    assert sum(r["accounts_enrolled"] for r in priority) == 35 and sum(r["accounts_replied"] for r in priority) == 10
+    # random: a00 to a34 sent step 1 (a70 not yet), a00 to a09 replied; ranked (NULL arm): a35 to a69, a35 and a36.
+    random_ = [r for r in readout if (r["cut"], r["cut_value"]) == ("arm", "random")]
+    assert sum(r["accounts_enrolled"] for r in random_) == 35 and sum(r["accounts_replied"] for r in random_) == 10
+    ranked = [r for r in readout if (r["cut"], r["cut_value"]) == ("arm", "ranked")]
+    assert sum(r["accounts_enrolled"] for r in ranked) == 35 and sum(r["accounts_replied"] for r in ranked) == 2
+    assert {r["arm"] for r in outcomes.values()} == {"random", None}  # v_account_outcomes carries the contact's arm
+
+
+def test_v_readout_weekly_counts_replies_by_company(store):
+    """metrics-audit H3: one interested prospect writing three times in a week was three replies and three positive
+    replies. The week's replies and positive replies are companies (count DISTINCT account_id); a second company's
+    objection and an away message make 2 replies, 1 positive."""
+    sent_at = datetime(2026, 10, 6, 12, tzinfo=UTC)  # a Tuesday: every event below is in the week of Mon 5 Oct
+    store.insert("accounts", [account("p1", status="enrolled"), account("p2", status="enrolled")])
+    store.insert("contacts", [{"contact_id": f"k{a}", "account_id": a, "email_sha256": f"h{a}"} for a in ("p1", "p2")])
+    events = [{"event_id": f"s-{a}", "contact_id": f"k{a}", "account_id": a, "type": "sent", "step": 1,
+               "mailbox": "hannah@meetspill.org", "occurred_at": sent_at} for a in ("p1", "p2")]
+    events += [{"event_id": f"r-p1-{i}", "contact_id": "kp1", "account_id": "p1", "type": "replied", "step": 1,
+                "reply_class": "positive", "occurred_at": sent_at + timedelta(minutes=10 + i)} for i in range(3)]
+    events += [{"event_id": "r-p2", "contact_id": "kp2", "account_id": "p2", "type": "replied", "step": 1,
+                "reply_class": "objection", "occurred_at": sent_at + timedelta(minutes=20)},
+               {"event_id": "r-p2-ooo", "contact_id": "kp2", "account_id": "p2", "type": "replied", "step": 1,
+                "reply_class": "out_of_office", "occurred_at": sent_at + timedelta(minutes=21)}]
+    store.insert("events", events)
+    [row] = store.query(f"SELECT * FROM {SCHEMA}.v_readout_weekly WHERE cut = 'all'")
+    assert (row["week_start"], row["sends"]) == (date(2026, 10, 5), 2)
+    assert (row["replies"], row["positive_replies"]) == (2, 1)
+    step = store.query(f"SELECT * FROM {SCHEMA}.v_readout_weekly WHERE cut = 'step'")
+    assert sum(r["replies"] for r in step) == 2
 
 
 # -- PostgresStore round trips -------------------------------------------------------------
@@ -436,6 +465,7 @@ SAMPLES = {
     "double precision": lambda col: 1.5,
     "boolean": lambda col: True,
     "timestamp with time zone": lambda col: T0,
+    "date": lambda col: date(2026, 11, 18),
     "jsonb": lambda col: {"column": col, "list": [1, "two", None], "ok": True, "n": 1.25},
 }
 
@@ -468,7 +498,8 @@ def test_every_table_round_trips(db, store, table):
     # upsert sets only the columns a row carries; the rest stay.
     assert store.upsert(table, [{**ident, other: None}]) == 1
     assert store.get(table, **ident) == {**row, other: None}
-    fresh = {**row, **{c: (T0 + timedelta(days=1) if isinstance(row[c], datetime) else f"{row[c]}-2") for c in key}}
+    # A key column that is a time or a date (metrics.day, W3-1) moves a day on; a text one gets a suffix.
+    fresh = {**row, **{c: (row[c] + timedelta(days=1) if isinstance(row[c], date) else f"{row[c]}-2") for c in key}}
     assert store.upsert(table, [fresh]) == 1
     assert len(store.select(table)) == 2
     assert store.update(table, ident, {other: row[other]}) == 1
@@ -641,6 +672,42 @@ def test_memory_store_stores_timestamps_as_postgres_does(store):
             call(memory)
 
 
+# Each way a job might write a date column (accounts.recheck_after, the W1-C contracts, 19 Oct 2026), and the date
+# Postgres gives back in the store's UTC session (MemoryStore must give back the same).
+DAYS = {
+    "day": (date(2026, 11, 18), date(2026, 11, 18)),
+    "text": ("2026-11-18", date(2026, 11, 18)),
+    "utc_late": (datetime(2026, 11, 18, 23, 30, tzinfo=UTC), date(2026, 11, 18)),
+    # 20:00 in New York on 18 Nov (EST, UTC-5) is 01:00 UTC on the 19th: the UTC session's day is the 19th.
+    "new_york_evening": (datetime(2026, 11, 18, 20, 0, tzinfo=ZoneInfo("America/New_York")), date(2026, 11, 19)),
+    "naive": (datetime(2026, 11, 18, 23, 0), date(2026, 11, 18)),  # a naive time keeps its own day
+    "none": (None, None),
+}
+
+
+def _dated(s) -> dict:
+    s.insert("accounts", [{"account_id": a, "recheck_after": given} for a, (given, _) in DAYS.items()])
+    return {r["account_id"]: r["recheck_after"] for r in s.select("accounts")}
+
+
+def test_memory_store_stores_dates_as_postgres_does(store):
+    """A date column comes back a date from both stores, whichever way it was written, and a where on it compares
+    days: lo <= day < hi, so Range(None, 19 Nov) holds the four written for the 18th and not the 19th or NULL."""
+    from us_outbound.clients.db import Range
+
+    memory = MemoryStore(Guard())
+    assert _dated(memory) == _dated(store) == {a: back for a, (_, back) in DAYS.items()}
+    for s in (store, memory):
+        due = s.select("accounts", {"recheck_after": Range(None, date(2026, 11, 19))})
+        assert sorted(r["account_id"] for r in due) == ["day", "naive", "text", "utc_late"]
+        assert [r["account_id"] for r in s.select("accounts", {"recheck_after": "2026-11-19"})] == ["new_york_evening"]
+    for bad in ("soon", ""):
+        with pytest.raises(psycopg.errors.DataError):
+            store.insert("accounts", [{"account_id": "bad", "recheck_after": bad}])
+        with pytest.raises(ValueError):
+            memory.insert("accounts", [{"account_id": "bad", "recheck_after": bad}])
+
+
 def test_query_binds_params(store):
     store.insert("contacts", [{"contact_id": "k1", "email": "  Jane@Acme.com "}])
     rows = store.query(f"SELECT contact_id FROM {SCHEMA}.contacts WHERE lower(trim(email)) = %(e)s", {"e": "jane@acme.com"})
@@ -661,6 +728,154 @@ def test_query_is_read_only(db, store):
     assert store.select("accounts", {"account_id": "a1"})  # the connection is still usable
 
 
+# -- the rescore's transaction and lock (W2-2) ----------------------------------------------------------------
+
+
+def test_a_transaction_commits_together_or_not_at_all(store, dsn):
+    """store.transaction(): the writes inside it are seen by another connection only at COMMIT, and an exception
+    rolls them all back; a write inside a nested one is a savepoint of it."""
+    store.insert("accounts", [{"account_id": "x", "score": 1}])
+    other = PostgresStore(Guard(), dsn)
+    try:
+        with pytest.raises(ValueError):
+            with store.transaction():
+                store.update("accounts", {"account_id": "x"}, {"score": 2})
+                store.insert("accounts", [{"account_id": "y"}])
+                assert other.get("accounts", account_id="x")["score"] == 1  # not yet committed
+                raise ValueError("stop")
+        assert [(r["account_id"], r["score"]) for r in other.select("accounts")] == [("x", 1)]
+        with store.transaction():
+            store.update("accounts", {"account_id": "x"}, {"score": 3})
+            store.upsert("accounts", [{"account_id": "x", "score": 4}])  # its own transaction(): a savepoint
+        assert other.get("accounts", account_id="x")["score"] == 4
+    finally:
+        other.close()
+
+
+def test_query_is_refused_inside_a_transaction_and_the_transaction_still_writes(store):
+    """query()'s SET TRANSACTION READ ONLY would outlast its savepoint inside store.transaction() and fail every
+    later write there, so it is refused before any SQL; the transaction goes on and commits its writes."""
+    store.insert("accounts", [{"account_id": "x", "score": 1}])
+    with store.transaction():
+        with pytest.raises(RuntimeError, match="not run inside store.transaction"):
+            store.query(f"SELECT account_id FROM {SCHEMA}.accounts")
+        store.update("accounts", {"account_id": "x"}, {"score": 2})
+    assert store.get("accounts", account_id="x")["score"] == 2
+    assert store.query(f"SELECT account_id FROM {SCHEMA}.accounts") == [{"account_id": "x"}]
+
+
+def test_the_advisory_lock_waits_then_times_out_and_is_released_at_the_end_of_the_transaction(store, dsn):
+    other = PostgresStore(Guard(), dsn)
+    try:
+        with pytest.raises(RuntimeError, match="inside store.transaction"):
+            store.advisory_lock(20261020)
+        with store.transaction():
+            store.advisory_lock(20261020)
+            with pytest.raises(LockTimeout):
+                with other.transaction():
+                    other.advisory_lock(20261020, wait_seconds=0.2)
+        with other.transaction():  # free once the first transaction committed
+            other.advisory_lock(20261020, wait_seconds=0.2)
+            # lock_timeout is back to what it was for the rest of the transaction
+            assert other._connection().execute("SELECT current_setting('lock_timeout') AS t").fetchone()["t"] == "0"
+    finally:
+        other.close()
+
+
+RESCORE_ACCOUNTS = [f"a{i:02d}" for i in range(20)]
+
+
+def _rescore_process(dsn: str, name: str, hour: int, inserted, go, results) -> None:
+    """One rescore in its own process, as two workers would run them. With `inserted` and `go`, it stops between its
+    insert and its delete, holding the lock, until the test says go."""
+    import time as _time
+
+    from tests.fakes import make_context
+    from us_outbound.scoring import score
+    from us_outbound.settings.defaults import default_tabs
+    from us_outbound.settings.validate import validate_all
+
+    settings = validate_all(default_tabs())[0]
+    store = PostgresStore(Guard(), dsn)
+    ctx = make_context(settings, now=datetime(2026, 10, 27, hour, tzinfo=UTC), store=store, job=name)
+    real = store.insert
+
+    def insert(table, rows):
+        n = real(table, rows)
+        if table == "signal_events" and inserted is not None and not inserted.is_set():
+            inserted.set()
+            go.wait(60)
+        return n
+
+    store.insert = insert
+    started = _time.monotonic()
+    out = score.rescore(ctx)
+    results.put({"name": name, "run_id": ctx.run_id, "replaced": out.get("replaced"), "skipped": out.get("skipped"),
+                 "seconds": _time.monotonic() - started})
+    store.close()
+
+
+def _rows_per_signal(db) -> dict[tuple[str, str], int]:
+    rows = db.execute(f"SELECT account_id, value ->> 'signal' AS signal, count(*) AS n FROM {SCHEMA}.signal_events "
+                      "WHERE source = 'scoring' AND fact = 'signal_matched' GROUP BY 1, 2").fetchall()
+    return {(r["account_id"], r["signal"]): r["n"] for r in rows}
+
+
+def test_two_rescores_in_two_processes_run_in_series_and_never_leave_an_account_without_its_rows(db, store, dsn):
+    """RS P0-8: two workers rescoring at once. A inserts and stops holding the lock; B starts and waits for it
+    (pg_locks shows its advisory lock not granted); meanwhile another connection, as enrol's signals_now would,
+    sees each account's earlier rows, one per signal; A commits, B reads A's rows and replaces them. At the end
+    every account has exactly one row per matched signal, all of B's run, and B waited for A."""
+    import multiprocessing
+    import time
+
+    from tests.fakes import make_context
+    from us_outbound.enrol import enrol
+    from us_outbound.scoring import score
+    from us_outbound.settings.defaults import default_tabs
+    from us_outbound.settings.validate import validate_all
+
+    settings = validate_all(default_tabs())[0]
+    store.insert("accounts", [
+        {"account_id": aid, "domain": f"{aid}.com", "status": "verified", "tier": "Queue", "hq_state": "NY",
+         "industry": "Fintech", "employees": 25 if i < 12 else 64, "size_band": "20-49" if i < 12 else "50-99"}
+        for i, aid in enumerate(RESCORE_ACCOUNTS)])
+    first = make_context(settings, now=datetime(2026, 10, 27, 5, tzinfo=UTC), store=store)
+    score.rescore(first)  # the rows A replaces: 12 Team of 10–49, 8 Team of 50–99
+    assert set(_rows_per_signal(db).values()) == {1} and len(_rows_per_signal(db)) == 20
+
+    mp = multiprocessing.get_context("spawn")
+    inserted, go, results = mp.Event(), mp.Event(), mp.Queue()
+    a = mp.Process(target=_rescore_process, args=(dsn, "A", 6, inserted, go, results))
+    b = mp.Process(target=_rescore_process, args=(dsn, "B", 7, None, None, results))
+    a.start()
+    try:
+        assert inserted.wait(60), "A never reached its insert"
+        b.start()
+        waiting = []
+        for _ in range(100):  # B blocked on the advisory lock A holds
+            waiting = db.execute("SELECT count(*) AS n FROM pg_locks WHERE locktype = 'advisory' AND NOT granted"
+                                 ).fetchone()["n"]
+            if waiting:
+                break
+            time.sleep(0.1)
+        assert waiting == 1
+        seen = _rows_per_signal(db)  # A has not committed: the first run's rows, one per signal
+        assert set(seen.values()) == {1} and {aid for aid, _ in seen} == set(RESCORE_ACCOUNTS)
+        snapshot = enrol.signals_now(make_context(settings, store=store), RESCORE_ACCOUNTS)
+        assert all(snapshot.values()) and snapshot["a00"] == [{"signal": "Team of 10–49", "weight": 15}]
+    finally:
+        go.set()
+        a.join(60)
+        b.join(60)
+    done = {r["name"]: r for r in (results.get(timeout=10), results.get(timeout=10))}
+    assert (done["A"]["replaced"], done["B"]["replaced"]) == (20, 20) and not done["B"]["skipped"]
+    final = db.execute(f"SELECT account_id, value FROM {SCHEMA}.signal_events "
+                       "WHERE source = 'scoring' AND fact = 'signal_matched'").fetchall()
+    assert len(final) == 20 and {r["value"]["run_id"] for r in final} == {done["B"]["run_id"]}
+    assert set(_rows_per_signal(db).values()) == {1}
+
+
 def test_close_and_reconnect(store):
     store.insert("partners", [{"domain": "a.com"}])
     store.close()
@@ -669,7 +884,7 @@ def test_close_and_reconnect(store):
 
 
 def test_erase_and_heartbeat_sql_run_on_postgres(store):
-    """ops/erase.py and base/heartbeats.py query the database directly; their SQL must run on it."""
+    """ops/erase.py and ops/health.py query the database directly; their SQL must run on it."""
     store.insert("contacts", [{"contact_id": "k1", "email": "Jane.Doe@Acme.com "}, {"contact_id": "k2", "email": "j@x.com"}])
     store.insert("raw_clay_contacts", [{"key": "acme.com|Jane Doe", "payload": {"email": "Jane.Doe@acme.com"}},
                                        {"key": "x.com|J", "payload": {"email": "j@x.com"}}])
@@ -685,7 +900,7 @@ def test_erase_and_heartbeat_sql_run_on_postgres(store):
     assert [i["item_id"] for i in items] == ["i1"] and [e["event_id"] for e in events] == ["e1"]
     now = datetime.now(UTC)
     store.insert("heartbeats", [{"run_id": "r1", "job": "enrol", "status": "ok", "started_at": now, "finished_at": now}])
-    runs = heartbeats.latest_runs(store)
+    runs = health.latest_runs(store)
     assert runs["enrol"]["run_id"] == "r1" and runs["enrol"]["last_ok_at"] == now
 
 
@@ -732,10 +947,10 @@ def test_retention_finds_the_same_stale_universe_rows_on_postgres(store):
 
 
 def test_job_errors_sql_and_the_alert_keys_run_on_postgres(store):
-    """ops/job_errors.py reads each job's latest finished run with its detail; notify.post_once keeps its keys in
+    """ops/health.py reads each job's latest finished run with its detail; notify.post_once keeps its keys in
     events (Harry, 7 Oct 2026)."""
     from us_outbound.base import notify
-    from us_outbound.ops import job_errors
+    from us_outbound.ops import health
 
     now = datetime.now(UTC)
     store.insert("heartbeats", [
@@ -747,12 +962,226 @@ def test_job_errors_sql_and_the_alert_keys_run_on_postgres(store):
         {"run_id": "k1", "job": "kill_rules", "status": "ok", "started_at": now - timedelta(hours=30), "detail": {}},
     ])
     ctx = SimpleNamespace(store=store, now=now)
-    runs = job_errors.latest_finished(ctx, ["enrol", "kill_rules"])
+    runs, _ = health.two_latest(ctx, ["enrol", "kill_rules"])
     assert set(runs) == {"enrol"} and runs["enrol"]["run_id"] == "e2"
     assert runs["enrol"]["detail"] == {"errors": ["latest"], "send_approvals": {"errors": []}}
     store.upsert("events", [{"event_id": "alert:apollo_floor:2026-10-07", "type": "alert", "occurred_at": now}])
     ctx = SimpleNamespace(store=store, dry_run=False)
     assert notify.sent_before(ctx, ["apollo_floor:2026-10-07", "claude_cap_80:2026-10"]) == {"apollo_floor:2026-10-07"}
+
+
+def test_the_w1_1_reads_and_writes_run_on_postgres(store):
+    """W1-1 on the real database: the failure-rate query (each job's last 12 finished runs), the scheduler's error
+    row for a failed run (Range on started_at, then an upsert), and the fallback's earlier versions of a tab."""
+    from us_outbound.ops import health
+    from us_outbound.settings import sync
+
+    now = datetime.now(UTC)
+    # 14 hubspot_readback runs every 15 minutes, newest first; errors at positions 1, 5, 9 and 13. Only the latest
+    # 12 count, so position 13's error is out: 3 errors, the latest at position 1.
+    store.insert("heartbeats", [
+        {"run_id": f"h{i}", "job": "hubspot_readback", "status": "error" if i in (1, 5, 9, 13) else "ok",
+         "started_at": now - timedelta(minutes=15 * (i + 1)), "error": f"boom {i}" if i in (1, 5, 9, 13) else None}
+        for i in range(14)])
+    ctx = SimpleNamespace(store=store, now=now)
+    runs = health.recent_runs(ctx, ["hubspot_readback"])["hubspot_readback"]
+    assert [r["run_id"] for r in runs] == [f"h{i}" for i in range(12)]
+    [rate] = health.failure_rates(ctx, ["hubspot_readback"])
+    assert (rate.count, rate.texts) == (3, ["boom 1"])
+    # A run the loop launched at `start`: its own row still running is set to error; none at all is written.
+    start = now - timedelta(minutes=3)
+    store.insert("heartbeats", [{"run_id": "m1", "job": "mailbox_health", "status": "running",
+                                 "started_at": start + timedelta(seconds=2), "dry_run": False}])
+    assert health.record_failed_run(store, "mailbox_health", start, now, -9, "timeout", 180.0) == "updated"
+    assert store.get("heartbeats", run_id="m1")["status"] == "error"
+    assert store.get("heartbeats", run_id="m1")["detail"] == {"exit_code": -9, "seconds": 180.0}
+    assert health.record_failed_run(store, "enrol", start, now, 1, "error", 1.0) == "written"
+    [row] = store.select("heartbeats", {"job": "enrol"})
+    assert row["status"] == "error" and row["error"] == "exited 1 (error)"
+    # Two versions of a tab: the earlier one comes back as it stood before the change.
+    t0, t1 = now - timedelta(days=2), now - timedelta(days=1)
+    store.upsert("settings", [
+        {"tab": "States", "key": "NY", "values": {"state": "NY", "active": "yes"}, "effective_from": t0,
+         "effective_to": t1, "synced_at": t0},
+        {"tab": "States", "key": "NY", "values": {"state": "NY", "active": "no"}, "effective_from": t1,
+         "effective_to": None, "synced_at": t1},
+        {"tab": "States", "key": "TX", "values": {"state": "TX", "active": "yes"}, "effective_from": t0,
+         "effective_to": None, "synced_at": t0},
+    ])
+    assert sync.earlier_versions(store, "States") == [[{"state": "NY", "active": "yes"},
+                                                        {"state": "TX", "active": "yes"}]]
+
+
+def test_the_scheduler_heartbeat_store_writes_the_error_row_and_cannot_hang_the_loop(store, dsn):
+    """scheduler.heartbeat_store, as `us-outbound scheduler` opens it after a failed run: DATABASE_URL, a 5 s connect
+    timeout and a 5 s statement timeout (the loop is one thread). The row is written (no row of that start: one new,
+    status error, dry_run unknown), the session carries statement_timeout 5s, and a row locked by another transaction
+    makes the write fail after about 5 s instead of waiting for ever."""
+    import threading
+    import time
+
+    from us_outbound.ops import scheduler as sch
+
+    now = datetime.now(UTC).replace(microsecond=0)
+    hb = sch.heartbeat_store({"DATABASE_URL": dsn})
+    try:
+        assert hb._connection().execute("SHOW statement_timeout").fetchone()["statement_timeout"] == "5s"
+        assert health.record_failed_run(hb, "enrol", now - timedelta(seconds=60), now, 1, "error", 60.0) == "written"
+    finally:
+        hb.close()
+    [row] = store.select("heartbeats", {"job": "enrol"})
+    assert (row["status"], row["error"], row["dry_run"]) == ("error", "exited 1 (error)", None)
+    assert row["detail"] == {"exit_code": 1, "seconds": 60.0}
+
+    # A transaction elsewhere holds the heartbeats row of a run still "running"; the loop's update of it must give up.
+    start = now - timedelta(minutes=2)
+    store.insert("heartbeats", [{"run_id": "locked", "job": "mailbox_health", "status": "running",
+                                 "started_at": start + timedelta(seconds=1), "dry_run": False}])
+    held, release = threading.Event(), threading.Event()
+
+    def hold_lock():
+        with psycopg.connect(dsn) as conn, conn.transaction():
+            conn.execute("SELECT 1 FROM us_outbound.heartbeats WHERE run_id = 'locked' FOR UPDATE")
+            held.set()
+            release.wait(30)
+
+    locker = threading.Thread(target=hold_lock)
+    locker.start()
+    try:
+        assert held.wait(10)
+        hb = sch.heartbeat_store({"DATABASE_URL": dsn})
+        began = time.monotonic()
+        with pytest.raises(psycopg.errors.QueryCanceled):
+            health.record_failed_run(hb, "mailbox_health", start, now, -9, "timeout", 120.0)
+        assert 4.0 <= time.monotonic() - began < 15.0  # about STATEMENT_TIMEOUT_MS, not for ever
+        hb.close()
+    finally:
+        release.set()
+        locker.join(30)
+
+
+# -- W2-4: the claim row, the scheduler lock, DDL that alters nothing on a full schema --------------------------------
+
+
+def test_a_claim_is_taken_once_on_postgres(store):
+    """Store.claim is one INSERT ... ON CONFLICT DO NOTHING: of two claims of one key exactly one is True, and the row
+    is the first claimer's. run_job on it: two starts for (enrol, 2026-10-20T11:00) leave one row and one run."""
+    from tests.fakes import make_context
+    from us_outbound.settings.model import General, Settings
+
+    row = {"run_id": "enrol:2026-10-20T11:00", "job": "enrol", "status": "running", "started_at": T0}
+    assert store.claim("heartbeats", row) is True
+    assert store.claim("heartbeats", {**row, "status": "ok"}) is False
+    assert store.get("heartbeats", run_id="enrol:2026-10-20T11:00")["status"] == "running"
+    store.delete("heartbeats", {"run_id": "enrol:2026-10-20T11:00"})
+    when, ran = datetime(2026, 10, 20, 11, 0, tzinfo=UTC), []
+    for second in (0, 1):
+        ctx = make_context(Settings(general=General()), job="enrol", now=when, store=store)
+        ctx.due, ctx.run_id = when, health.due_run_id("enrol", when)
+        health.run_job(ctx, lambda c, n=second: ran.append(n) or {})
+    assert ran == [0] and [r["run_id"] for r in store.select("heartbeats")] == ["enrol:2026-10-20T11:00"]
+    [done] = store.select("heartbeats")
+    assert done["status"] == "ok" and done["exit_code"] == 0 and done["duration_s"] >= 0
+
+
+def test_the_scheduler_lock_is_held_by_one_session_and_freed_with_its_connection(dsn):
+    """pg_try_advisory_lock on SCHEDULER_KEY: the first session holds it, a second cannot, and once the first closes
+    (its container's SIGTERM ends the connection) the second takes it at once. held() follows the connection."""
+    from us_outbound.clients.db import SessionLock
+    from us_outbound.ops import scheduler as sch
+
+    a = SessionLock(Guard(), dsn, sch.SCHEDULER_KEY)
+    b = SessionLock(Guard(), dsn, sch.SCHEDULER_KEY)
+    try:
+        assert a.try_acquire() is True and a.held() is True
+        assert b.try_acquire() is False and b.held() is False
+        a.close()
+        assert a.held() is False and b.try_acquire() is True and b.held() is True
+        b._conn.close()  # the connection dropped: the lock went with it
+        assert b.held() is False
+    finally:
+        a.close()
+        b.close()
+
+
+def test_two_scheduler_processes_one_runs_the_other_waits_and_takes_over_after_sigterm(dsn, tmp_path):
+    """RS P0-4 with real processes: scheduler A takes the lock; B, started 1 s later, logs scheduler_lock_wait and
+    runs nothing; SIGTERM to A (a redeploy) closes its lock as it stops, and B holds the lock within 5 s."""
+    import signal as signals
+    import subprocess
+    import sys
+    import time
+
+    script = tmp_path / "one_scheduler.py"
+    script.write_text(
+        "import sys\n"
+        "from us_outbound.clients.db import SessionLock\n"
+        "from us_outbound.clients.guard import Guard\n"
+        "from us_outbound.ops import scheduler as sch\n"
+        "lock = SessionLock(Guard(), sys.argv[1], sch.SCHEDULER_KEY)\n"
+        "sys.exit(sch.Scheduler([], lock=lock, fail=lambda r: print('FAIL', r, flush=True)).run())\n")
+    # The child imports the us_outbound this test imported (the tree under test), not whatever an editable
+    # install in the venv points at: the script runs from tmp_path, so the tree is not on its path otherwise.
+    tree = os.path.dirname(os.path.dirname(os.path.abspath(us_outbound.__file__)))
+    env = {**os.environ, "PYTHONUNBUFFERED": "1",
+           "PYTHONPATH": os.pathsep.join(p for p in (tree, os.environ.get("PYTHONPATH")) if p)}
+
+    def start():
+        return subprocess.Popen([sys.executable, str(script), dsn], stdout=subprocess.PIPE, text=True, env=env)
+
+    def wait_for(proc, event, seconds):
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            line = proc.stdout.readline()
+            if f'"{event}"' in line:
+                return time.monotonic()
+        raise AssertionError(f"no {event} within {seconds} s")
+
+    a = start()
+    b = None
+    try:
+        wait_for(a, "scheduler_lock_held", 30)
+        time.sleep(1)
+        b = start()
+        wait_for(b, "scheduler_lock_wait", 30)
+        a.send_signal(signals.SIGTERM)
+        sent = time.monotonic()
+        assert a.wait(timeout=30) == 0
+        assert wait_for(b, "scheduler_lock_held", 10) - sent < 5.0
+    finally:
+        for p in (a, b):
+            if p is not None and p.poll() is None:
+                p.kill()
+                p.wait(10)
+            if p is not None:
+                p.stdout.close()
+
+
+def test_ddl_against_a_full_schema_runs_no_alter_and_sets_the_lock_timeout(dsn, capsys):
+    """The session database already has every column: applying the DDL again runs no ADD COLUMN (each is counted as
+    already there), under SET lock_timeout = '5s' (code-platform-ops B10)."""
+    import json
+    import re
+
+    added = [s for _, s in ddl.statements() if re.search(r"ADD COLUMN IF NOT EXISTS", s)]
+    seen = []
+
+    def connect():
+        conn = psycopg.connect(dsn)
+        real = conn.execute
+
+        def execute(query, params=None, **kw):
+            seen.append(str(query))
+            return real(query, params, **kw)
+
+        conn.execute = execute
+        return conn
+
+    ddl.apply(Guard(), dsn, dry_run=False, connect=connect)
+    assert seen[0] == ddl.LOCK_TIMEOUT and not [q for q in seen if "ADD COLUMN" in q]
+    [done] = [json.loads(line) for line in capsys.readouterr().out.splitlines()
+              if line.startswith("{") and '"ddl_apply"' in line and '"dry_run": false' in line]
+    assert done["columns_already_there"] == len(added) > 0
 
 
 # -- DB-free: the store's rules hold before any SQL ---------------------------------------------
@@ -836,6 +1265,13 @@ def test_memory_store_converts_timestamps_and_refuses_unknown_columns_without_a_
         s.upsert("accounts", [{"account_id": "a1", "x": 1, "Tier": "Held"}])
     with pytest.raises(GuardViolation, match="unknown table"):  # the guard's refusal comes first
         s.insert("hubspot_contacts", [{"id": "x"}])
+    # A date column (accounts.recheck_after) keeps a date: text by its date, an aware time on its UTC day.
+    s.upsert("accounts", [{"account_id": "a2", "recheck_after": "2026-11-18"},
+                          {"account_id": "a3", "recheck_after": datetime(2026, 11, 18, 20, tzinfo=ZoneInfo("America/New_York"))}])
+    assert (s.get("accounts", account_id="a2")["recheck_after"], s.get("accounts", account_id="a3")["recheck_after"]) == (
+        date(2026, 11, 18), date(2026, 11, 19))
+    with pytest.raises(ValueError):
+        s.update("accounts", {"account_id": "a2"}, {"recheck_after": "next month"})
 
 
 def test_a_nul_character_is_dropped_rather_than_failing_the_write(store):
@@ -849,3 +1285,51 @@ def test_a_nul_character_is_dropped_rather_than_failing_the_write(store):
     assert row["value"] == {"title": "Acme", "text": ["ab", {"c": "d"}]}
     store.upsert("accounts", [{"account_id": "n2", "clean_name": "Nul\x00 Inc"}])
     assert store.get("accounts", account_id="n2")["clean_name"] == "Nul Inc"
+
+
+def test_accounts_dedupe_then_the_unique_domain_index_and_an_admit_that_loses_the_race_makes_no_row(dsn, store):
+    """W3-3 (code-sources B7): two rows for acme.com merge into the older; the deferred unique index then applies (0
+    duplicates); an insert for acme.com after another run's row is there makes nothing (ON CONFLICT DO NOTHING with
+    no target), and admit returns the account that is there. The index is dropped after: this session's other tests
+    insert duplicate domains."""
+    from tests.fakes import make_context
+    from us_outbound import accounts
+    from us_outbound.ops.cli import UNIQUE_INDEX_FILE
+    from us_outbound.settings.defaults import default_tabs
+    from us_outbound.settings.validate import validate_all
+
+    t0 = datetime(2026, 10, 1, 9, tzinfo=UTC)
+    store.insert("accounts", [{"account_id": "a1", "domain": "acme.com", "first_seen": t0},
+                              {"account_id": "a2", "domain": "acme.com", "first_seen": t0 + timedelta(days=2)}])
+    settings, _ = validate_all(default_tabs())
+    ctx = make_context(settings, job="accounts_dedupe", live=True, store=store)
+    assert accounts.dedupe(ctx)["remaining"] == 0
+    try:
+        ddl.apply_deferred(Guard(), dsn, UNIQUE_INDEX_FILE, dry_run=False)
+        assert not store.insert_new("accounts", {"account_id": "a3", "domain": "acme.com", "first_seen": t0})
+        assert store.insert_new("accounts", {"account_id": "b1", "domain": "other.com", "first_seen": t0})
+        assert accounts.admit(store, "acme.com", source="apollo", now=t0).account_id == "a1"
+        assert [r["account_id"] for r in store.select("accounts", {"domain": "acme.com"})] == ["a1"]
+    finally:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute("DROP INDEX IF EXISTS us_outbound.accounts_domain_unique_idx")
+
+
+def v_signal_value_gone(store) -> bool:
+    return not store.query("SELECT 1 FROM information_schema.views WHERE table_schema = %(s)s AND table_name = %(v)s",
+                           {"s": SCHEMA, "v": "v_signal_value"})
+
+
+def test_ci_runs_the_suite_with_a_throwaway_postgres_and_requires_it():
+    """W3-1 (design-final change 5): GitHub Actions on push, Python 3.12, a postgres:16 service and its DSN in
+    US_OUTBOUND_TEST_DSN (the container's own, never a secret), with US_OUTBOUND_REQUIRE_DB so the database tests
+    fail rather than skip when it is missing. The workflow's own run shows they are collected and pass."""
+    from pathlib import Path
+
+    text = (Path(__file__).resolve().parents[1] / ".github" / "workflows" / "tests.yml").read_text(encoding="utf-8")
+    assert re.search(r"^on:\n  push:", text, re.MULTILINE)
+    assert "image: postgres:16" in text and 'python-version: "3.12"' in text
+    assert f"{DSN_ENV}: postgresql://postgres:postgres@localhost:5432/postgres" in text
+    assert f'{REQUIRE_ENV}: "1"' in text and "python -m pytest" in text
+    assert "secrets." not in text and "DATABASE_URL" not in text  # never production's database or a secret
+    assert re.search(r"^permissions:\n  contents: read", text, re.MULTILINE)  # its token can write nothing

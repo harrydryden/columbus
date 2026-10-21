@@ -16,13 +16,14 @@ from typing import Any
 import pytest
 
 from tests.test_scoring import sig
-from us_outbound import clay_cross_check, labels, verify
+from us_outbound import labels, verify
 from us_outbound.contacts import pick
-from us_outbound.enrol import approvals, openers
-from us_outbound.learn import daily_report
+from us_outbound.enrol import openers
+from us_outbound.learn import daily_post, label_metrics
 from us_outbound.ops import relabel
 from us_outbound.scoring import score
-from us_outbound.sources import apollo_enrich, apollo_people, lookalikes, named, pages, site_visits
+from us_outbound.contacts import precheck as apollo_people
+from us_outbound.sources import apollo_enrich, lookalikes, pages, site_visits
 
 NOW = datetime(2026, 10, 27, 12, 0, tzinfo=UTC)  # the ctx fixture's now
 TODAY = date(2026, 10, 27)
@@ -90,14 +91,7 @@ def labels_home_page(ctx, specs):
 def labels_tally(ctx, specs):
     stored(ctx, [row(t, at, labels.JOB, labels.VERDICT_FACT, {"asked": True, "rules": "", "model": t})
                  for t, at in specs])
-    return labels.tally(ctx, None, NOW).no_rules.get("a1")
-
-
-def labels_gap_codes(ctx, specs):
-    codes = _codes(specs)
-    stored(ctx, [row(t, at, labels.APOLLO_SOURCE, "naics", [codes[t]]) for t, at in specs])
-    got, _ = labels.gap_codes(ctx, {"a1": "Dental"})
-    return {c: t for t, c in codes.items()}[got[0][0]] if got else None
+    return label_metrics.tally(ctx, None, NOW).no_rules.get("a1")
 
 
 def labels_corrected_rows(ctx, specs):
@@ -111,13 +105,6 @@ def score_latest_facts(ctx, specs):
     return score.latest_facts([row(t, at, "apollo_org", "employees", t) for t, at in specs]).get("employees")
 
 
-def score_calendar(ctx, specs):
-    months = {t: i + 1 for i, (t, _) in enumerate(specs)}
-    got = score.calendar_facts([row(t, at, "irs_bmf", "fiscal_year_end_month", months[t]) for t, at in specs], TODAY)
-    days = got.get("days_to_fiscal_year_start")
-    return next((t for t, m in months.items() if score.days_to_fiscal_year_start(m, TODAY) == days), None)
-
-
 def score_unread(ctx, specs):
     return which(specs, lambda marked: "clay_careers" in score.unread_sources(
         [row(t, at, "clay_careers", "read_status", "blocked" if marked(t) else "read") for t, at in specs]))
@@ -125,7 +112,7 @@ def score_unread(ctx, specs):
 
 def score_condition(ctx, specs):
     rows = [row(t, at, "apollo_org", "employees", 100, quote=t) for t, at in specs]
-    m = score._match_condition(sig("Big", "apollo_org", "employees >= 50", 10), rows, rows, TODAY, {})
+    m = score._match_condition(sig("Big", "apollo_org", "employees >= 50", 10), rows, TODAY, {})
     return m.evidence[0].quote if m else None
 
 
@@ -148,20 +135,10 @@ def openers_newest_leader(ctx, specs):
         "apollo_person_id")
 
 
-def openers_focus_material(ctx, specs):
-    return openers.focus_material([row(t, at, "apollo_org", "description", t) for t, at in specs])[1] or None
-
-
 def openers_person_id(ctx, specs):
     return openers.contact_person_id({"contact_id": "c1"}, [
         row(t, at, pick.SOURCE, pick.OUTCOME_FACT, {"contact_id": "c1", "apollo_person_id": t}) for t, at in specs
     ]) or None
-
-
-def openers_stored_focus(ctx, specs):
-    v = openers.stored_focus([row(t, at, openers.FOCUS_SOURCE, openers.FOCUS_FACT, {"tag": t}) for t, at in specs],
-                             NOW)
-    return v and v["tag"]
 
 
 def verify_doubts(ctx, specs):
@@ -176,31 +153,15 @@ def pick_outcomes(ctx, specs):
     return got and got[1]["tag"]
 
 
-def clay_answers(ctx, specs):
-    stored(ctx, [row(t, at, clay_cross_check.SOURCE, clay_cross_check.FACT, {"tag": t}) for t, at in specs])
-    return clay_cross_check.answers(ctx.store, ["a1"]).get("a1", {}).get("tag")
-
-
 def lookalikes_latest(ctx, specs):
     got = lookalikes._latest([row(t, at, lookalikes.SOURCE, "lookalike_fit", t) for t, at in specs])
     return got[("a1", "lookalike_fit")][1] if got else None
-
-
-def named_latest(ctx, specs):
-    return which(specs, lambda marked: named._latest(
-        [row(t, at, named.SOURCE, named.FACT, marked(t)) for t, at in specs]).get("a1", False))
 
 
 def site_visits_latest(ctx, specs):
     stored(ctx, [row(t, at, site_visits.SOURCE, site_visits.US_FACT, t) for t, at in specs])
     got = site_visits.latest_facts(ctx).get(("a1", site_visits.US_FACT))
     return got and got[1]
-
-
-def approvals_recipient(ctx, specs):
-    stored(ctx, [row(t, at, approvals.PICK_SOURCE, approvals.PICK_FACT, {"contact_id": "c1", "apollo_person_id": t})
-                 for t, at in specs])
-    return approvals.recipient_source(ctx, "a1", {"contact_id": "c1"})["apollo_person_id"] or None
 
 
 def relabel_show(ctx, specs):
@@ -256,7 +217,7 @@ def people_employees(ctx, specs):
 def daily_no_contact(ctx, specs):
     stored(ctx, [row(t, at, pick.SOURCE, pick.OUTCOME_FACT, {"outcome": pick.NO_CONTACT, "reason": t})
                  for t, at in specs])
-    return daily_report.no_contact_in(ctx.store, NOW - timedelta(days=30), NOW).get("a1")
+    return daily_post.no_contact_in(ctx.store, NOW - timedelta(days=30), NOW).get("a1")
 
 
 # reader -> (adapter, whether a row with no observed_at can be chosen)
@@ -266,26 +227,19 @@ READERS: dict[str, tuple[Callable[[Any, Specs], str | None], bool]] = {
     "labels.Material.of": (labels_material, True),
     "labels.rules_input": (labels_rules_material, True),
     "labels._home_page": (labels_home_page, True),
-    "labels.tally": (labels_tally, True),
-    "labels.gap_codes": (labels_gap_codes, True),
+    "label_metrics.tally": (labels_tally, True),
     "labels.corrected_rows": (labels_corrected_rows, True),
     "score.latest_facts": (score_latest_facts, True),
-    "score.calendar_facts": (score_calendar, True),
     "score.unread_sources": (score_unread, True),
     "score._match_condition": (score_condition, True),
     "score._match_terms": (score_terms, True),
     "openers.tokens": (openers_tokens, False),  # fresh_facts leaves out a fact with no time
     "openers.newest_leader": (openers_newest_leader, False),
-    "openers.focus_material": (openers_focus_material, True),
     "openers.contact_person_id": (openers_person_id, True),
-    "openers.stored_focus": (openers_stored_focus, False),  # undated is older than FOCUS_REFRESH_DAYS
     "verify.doubt_history": (verify_doubts, True),
     "pick.history": (pick_outcomes, False),
-    "clay_cross_check.answers": (clay_answers, True),
     "lookalikes._latest": (lookalikes_latest, True),
-    "named._latest": (named_latest, True),
     "site_visits.latest_facts": (site_visits_latest, False),
-    "approvals.recipient_source": (approvals_recipient, True),
     "relabel.show": (relabel_show, True),
     "pages.history": (pages_history, False),
     "pages.coverage": (pages_coverage, False),
@@ -294,7 +248,7 @@ READERS: dict[str, tuple[Callable[[Any, Specs], str | None], bool]] = {
     "apollo_enrich.latest_run": (enrich_latest_run, False),
     "apollo_people.history": (people_history, False),
     "apollo_people.history employees": (people_employees, False),
-    "daily_report.no_contact_in": (daily_no_contact, False),
+    "daily_post.no_contact_in": (daily_no_contact, False),
 }
 
 
@@ -344,8 +298,3 @@ def test_keywords_stored_as_text_read_as_a_list_by_labels():
     m = labels.Material.of({"domain": "a1.com"}, [row("e1", T, "apollo_org", "keywords", "payroll, hr software")])
     assert m.keywords == ("payroll", "hr software")
 
-
-def test_keywords_stored_as_text_read_as_a_list_by_the_opener_focus():
-    """facts.texts: as labels read them (before 9 Oct 2026 the opener read text keywords as none)."""
-    keywords, _ = openers.focus_material([row("e1", T, "apollo_org", "keywords", "payroll, hr software")])
-    assert keywords == ["payroll", "hr software"]

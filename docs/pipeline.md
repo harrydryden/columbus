@@ -1,5 +1,7 @@
 # How an account is found, qualified, cleaned and enriched
 
+> **Removed in W2-1 (20 Oct 2026; Harry's decisions of 19 Oct).** The commands `us-outbound golive`, `approvals list | send | reject`, `phase0 check` and `clay check-email` no longer exist and do not parse; send approvals and `auto_send`, Clay and second contacts went with them (git history keeps the code). `us-outbound status` prints golive's three live checks (Copy, Campaigns, Watchdog). Where this page describes Clay's two jobs, the Work Email waterfall, the second contact or send approvals, read it as what was built, not what runs. This page is the record of what was done then; for the system as it runs now see [daily.md](daily.md) and [roadmap.md](roadmap.md).
+
 Apollo, Clay and Instantly can each find companies, find emails and enrich records, and Apollo, Clay, Instantly and HubSpot each have their own idea of an ICP. This page covers:
 - which tool does which job, and where the ICP lives;
 - the order in which an account is found, checked and paid for;
@@ -51,7 +53,7 @@ The list of changes is at the end.
 | Hiring counts | Apollo organisation search with job filters (`apollo_jobs`) | | |
 | Job-posting text | The public Greenhouse, Lever, Ashby and Workable feeds (free), read by `read_pages` from the board the company's site links to | | |
 | People at the company (titles, locations) | Apollo people search (free) | | Clay Find People, Instantly SuperSearch |
-| Work email | Apollo bulk match, verified emails only | Clay's Work Email waterfall, for misses and catch-alls only, valid results only, behind `clay_email_fallback` (off until `us-outbound clay check-email --live` confirms one lookup). "US Outbound – Contacts" replaces it once built | Apollo's own waterfall (its results arrive only by webhook, and there is no public endpoint); Instantly's lead finder |
+| Work email | Apollo bulk match, verified emails only | Clay's Work Email waterfall, for misses and catch-alls only, valid results only, behind `clay_email_fallback` (never switched on; removed with Clay in W2-1). "US Outbound – Contacts" replaces it once built | Apollo's own waterfall (its results arrive only by webhook, and there is no public endpoint); Instantly's lead finder |
 | Email verification | Whoever found the email: Apollo's status, or Clay's check | | Instantly verification, which would spend Instantly credits |
 | Site visits | Apollo website visitors | Harry's weekly CSV export | Instantly's website-visitor feature |
 | Score, tier and angle | Python and the Signals tab | | Apollo scoring, Clay scoring, HubSpot lead scoring and ICP tiers |
@@ -83,6 +85,22 @@ Each stage lists what it spends and the status it leaves the account in. A stage
 
 **1. Find: `source_universe` (weekly, Proposed 9).**
 - Apollo searches the slices of active industry × active state × size band. Cost: 1 Apollo credit per 100 companies.
+- **How much (W1-3a, 19 Oct 2026; loop L1).** The queue should hold two weeks of `weekly_enrol_cap` in companies
+  enrol could actually email: *contactable supply* = ready + findable × p_c + raw × p_v × p_c. Ready: verified
+  with a sendable contact. Findable: verified, no contact yet, not waiting out `pick_contacts`' 14 days after
+  finding nobody. Raw: `new` and `queued`. p_v: the share of the companies admitted in the last 28 days whose
+  first check passed, each company once; p_c: the share of the accounts `pick_contacts` tried in the last 28 days
+  that it found a contact at. Each is measured from 20 observations, 0.60 and 0.46 by default before that, and
+  never taken below 0.20; the run's summary says which (`measured`, `default`, `floored`). Short of the target,
+  the run creates (target − contactable) ÷ (p_v × p_c) raw accounts, at most 2 × `weekly_enrol_cap` a run and
+  3 × a week (Monday to Sunday, UK). Until 19 Oct the count was every open account, 305 to 338 of which had
+  nobody to email, so sourcing created nothing for a week while ready supply fell to 1.3 days. A page the
+  ceiling cuts short is read again by the next run, so no company on it is lost for the month.
+- **In what order (code-sources B2).** Within each search and size band the active states come in turn, starting
+  from a different state each ISO week (week mod the number of states), so the pages alternate state. Read in the
+  States tab's alphabetical order, Georgia came first and the queue was 85% Georgia. Each account created carries
+  a `sourced_by` fact (source `source_universe`: the slice, group, state, band, page and run), so what becomes of
+  it can be traced back to where sourcing looked.
 - **Proposed 9:** each week covers a quarter of the slices, so every slice is refreshed every four weeks and the month's Apollo budget is spent evenly instead of in one large bill on the 1st.
 - The same front door (`accounts.admit`) serves every other way in: new site visitors, IRS BMF matches, the Named accounts tab, the monthly lookalike leads (below), and later the GPTW and B Corp lists. Each is matched to an Apollo record by domain.
 - **Lookalike leads: `lookalike_leads` (monthly, the 1st at 02:50 UK; Harry, 5 Oct 2026).** Apollo's organization search ranks US companies by likeness to up to 5 of Spill's active customers at a time (UK customers included, US ones first), one industry group and size band at a time, with the universe's filters (the US, never CA or WA, the size band, no insurers). Each row must have a US HQ in an active state before it reaches the door, and verify then checks it like any account. New accounts have source `lookalike` and the "Found as a lookalike of a customer" signal. Cost: at most 60 Apollo credits a run, about 1 for the seeds' ids and 1 or 2 per group and band.
@@ -96,8 +114,11 @@ Each stage lists what it spends and the status it leaves the account in. A stage
 - **Status: `new`.**
 
 **2. Free signals: daily and weekly.**
-- **apollo_people** (free; weekdays 04:20, before verify_accounts' rescore; Harry, 5 Oct 2026): for
-  every queue account with a known size, Apollo's people search (0 credits, no emails) at the
+- **contact_precheck** (free; weekdays 05:15, before pick_contacts' rescore; W3-3, 20 Oct 2026, in place of
+  apollo_people at 04:20, Harry, 5 Oct 2026): for each verified account waiting for a contact, the search
+  pick_contacts makes (every Roles-tab title at its size, US, verified emails), counted as
+  `contactable_candidates` (0: `status_reason` `no_contact_candidates`, set aside for 30 days and left out of
+  contactable supply); and Apollo's people search (0 credits, no emails) at the
   company for the Roles-tab People-leader titles at its size, in the US, with no email filter, and
   once more for how many people Apollo holds there. It writes `people_leader_count`, the newest
   leader's `people_leader_days_in_title` and `people_leader_newest`, `people_found` and
@@ -109,37 +130,44 @@ Each stage lists what it spends and the status it leaves the account in. A stage
   then each again after 30 days; at most 150 accounts, 300 requests and 9 minutes a run, a request
   every 1.5 seconds. `pick_contacts` still writes the People leaders its own search sees, but not
   over a full search less than 30 days old. US headcount by state and the CA/WA share are not built.
-- **apollo_jobs**: open roles and open People roles.
+- **apollo_jobs** (`apollo_signals`, weekdays 05:10, after verify_accounts and apollo_enrich; verified accounts
+  only since W1-3a, 19 Oct 2026, so no posting is paid for at a company the label check leaves out): open roles
+  and open People roles. No rescore of its own: `pick_contacts`' rescore at 05:30 scores them.
 - **read_pages** (free; weekdays 03:45, before verify_accounts' rescore): the company's own careers,
   jobs and benefits pages (up to six pages, robots.txt respected, no JavaScript), then the
   Greenhouse, Lever, Ashby or Workable board its site links to. The benefit sentences, with quote
   and URL, feed the EAP, mental-health, wellbeing-app, progressive-benefits and competitor signals.
-  `us-outbound pages show` and the daily post give its coverage.
-- **apollo_enrich** (weekdays 04:10, 1 Apollo credit per company found, 0 for one Apollo doesn't know;
-  Harry, 2 Oct 2026): Apollo's organisation enrich, in bulk calls of up to 10 domains, for the queue
-  accounts in the General `apollo_enrich_groups` (Technology & Startups), never-enriched first, then
-  those enriched more than 180 days ago, in enrol's order. It writes the funding facts the funding
-  signals read (`days_since_funding`, aged to today at scoring, `funding_stage`, `funding_amount_usd`),
-  `employees` and `headcount_growth_12m`, and the description, technologies and keywords when none is
-  stored. An exact count replaces the searched size band on the account, unless an Overrides row or
-  Clay says otherwise; verify then treats a count outside the General size range as usual (a verified account that
-  count puts outside goes back to `new`, so verify sees it again). A company Apollo has no
-  record for is "not found", not "no funding", and is not asked again for 180 days. The daily post
-  counts what it found.
+  `us-outbound report pages` and the daily post give its coverage.
+- **apollo_enrich** (weekdays 05:00, after verify_accounts, 1 Apollo credit per company found, 0 for one Apollo
+  doesn't know; Harry, 2 Oct 2026; re-timed by W1-3a, 19 Oct 2026, from 04:10): Apollo's organisation enrich, in
+  bulk calls of up to 10 domains, for the **verified** accounts in the General `apollo_enrich_groups` (Technology &
+  Startups), never-enriched first, then those enriched more than 180 days ago, in enrol's order. It writes the
+  funding facts the funding signals read (`days_since_funding`, aged to today at scoring, `funding_stage`,
+  `funding_amount_usd`), `employees` and `headcount_growth_12m`, and the description, technologies and keywords
+  when none is stored. A bulk record is matched to the account by its Apollo organisation id first, then by
+  domain, so a company Apollo files under another domain is paid for once. An exact count replaces the searched
+  size band on the account, unless an Overrides row or Clay says otherwise, and is the last size check: a count
+  outside the General size range leaves the company out for good (`disqualified`, Excluded, `status_reason`
+  `size`). Until 19 Oct it went back to `new` and stayed in the queue (a 5,100-staff company reached the W43
+  hand-check). A company Apollo has no record for is "not found", not "no funding", and is not asked again for
+  180 days. No rescore of its own: `pick_contacts`' rescore at 05:30 scores what it wrote. The daily post counts
+  what it found.
 - **Site visits** (`site_visits`, daily 06:00, about 3 Apollo credits a day plus 1 per new visitor looked up; Harry, 5 Oct 2026):
   Apollo's organisation search with its website-visitor filters, read only, for the General
   `site_visit_domain` (spill.chat): who visited the `site_visit_us_paths` (`/us`) in the last day
   and the last 30 days, and the `site_visit_intent_paths` (`/us/pricing`, `/us/demo`, `/us/book`)
   in the last 30 days. A visitor is matched to its account by root domain (aliases included) or
   Apollo id, and gets `us_visits_30d` and `pricing_or_demo_visits_30d` (1 while Apollo lists it, 0
-  once it no longer does, written only on a change), and a `site_visit` event for each day it
-  visited (the daily post's warm accounts, the readout's visits before and after the first email).
+  once it no longer does, written only on a change), and a `site_visit` event when it first appears on the
+  30-day list since the last run (W3-3: the one-day search went; the daily post's warm accounts, the readout's
+  visits before and after the first email). After five runs with no new visitor it reads the list weekly.
   A visitor we don't hold is kept out on its search row only when it is surely not for us (outside
   the US, no label fits, an insurer or broker; never its HQ state, Harry, 6 Oct 2026). Every other one is looked up in
   Apollo's organisation enrich (1 credit each found, at most 30 a run) and judged again: out only
   for a size clearly outside the General size range; otherwise it comes in by the front door with source
   `site_visit`. One Apollo leaves in doubt (no HQ state, no size, no industry, a count near an
-  edge) comes in held for the weekly hand-check, not left out (Harry, 6 Oct 2026). The
+  edge) comes in as any other, and verify_accounts decides (Harry, 14 Oct 2026; the hold for the
+  hand-check went with W3-3). The
   rescore follows, so a visit counts at the 12:00 enrol. Apollo refusing the filters, or a week
   with no visitor, puts one line in the daily post: check the tracker.
 - **Layoffs.**
@@ -180,9 +208,19 @@ An account also needs at least one candidate contact: a person matching the Role
   - they agree: the label's own copy (`label_source` rules+model);
   - they disagree: the model's label when it is sure (model); otherwise, within one group, the group's own label and
     copy (umbrella); across groups, the rules' label with General copy, flagged on the card (disputed);
-  - a public body is disqualified; a society or membership body, a company no label fits, or one whose industry is
-    switched off is disqualified when the model is sure and held for the weekly hand-check ("industry uncertain: …")
-    when it is not; an Overrides `industry` row or an approver's correction stands, and nothing is asked.
+  - a public body, a society or membership body, a company no label fits and one the model cannot place are
+    disqualified for good, at any confidence (14 Oct 2026); one whose industry is switched off is **parked** (W1-4,
+    19 Oct 2026) and comes back to `new` from its stored verdict, with no call, once the industry is switched on; an
+    Overrides `industry` row or an approver's correction stands, and nothing is asked. One company's answer the model
+    cannot finish (a refusal, max_tokens, not JSON) skips that company, not the run: it goes last next run and is
+    parked (`label_failed`) after 3 such answers under one label list. It comes back to `new` when the label list
+    or prompt changes, or at once, with no call, when an Overrides `industry` row or an approver's label names it.
+  - Every failed check writes its code to `accounts.status_reason` (`verify.REASON_CODES`): terminal codes (size,
+    state, partner, a customer, an opt-out, a bounce …) leave the company out for good; an open HubSpot deal or
+    another owner is looked up again after 30 days (`recheck_after`, D22); no label call left this run, a HubSpot
+    error or Clay's answer not in yet change nothing. `us-outbound verify migrate-parked --live`, run once after
+    W1-4 deploys, parks the companies the label check left out while their industry was off before `parked` existed
+    (~50 on 13 Oct; dry-run first says how many).
   - The verdict is kept (a `label_verdict` fact) and asked again when the label list, a definition, keywords or
     the prompt change (`labels_hash`), or once when the model was not sure and the company's home page has been read
     since (`labels.second_look`). The first audit (7 Oct 2026) held 204 of 409 companies, the model unsure on Apollo's
@@ -199,6 +237,9 @@ An account also needs at least one candidate contact: a person matching the Role
 - It rescores, which sets the final tier and angle. **Status: `verified`.**
 
 **4. Contact: weekdays at 05:30, `pick_contacts`, just in time, within today's share of the month's Apollo budget.**
+- It starts with one rescore (W1-3a, 19 Oct 2026), so the morning's exact sizes and hiring facts, written after
+  verify's own rescore, order the queue it reads. A rescore that fails is reported in its summary (and so by the
+  hourly job check) and the run goes on in verify's order.
 - It takes only the accounts the next two enrolment days will use at the weekly target's pace, in enrol's queue order, not the whole verified queue.
 - It searches Apollo for free: people at the company with a Roles-tab title for its size, in the US, with a verified email.
 - It ranks them (Harry, 1 Oct 2026: "the closer to seniority and decision maker the better"): the Roles-tab rank for the size, then seniority, then how well the title matches, then the newest in role. Junior titles come last, and never as a People leader.
@@ -244,7 +285,7 @@ A sheet made before 1 Oct 2026 has the Roles tab in SPEC 5's layout. It is still
 
 **5. Enrol: weekdays at 12:00, `enrol`.**
 - It works out today's number (below), re-checks HubSpot, assigns the test version and renders the copy.
-- With `auto_send` = no (the pilot; Harry, 2 Oct 2026), it adds no lead: it posts a send approval, a card with the whole sequence, to #us-outbound. Only an approver's ✅ (or `us-outbound approvals send ID --live`) adds the lead to its sender's campaign, after re-checking HubSpot, opt-outs and the pauses. A card not approved by the end of the next send day lapses, and the account goes back to the queue. Cards still waiting hold their sender's slots and count towards the week.
+- With `auto_send` = no (the pilot; Harry, 2 Oct 2026), it adds no lead: it posts a send approval, a card with the whole sequence, to #us-outbound. Only an approver's ✅ (or, until the send approvals were removed in W2-1, the approvals command) adds the lead to its sender's campaign, after re-checking HubSpot, opt-outs and the pauses. A card not approved by the end of the next send day lapses, and the account goes back to the queue. Cards still waiting hold their sender's slots and count towards the week.
 - With `auto_send` = yes, it adds the leads straight away, once the weekly hand-check is approved.
 - In a live run, an owner whose campaign is not active in Instantly gets no capacity and no cards: `us-outbound start --live` activates it. **Status: `enrolled`** once the lead is added.
 - **Second contacts** (with `second_contact` = yes) count in ready accounts, so in today's number, in the
@@ -265,7 +306,7 @@ A sheet made before 1 Oct 2026 has the Roles tab in SPEC 5's layout. It is still
 
 ### Why fit, not signals, finds accounts
 
-A search built from signals ("funded in the last 18 months", "hiring a People role") would give a smaller, hotter list. But it would leave out the Control tier: the 15% of sends that go to accounts with no signal. Without the Control tier, the Monday readout can't show what any signal is worth. So the universe is every company that fits, and signals only order it.
+A search built from signals ("funded in the last 18 months", "hiring a People role") would give a smaller, hotter list. But it would leave out the random explore arm: the 15% of sends picked at random from the queue, whatever their signals (General `explore_share`; Harry's D7, in place of the Control tier, W2-2). Without it, the Monday readout can't show what the score is worth. So the universe is every company that fits, and signals only order it.
 
 ## Budgets and targets
 
@@ -388,13 +429,13 @@ The copy doesn't change, only the gaps. The readout counts a reply for a week af
 
 **The Copy tab holds one row per industry** (Harry, 30 Sep 2026). Each row is a four-email sequence: `s1_subject`, `s1_body` … `s4_body`, plus one line per contacted role (`people_leader_line`, `founder_line`, `operations_line`), and `status`, `approved_by`, `qa`, `qa_notes`, `sources` and `note`.
 - **Which row a lead gets:** the most specific approved row that has passed QA. That is its own industry label for its contact's role, then the label, then the label's group for the role, then the group, then `General`. So an industry can go live as soon as its own row is approved, and a General row covers the rest if Harry approves one.
-- **How specific it may be** (the label check, Harry, 7 Oct 2026; `labels.copy_level`): a label's own rows only when its label is confirmed (the rules and the model agree, the model is sure, an Overrides row or an approver's correction); the group's rows when the two disagreed within the group, under `label_check` = `skip`, or before the company is checked; General's when they disagreed across groups. So a doubtful label never carries a label's pitch, and **an approved, QA-passed row for each active group's own label and for General must stay on the Copy tab**: the safety net lands on them. Each card's *Industry* line says which (`rules and model agree · Fintech copy`, `⚠️ … · General copy`), and its *They do* line what the model read.
+- **How specific it may be** (the label check, Harry, 7 Oct 2026; `labels.copy_level`): a label's own rows only when its label is confirmed (the rules and the model agree, the model is sure, an Overrides row or an approver's correction); the group's rows when the two disagreed within the group, under `label_check` = `skip`, or before the company is checked; General's when they disagreed across groups. So a doubtful label never carries a label's pitch, and **an approved, QA-passed row for each active group's own label and for General must stay on the Copy tab**: the safety net lands on them. With General `copy_level_policy` = yes (Harry's D20; no by default), the label policy stored monthly from the label sample decides too: a way of deciding a label (the model alone, say) that is not measured exactly right at least 90% of the time on 20 or more judged companies gets its group's rows instead of the label's (W3-2, 20 Oct 2026). It changes which approved row a new contact gets, never any wording, and never a contact already enrolled. Each card's *Industry* line says which (`rules and model agree · Fintech copy`, `⚠️ … · General copy`), and its *They do* line what the model read.
 - **How it is personal:**
   - Industry-specific copy throughout.
   - The role line in email 1.
-  - The opener: the line for the contact's role from the signal that set the angle, filled at enrol time with the account's own facts (Signals tab `opener_people`, `opener_founder`, `opener_ops`, `opener_self`; `enrol/openers.py`; Harry, 2 Oct 2026). Signals are context, never the line: the hiring, People, growth and funding signals' lines speak to the pressure the situation tends to bring, never to what was observed, and no opener mentions funding or money. An account with no signal line (the General angle, Control accounts among it) gets the generic line for the contact's role (General `opener_generic_people`, `opener_generic_founder`, `opener_generic_ops`, then `opener_generic`). The 30% holdout gets none.
+  - The opener: the line for the contact's role from the signal that set the angle, filled at enrol time with the account's own facts (Signals tab `opener_people`, `opener_founder`, `opener_ops`, `opener_self`; `enrol/openers.py`; Harry, 2 Oct 2026). Signals are context, never the line: the hiring, People, growth and funding signals' lines speak to the pressure the situation tends to bring, never to what was observed, and no opener mentions funding or money. An account with no signal line (the General angle) gets the generic line for the contact's role (General `opener_generic_people`, `opener_generic_founder`, `opener_generic_ops`, then `opener_generic`). The 30% holdout gets none.
   - The company, first name and place.
-  - Email 1's subject, as a measured split (Harry, 5 Oct 2026). The Copy rows' subjects read like headlines ("Counseling that lives in Slack"); mail filters (Superhuman, Gmail) and people read a short, lower-case subject about the reader as personal mail. So the General `email1_subject_share` of companies (0.5), chosen by a hash of the account id with its own salt (independent of the opener holdout), get General `email1_subject` ("support for the {{company}} team"; `{{company}}` and `{{first_name}}` only) as email 1's subject; the rest keep the Copy row's `s1_subject`. Emails 2 to 4 keep the Copy row's subjects either way. The sheet check refuses a subject with markup, another variable, or anything the subject rules refuse (`copy_rules.subject_violations`), and a blank one while the share is above 0. Enrol records `contacts.subject_arm` (personal or copy; `v_account_outcomes` carries it); `us-outbound signals review` compares the arms' reply rates with the signals' test, and the daily post's To improve does once each arm has 50 emailed. The send card, `copy preview` (`--subject personal|copy`, or a stored account's own arm) and `seed send --subject personal` show the subject that is sent.
+  - Email 1's subject, as a measured split (Harry, 5 Oct 2026). The Copy rows' subjects read like headlines ("Counseling that lives in Slack"); mail filters (Superhuman, Gmail) and people read a short, lower-case subject about the reader as personal mail. So the General `email1_subject_share` of companies (0.5), chosen by a hash of the account id with its own salt (independent of the opener holdout), get General `email1_subject` ("support for the {{company}} team"; `{{company}}` and `{{first_name}}` only) as email 1's subject; the rest keep the Copy row's `s1_subject`. Emails 2 to 4 keep the Copy row's subjects either way. The sheet check refuses a subject with markup, another variable, or anything the subject rules refuse (`copy_rules.subject_violations`), and a blank one while the share is above 0. Enrol records `contacts.subject_arm` (personal or copy; `v_account_outcomes` carries it); `us-outbound report signals` compares the arms' reply rates with the signals' test, and the daily post's To improve does once each arm has 50 emailed. The send card, `copy preview` (`--subject personal|copy`, or a stored account's own arm) and `seed send --subject personal` show the subject that is sent.
 - **Email 1 links the industry's spill.chat page and asks for nothing** (`{{industry_url}}`; Harry, 1 Oct 2026: a demo ask in the first email is too presumptive). The Industries tab's `landing_page_url` is the page: `https://www.spill.chat/us/industry/` plus its slug. An industry with no page yet (Small Businesses, still a draft on the site) links Spill's US site instead (General `site_url`, https://www.spill.chat/us; Harry, 1 Oct 2026).
 - **"Trusted by over 50,000 employees"** in email 2's "What is Spill?" links the US site (`{{site_url}}`; Harry, 1 Oct 2026).
 - **One price:** `{{price_line}}` reads "Plans start from $195 a month for the whole team, on a rolling 30-day contract." for every team (General `price_from`; Harry, 1 Oct 2026). SPEC 4's price-by-size table is not quoted.
@@ -459,7 +500,7 @@ The copy doesn't change, only the gaps. The readout counts a reply for a week af
 - Load them with `us-outbound settings load --live` (below).
 
 **Loading the new tabs into the sheet** (`settings/load.py`):
-- `us-outbound settings load` (dry-run) prints what would change; `--live` writes it, then `us-outbound settings sync` brings it in.
+- `us-outbound settings load` (dry-run) prints what would change; `--live` writes it, then `us-outbound sync` brings it in.
 - The dry-run lists every cell the load would change, row by row and column by column (`Games studios: naics_prefixes: '513210; 5112; 541511' → '513210; 5112'`); a long cell shows the part that differs, with a little either side (Harry, 7 Oct 2026).
 - Industries rows are matched by label. Harry's `active`, `priority` and `proof_point` are kept, the build's other columns win, and rows Harry added stay. `--keep COLUMN` keeps the sheet's value in one more column for that load, such as a `page_faqs` line edited on the sheet.
 - A Copy tab still in the old one-row-per-step layout is replaced. Its rows stay in the database's settings history, and until it is replaced the sync reads it as no copy and says so.
@@ -484,11 +525,11 @@ The copy doesn't change, only the gaps. The readout counts a reply for a week af
 | Who | Roles | Titles and who comes first by company size |
 | What counts | Signals | Weights, new keyword signals on an existing source, Hold and Exclude rules |
 | A single company | Overrides | Any field for one domain, winning over every source |
-| Mix | General: `priority_threshold`, `standard_threshold`, `control_share` | How tiers are cut, and the share kept for the control group |
+| Mix | General: `explore_share` (default 0.15, Harry's D7: "Rank + 15% random arm"; at most 0.25; 0 switches it off) is the share of each day's picks and sends drawn at random from the eligible queue within the Focus shares, stamped `arm` on the account and the contact; the rest are taken by score. The tiers and their thresholds (`priority_threshold`, `standard_threshold`, `auto_thresholds`, `control_share`) were retired on 20 Oct 2026 (W2-2) | The share kept for the comparison with the score order |
 
 **Adding the two new tabs to your sheet.** Add a tab named `Focus` with the header row `industry_group | share | note`, and a tab named `Named accounts` with `domain | name | note`. Until they exist, the sync reads them as empty and carries on.
 
-**Lookalikes** come from Spill's own HubSpot customers instead of a Seeds tab (Harry, 1 Oct 2026: "I'm happy using Spill companies from HubSpot to help inform lookalike target lists"). The monthly `lookalikes` job (`sources/lookalikes.py`, the 1st at 02:30 UK; Harry, 5 Oct 2026: "The customer base for Spill is fairly static") reads customer companies read-only, at company level only, and counts them into cells of industry label × size band. It also reads their 12-month headcount growth from Apollo's organization search by growth range, kept only as counts per industry group and band (`lookalike_growth`), and fills in the growth band of queue accounts that have none. From these it works out each account's lookalike fit, 0 to 100: industry 0.45, size 0.35, growth 0.20, with a part not known left out (Harry, 5 Oct 2026: "Sharpen up lookalike for scoring to include industry, size and growth rate"). The fit feeds the "Close match to Spill's customers" (+10) and "Some match to Spill's customers" (+3) signals, which replace "Looks like Spill's customers". The cells also keep every customer domain (current or former) out of the queue from the front door on, and are listed by `us-outbound lookalikes show` for the Focus tab and sourcing priorities; `us-outbound lookalikes fit` shows the fits and the tier mix the rows give, read-only.
+**Lookalikes** come from Spill's own HubSpot customers instead of a Seeds tab (Harry, 1 Oct 2026: "I'm happy using Spill companies from HubSpot to help inform lookalike target lists"). The monthly `lookalikes` job (`sources/lookalikes.py`, the 1st at 02:30 UK; Harry, 5 Oct 2026: "The customer base for Spill is fairly static") reads customer companies read-only, at company level only, and counts them into cells of industry label × size band. It also reads their 12-month headcount growth from Apollo's organization search by growth range, kept only as counts per industry group and band (`lookalike_growth`), and fills in the growth band of queue accounts that have none. From these it works out each account's lookalike fit, 0 to 100: industry 0.45, size 0.35, growth 0.20, with a part not known left out (Harry, 5 Oct 2026: "Sharpen up lookalike for scoring to include industry, size and growth rate"). The fit feeds the "Close match to Spill's customers" (+10) and "Some match to Spill's customers" (+3) signals, which replace "Looks like Spill's customers". The cells also keep every customer domain (current or former) out of the queue from the front door on, and are listed by `us-outbound report lookalikes` for the Focus tab and sourcing priorities; `lookalikes fit`, which showed the fits and how many queue scores the rows move, went in W2-4.
 
 **Lookalike leads** go one step further (Harry, 5 Oct 2026: "the customer base for Spill is fairly static, so the whole HubSpot pull and lookalike search can happen on a monthly cadence"). On the 1st of each month `lookalike_leads` (`sources/lookalike_leads.py`) takes up to 40 active customers as seeds, at most 5 per industry group and size band, in the groups the Focus tab names (all active groups when its shares leave room), in any country: most of Spill's customers are in the UK, and Harry wants them to inspire US lookalikes. Apollo's lookalike search returns US companies only, and each row is checked for a US HQ in an active state before it reaches the front door. The seeds stay in memory: no customer's domain or name is stored or logged. Each lead's `lookalike_lead` fact keeps the seed's group, band and country (US or non-US), and the run counts US and non-US seeds' yield apart, so Harry can see whether UK seeds work. The signal "Found as a lookalike of a customer" (+10 for 120 days) is on the Signals tab; `us-outbound settings load --tab Signals --live` adds it to the sheet.
 
@@ -499,26 +540,34 @@ Nothing re-weights or decides by itself: the system counts, and Harry changes th
 
 | Part | Where | What it does |
 | :- | :- | :- |
-| `monday_readout` | `learn/readout.py`, Mondays 08:30 UK | Last week's sends, replies, positive replies, meetings, bounces and unsubscribes; the targets (`weekly_enrol_cap`, SPEC 12's funnel assumption, the stop rule); the exit criteria to scale, each met or not; the same numbers by tier, angle, industry group, sender and step; the signal table's headline; the tests at a look. Posts to #us-outbound (the dev channel in dry-run); `us-outbound readout` prints it |
-| The signal table | `v_signal_value`, `learn/signal_value.py`, `us-outbound signals value` | Per active signal, over the enrolled companies: how many had it at enrolment (`contacts.signals_at_enrol`), were sent, replied, replied positively and booked a meeting, against the companies emailed without it |
-| Test reads | Tests tab `kind` and `looks`, `learn/looks.py`, `us-outbound test read ID` | A test is read only at a pre-registered look, over what that look covers; before the first, the read refuses and shows no reply |
-| Bookings | `crm/readback.py` (`hubspot_readback`, every 15 minutes), `events.source` | A meeting on Harry's calendar booked through his link (`hubspot_meeting`), or a Spill 3.0 deal at Demo requested or later at an enrolled company (`hubspot_deal`), recorded as `meeting_booked` |
+| `capture` | `replies/capture.py`, Mondays 07:30 UK (W1-2, 19 Oct 2026) | Is the reply read working, or is zero real? Instantly's own 7-day counts per campaign (emails sent, leads that replied, leads that bounced) against our events in the same units, a drift when they differ by more than max(2, 10%) or when Instantly has replies and we have none; and a canary: an email to the seed inbox through `seed send`, whose auto-reply must come back through the same read poll_replies uses, tied to that canary by Instantly's lead field or its thread and no earlier than its send (`capture check` checks it the day after; the Monday run reads that check back; a canary not yet sent keeps its lead and is checked again, and is given up after 6 days). The zero rule on replied is judged on our own replies alone: the canary's answer is added to ours only if Instantly counts automatic replies (`capture.CANARY_ANSWER_IN_INSTANTLY_REPLIES`, off: D10 b and e). The canary is sent only once Harry's D10 (e), an auto-reply rule on the seed inbox, is confirmed (`capture.SEED_AUTO_REPLY_CONFIRMED`, off until then: each week is unverified with the reason `canary_send:off`, and no error). A drift or a lost canary is an error heartbeat_check posts, and the week's fact `capture_unverified` (signal_events, source capture) |
+| `monday_readout` | `learn/readout.py`, Mondays 08:30 UK (rebuilt in W3-1, 20 Oct 2026) | Last week's sends, replies, positive replies, meetings, bounces and unsubscribes; the operating metric (companies contacted × ICP precision × delivered share, with its caveat); the north star as counts and the reply curve until 30 companies have had 45 days, then its rate, bookings two ways (any; not from an ad), the leading indicator from 30 matured at 28 days, exposure; throughput and supply; the hand-check, ICP precision and labels; delivery and capture (bounces per contact, each mailbox's last 100, the capture check, complaints not measured); splits only when every cell has 15, the A/A sham arm; the tests; the signals; the forecast scorecard; the cohorts and changes; how many intervals would miss by chance; the decisions waiting. No verdict words. Posts to #us-outbound (the dev channel in dry-run); `us-outbound report readout` prints it |
+| `segment_prior_monthly` | `learn/segments.py`, the 1st 02:20 UK (W3-4, 21 Oct 2026) | Loop L9: Spill 3.0's decided HubSpot deals (one read-only paged search, five deal properties) per industry group and size band, as the month's segment prior in the `metrics` table (won of decided, shrunk toward 0.38 with weight 20; median £; days to close; retained); Columbus's matured positive rate on a Beta(2, 98) prior × a sampled P(win \| demo) × median £ × retained; Focus-share and switch-off rows on the Suggestions tab only at 300 matured in a cell (once per 300). `lookalikes.FitModel` takes its industry part from the prior (shrunk win rate ÷ 0.38, in 0.5 to 1.5). Writes the database and, live, the Suggestions tab |
+| The experiments | `learn/experiments.py`, the readout's *Tests* and *Splits* (W3-4, 21 Oct 2026) | The registry: the split General `live_split` names (default `both`: today's three draws), each split's pre-registration (Tests tab `metric_id`, `definition_version`, `test`, `alpha`, `look_thresholds`; required for a test started from 21 Oct), planned n a side (`stats.n_per_arm`), reached, matured and the projected readable date. The explore arm against ranked on O2-O4 with Jeffreys intervals and the realised share by step-1 week; one P(ranked > random) read on O4 at 300 random matured |
+| The early warning | `learn/early_warning.py`, inside `metrics_daily` (W3-4, 21 Oct 2026) | No human reply in 100 matured (P = 0.97^n), P(meeting rate < 0.25%) > 0.9 at 45 days, P(positive rate < 0.5%) > 0.9 at 28 days: posted once a week with n and P; a `pause_enrolment` hold only with `early_warning_pause` = yes. `metrics_daily` runs --live for it |
+| `metrics_daily` | `learn/metrics.py`, daily 08:50 UK (W3-1, 20 Oct 2026) | The persisted series: one `metrics` row per day, cut (explore and sham arm, group, size band, state, slice, email source, mailbox, gate version, job, step-1 cohort week) and measure for every design-final §4 id that can be read now, under a `definition_version`; a cohort week is recomputed while open (53 days from its Monday) and once more after it closes, a definition change recomputes the open cohorts and the last 8 closed ones, and readers take the latest version. Each Monday it writes the week's forecasts and scores last week's. Reads the database, writes only its table |
+| The signals | `learn/signal_review.py`, `us-outbound report signals`, the readout's *Signals* (W2-3: `v_signal_value` went) | Per active signal, the companies emailed with it at enrolment (`contacts.signals_at_enrol`) against without, each side's 28-day replies with a Jeffreys 95% interval; the explore arm and email 1's subject split the same way. Monitoring: no verdict |
+| Outcomes | `learn/outcomes.py` (`per_company`), its SQL twin `v_account_outcomes` | The one outcomes definition (W2-3): per company, step 1, delivered, a human or positive reply within 28 days (a person's correction of a reply's class counting), a meeting any time and within 45 days, exposure and the enrolment stamps; a parity test holds the two together |
+| Statistics | `learn/stats.py` | Wilson and Jeffreys intervals, the sample size per arm, Fisher's exact test, Beta posteriors, the early warning, O'Brien-Fleming look thresholds, the n ≥ 15 rule; each with a hand-computed test |
+| Test reads | Tests tab `kind` and `looks`, `learn/looks.py`, `us-outbound test read ID` | A test is read only at a pre-registered look, over what that look covers, with Fisher's exact p against that look's O'Brien-Fleming threshold (alpha 0.10 in all) and P(b better) beside it; before the first, the read refuses and shows no reply |
+| Bookings | `crm/readback.py` (`hubspot_readback`, hourly since W2-4), `events.source` | A meeting on Harry's calendar booked through his link (`hubspot_meeting`), or a Spill 3.0 deal at Demo requested or later at an enrolled company (`hubspot_deal`), recorded as `meeting_booked` |
+| New HubSpot records | `crm/readback.py` step 5 (`hubspot_readback`), `events.source`, `events.source_detail`, the daily post (Harry, 20 Oct 2026) | A contact, company or deal HubSpot made after a company's first step 1, at a company we emailed (`hubspot_contact_created`, `hubspot_company_created`, `deal_created`), with how it was made (HubSpot's `hs_object_source_label`: a form, the sales extension, a booking, a workflow; `columbus` for our own) and its name. An engagement signal in the post; not in the outcome definition |
 | UTM tags | `enrol/utm.py`, General `utm_links` | Our links say which sequence and email a website visit or booking came from |
 | The config version | `config_version.py`, `contacts.config_version`, `code_sha`, `copy_hash`, the `config_versions` table | What each contact was rendered under, as a 12-character id: the content tabs' versions, the sendable Copy rows, the General content keys, the signature template, the campaign constants and the code (Harry, 7 Oct 2026). Stamped at enrolment; a card waiting in Slack keeps the version it was rendered under |
-| Cohorts | `learn/cohorts.py`, `us-outbound cohorts`, the readout's *Cohorts* section | Each enrolment week's companies at 7, 14, 21 and 28 days after email 1, by any cut (tier, angle, industry group, sender, copy version, subject and opener arms, config version); consecutive weeks compared at the same age from 30 companies a side, with what changed between them named as a change to test, not a cause |
+| Cohorts | `learn/cohorts.py`, `us-outbound report cohorts`, the readout's *Cohorts* section | Each enrolment week's companies at 7, 14, 21 and 28 days after email 1, by any cut (tier, angle, industry group, sender, copy version, subject and opener arms, config version); what changed between weeks named, and no pair judged (W2-3: the verdicts were chance at this volume) |
 | The settings report | `us-outbound cohorts changes`, the readout's *Settings changes*, the `config_log` table | What differs between two config versions in plain words (code, step days, the campaign template, the signature, General values, Copy rows, the content tabs' rows), and each change made to what leads in flight share (`campaigns ensure --fix --in-flight`, From names) |
 
-**Small numbers read as small.** Under 30 companies on either side, a rate is "too few to read" and only
-the counts are given (`signal_value.MIN_TO_READ`, the view's `too_few`, the readout). From 30, the signal
-table and `signals review` use a two-proportion test on the reply rates, at p < 0.10: with a pilot's samples,
-a lead to follow, not proof. A bounce rate on under 100 sends says that one bounce moves it a lot.
+**Small numbers read as small.** Under 30 matured companies a rate is "too few to read" and only the counts
+are given (`outcomes.MIN_MATURED`, the readout); a split prints only when every cell has 15 (`stats.min_n_ok`). No
+report gives a verdict: only a test's pre-registered look decides, on Fisher's exact test (W2-3; the pooled z-test
+it replaced read 3 of 30 against 0 of 30 as p = 0.076, Fisher 0.237). A bounce rate on under 100 sends says that
+one bounce moves it a lot.
 
 **The views behind it.** `v_account_outcomes` adds the meeting (any `meeting_booked` after step 1, with no
-28-day limit) and the contact's angle, copy version and test. `v_readout_weekly` cuts by tier (at
-enrolment), angle, industry group, sender (the account's) and step (sends, bounces and replies only), with
+28-day limit, and `meeting_in_45`), `first_positive_at`, and the contact's angle, copy version and test. `v_readout_weekly` cuts by explore arm
+(the step-1 contact's, random or ranked; W2-2, in place of the tier), angle, industry group, sender (the account's) and step (sends, bounces and replies only), with
 last week's activity (sends, bounces, replies, positive replies, meetings by company, unsubscribes,
-complaints) beside the cohort by week of step 1. `v_signal_value` keeps SPEC 12's Control comparison and the
-below-Control flag after 200, and adds the enrolled, sent and meeting counts and the "without" side.
+complaints) beside the cohort by week of step 1.
 
 **Cohorts, and developing while live.** A contact's emails are rendered at enrolment and never rewritten, so a
 change to copy or settings reaches only the contacts enrolled after it; the campaign's step template, delays
@@ -575,7 +624,7 @@ the website's page raises a Spill 3.0 deal itself).
 | — | The send forecast replaces "caps ÷ 4", with Instantly's reports (limits, sends, sending status) and an "add a mailbox" flag | Harry | 9 | Done |
 | — | Steps on days 0, 7, 14, 21; reply window 28 days | 150 a week instead of about 61 | 10, 12 | Done |
 | — | Focus and Named accounts tabs | Harry | 5 | Done |
-| — | Funding and an exact headcount from Apollo organisation enrich (`apollo_enrich`, weekdays 04:10, `apollo_enrich_groups`, 15% of the Apollo budget) | Harry, 2 Oct 2026: search rows carry no funding, so the funding signals never fired | 7, 9 | Done |
+| — | Funding and an exact headcount from Apollo organisation enrich (`apollo_enrich`, weekdays 04:10, 05:00 after verify since W1-3a, `apollo_enrich_groups`, 15% of the Apollo budget) | Harry, 2 Oct 2026: search rows carry no funding, so the funding signals never fired | 7, 9 | Done |
 | — | People leaders at every queue account (`apollo_people`, weekdays 04:20, 0 credits); "First People hire" replaced by "First People hire (likely)" (+20, 60 days), which also needs `people_search_coverage >= 0.5` | Harry, 5 Oct 2026: only 12 of 432 companies had People data, "New People leader" had fired on none, and nothing wrote a count of 0 | 5, 7, 9 | Done; `settings load --tab Signals --live` brings the new row and switches the old one off |
 | — | Website visits from Apollo's visitor filters on organisation search (`site_visits`, daily 06:00; one search per window, not SPEC 7's domain aggregates per account) | Harry, 5 Oct 2026: "the strongest intent signal" | 7, 9 | Done; the REST filters to confirm on the first run |
 | — | Copy by industry and role, four emails a row; Harry's long form as email 2; the demo page as every email's call to action; the industry page linked; HTML emails | Harry | 5, 9, 10 | Done; drafts for Harry to approve |
@@ -707,7 +756,7 @@ Swapping a vendor means rewriting one client and one source module. The fact nam
 - **Clay credits per account** (SPEC 8), and so whether 2,000 a month keeps 150 accounts a week ready.
 - **How many accounts the free checks keep away from Clay.**
 - **Apollo's email hit rate**, which sets how often the Clay email waterfall runs.
-- **The page reader's coverage** (`us-outbound pages show`): the share of accounts with benefits text,
+- **The page reader's coverage** (`us-outbound report pages`): the share of accounts with benefits text,
   with a job board, and matching each page signal. After 200 accounts it decides whether to enhance it.
 - **Instantly's real behaviour on the paused campaigns, before any send:**
   - the step timing, days 0, 7, 14 and 21;

@@ -16,7 +16,7 @@ import sqlglot
 from sqlglot import exp
 from sqlglot.optimizer.qualify import qualify
 
-from us_outbound.clients.db import COLUMNS, JSON_COLUMNS, TABLE_KEYS, TIMESTAMP_COLUMNS
+from us_outbound.clients.db import COLUMNS, DATE_COLUMNS, JSON_COLUMNS, TABLE_KEYS, TIMESTAMP_COLUMNS
 from us_outbound.clients.guard import Boundaries, Guard, GuardViolation
 from us_outbound.ops import ddl
 from us_outbound.settings.model import SIZE_BANDS, TABS, TIERS
@@ -45,22 +45,35 @@ SPEC_COLUMNS: dict[str, set[str]] = {
     "suppression": {"email_sha256", "domain", "reason", "source", "added_at"},
     "settings": {"tab", "key", "values", "effective_from", "effective_to", "synced_at"},
 }
+# The W1-C contracts commit (19 Oct 2026): the columns several Wave 1 packages write, added once, before them.
+W1C_COLUMNS: dict[str, tuple[str, ...]] = {
+    "accounts": ("status_reason", "arm", "recheck_after"),
+    "contacts": ("arm", "sham_arm", "industry_at_enrol", "industry_group_at_enrol", "size_band_at_enrol", "copy_level",
+                 "email1_subject", "email_hashes"),
+}
 # Columns the build adds to SPEC 6 tables.
 BUILD_ADDITIONS: dict[str, set[str]] = {
     "accounts": {"hq_country",  # accounts.any_us_state (Harry, 6 Oct 2026)
-                 "label_source", "label_confidence", "label_checked_at"},  # the label check (labels.py, 7 Oct 2026)
+                 "label_source", "label_confidence", "label_checked_at",  # the label check (labels.py, 7 Oct 2026)
+                 *W1C_COLUMNS["accounts"]},
     "contacts": {"last_step_at", "enrolled_at", "opener_arm", "opener_source", "signals_at_enrol", "score_at_enrol",
                  "tier_at_enrol", "data_record", "subject_arm",
                  "contact_slot",  # enrol/second.py (Harry, 6 Oct 2026)
                  "config_version", "code_sha", "copy_hash",  # the cohort stamp (Harry, 7 Oct 2026)
                  "lead_deleted_at",  # the retention job's Instantly deletion (SPEC 13; ops/retention.py)
-                 "test_arm"},  # the running copy test's arm (enrol/variants.py; Harry, 7 Oct 2026)
+                 "test_arm",  # the running copy test's arm (enrol/variants.py; Harry, 7 Oct 2026)
+                 *W1C_COLUMNS["contacts"]},
     "suppression": {"expires_at"},
-    "events": {"source"},  # where a booking was read from (crm/readback.py; Harry, 6 Oct 2026)
+    "events": {"source",  # where a booking was read from (crm/readback.py; Harry, 6 Oct 2026)
+               "analytics_source",  # a booker's hs_analytics_source (crm/readback.py; W2-4, 20 Oct 2026)
+               "amount",  # apollo_balance's balance (learn/spend.py; W2-3, 20 Oct 2026)
+               "ai_interest_value",  # Instantly's interest read of a reply (replies/poll.py; W3-4, 21 Oct 2026)
+               "source_detail"},  # the form or workflow a created HubSpot record came from (crm/readback.py; 20 Oct)
 }
 # Tables the build adds, with the layouts every agent codes to.
 BUILD_TABLES: dict[str, set[str]] = {
-    "heartbeats": {"run_id", "job", "started_at", "finished_at", "status", "dry_run", "detail", "error"},
+    "heartbeats": {"run_id", "job", "started_at", "finished_at", "status", "dry_run", "detail", "error",
+                   "duration_s", "exit_code"},  # the last two from W2-4 (20 Oct 2026; ops/health.py)
     "credit_ledger": {"entry_id", "system", "job", "run_id", "account_id", "credits", "usd", "occurred_at", "note"},
     "hitl_items": {
         "item_id", "kind", "account_id", "contact_id", "event_id", "slack_channel", "slack_ts", "payload", "status",
@@ -86,20 +99,30 @@ BUILD_TABLES: dict[str, set[str]] = {
         "log_id", "changed_at", "kind", "campaign", "changed_keys", "detail", "leads_in_flight", "code_sha",
         "changed_by", "run_id",
     },
+    "source_state": {"key", "value", "updated_at"},  # W3-3 (20 Oct 2026): the sources' state, out of the ledger
+    # W3-1 (20 Oct 2026): the persisted metrics series (learn/metrics.py).
+    "metrics": {"day", "segment_key", "metric", "n", "k", "value", "definition_version", "computed_at"},
 }
 RAW_TABLES = ("raw_irs_bmf", "raw_job_posts", "raw_clay_accounts", "raw_clay_contacts", "raw_site_visits", "raw_layoffs")
 RAW_COLUMNS = {"loaded_at", "run_id", "key", "payload"}
 
-VIEWS = {"v_account_outcomes", "v_queue", "v_signal_value", "v_readout_weekly", "v_mailbox_health",
-         "v_budgets", "v_heartbeats"}
+VIEWS = {"v_account_outcomes", "v_queue", "v_readout_weekly", "v_mailbox_health", "v_budgets", "v_heartbeats"}
 SPEC_VIEWS = VIEWS - {"v_account_outcomes"}
-RETIRED_VIEWS = {"v_credits_month"}  # replaced by v_budgets when budgets became weekly; dropped if it exists
+# Dropped if they exist: v_credits_month, replaced by v_budgets when budgets became weekly; v_signal_value, whose
+# below_control was chance at these numbers (W2-3, 20 Oct 2026).
+RETIRED_VIEWS = {"v_credits_month", "v_signal_value"}
 
 # Types by column name (the brief's rules), as sqlglot prints them; every other column is TEXT.
 TIMESTAMPS = {"first_seen", "last_scored", "effective_from", "effective_to"}  # plus every *_at
+DATES = {"recheck_after",  # a re-check falls due on a day (W1-C, 19 Oct 2026)
+         "day"}  # the day a metrics row is about (W3-1, 20 Oct 2026)
 INTS = {"employees", "us_employees", "founded_year", "score", "step", "active_customers", "churned_customers",
-        "us_active", "us_churned", "score_at_enrol", "contact_slot", "leads_in_flight"}
-FLOATS = {"clay_credits_used", "credits", "usd", "strength"}
+        "us_active", "us_churned", "score_at_enrol", "contact_slot", "leads_in_flight",
+        "exit_code",  # heartbeats.exit_code (W2-4, 20 Oct 2026; ops/health.py)
+        "n", "k"}  # metrics (W3-1)
+FLOATS = {"clay_credits_used", "credits", "usd", "strength", "duration_s",  # duration_s: heartbeats (W2-4)
+          "amount",  # events.amount (W2-3)
+          "value"}  # metrics.value (W3-1; signal_events' and source_state's value are jsonb)
 BOOLS = {"suppressed", "dry_run"}
 
 # Indexes the brief asks for (table -> leading columns); more are fine.
@@ -121,6 +144,7 @@ ENUMS: dict[tuple[str, str], set[str]] = {
     ("accounts", "source"): {"apollo", "irs", "site_visit", "named", "lookalike"},  # lookalike: sources/lookalike_leads.py
     ("accounts", "status"): {
         "new", "queued", "verified", "enrolled", "engaged", "demo_requested", "demo_booked", "disqualified",
+        "parked",  # W1-4: out while its industry is switched off (verify.redecide_parked)
     },
     # The label check (us_outbound/labels.py; Harry, 7 Oct 2026).
     ("accounts", "label_source"): {"override", "approver", "rules+model", "model", "umbrella", "disputed", "rules"},
@@ -129,15 +153,34 @@ ENUMS: dict[tuple[str, str], set[str]] = {
     ("contacts", "opener_arm"): {"opener", "holdout", "none"},  # enrol/openers.py (Harry, 2 Oct 2026)
     ("contacts", "subject_arm"): {"personal", "copy"},  # render.subject_arm (Harry, 5 Oct 2026)
     ("contacts", "test_arm"): {"a", "b"},  # the running copy test's arm (enrol/variants.py; Harry, 7 Oct 2026)
+    # The W1-C contracts (19 Oct 2026): the explore arm, the A/A label and the copy level stamped at enrolment.
+    ("accounts", "arm"): {"random", "ranked"},
+    ("contacts", "arm"): {"random", "ranked"},
+    ("contacts", "sham_arm"): {"a", "b"},
+    ("contacts", "copy_level"): {"label", "group", "general"},
     ("events", "type"): {
         "sent", "bounced", "replied", "unsubscribed", "site_visit", "meeting_booked", "demo_held", "deal_created",
         "escalated", "send_approval",  # enrol/approvals/ (Harry, 2 Oct 2026)
         "reply_sent",  # replies/desk.py: a desk reply is no campaign send
         "lead_stopped",  # replies/account_stop.py: the account-level stop (Harry, 6 Oct 2026)
         "alert",  # base/notify.post_once: an alert key posted, so it is never posted twice (Harry, 7 Oct 2026)
+        "readback_seen",  # crm/readback.py: the negative cache of "not ours" records (W2-4, 20 Oct 2026)
+        "follow_up",  # replies/follow_up.py: a not-now reply's date came and was told (W2-4)
+        "apollo_balance",  # learn/spend.py: the day's Apollo balance, in amount (W2-3)
+        "reply_class_corrected",  # learn/outcomes.py: a person's correction of a reply's class (W2-3)
+        # crm/readback.created: a record HubSpot made at a company we emailed (Harry, 20 Oct 2026)
+        "hubspot_contact_created", "hubspot_company_created",
     },
     ("events", "source"): {"hubspot_meeting", "hubspot_deal",  # crm/readback.py (Harry, 6 Oct 2026)
-                           "suppression"},  # replies/account_stop.py: suppressed while in flight (7 Oct 2026)
+                           "suppression",  # replies/account_stop.py: suppressed while in flight (7 Oct 2026)
+                           "guard_refused",  # replies/account_stop.py: a stop the guard refused (W1-2)
+                           "meeting_booked",  # crm/readback.py: a booked lead still active after stop_lead (W2-4)
+                           "unenrolled",  # ops/campaigns.unenrol (W2-4, 20 Oct 2026)
+                           # crm/readback.created (Harry, 20 Oct 2026): HubSpot's hs_object_source_label lower-cased,
+                           # the ones seen in the portal and the likely others (the comment says any other may come),
+                           # and columbus for a record Columbus made
+                           "form", "extension", "meetings", "crm_setting", "automation_platform", "integration",
+                           "crm_ui", "import", "columbus"},
     ("events", "reply_class"): {
         "positive", "referral", "objection", "not_now", "negative", "out_of_office", "wrong_person", "unsubscribe",
         "other",
@@ -145,7 +188,9 @@ ENUMS: dict[tuple[str, str], set[str]] = {
     # A reply's approval, then a send approval's outcome (enrol/approvals/).
     ("events", "approval"): {"approved", "edited", "skipped", "approved_edited", "contact_rejected", "company_rejected",
                              "expired", "blocked"},
-    ("settings", "tab"): set(TABS) | {"_order"},  # settings.sync.ORDER_TAB
+    # settings.sync.ORDER_TAB; and Named accounts, a tab W2-1 stopped reading, whose old rows the column may hold
+    # (the DDL is additive only, so its comment keeps the name).
+    ("settings", "tab"): set(TABS) | {"_order", "Named accounts"},
     ("heartbeats", "status"): {"running", "ok", "error", "skipped"},
     ("credit_ledger", "system"): {"clay", "apollo", "claude"},
     ("hitl_items", "kind"): {"reply", "out_of_office", "hand_check", "manual_merge", "kill_rule", "send_approval"},
@@ -162,6 +207,8 @@ def expected_type(table: str, column: str) -> str:
         return "JSONB"
     if column.endswith("_at") or column in TIMESTAMPS:
         return "TIMESTAMPTZ"
+    if column in DATES:
+        return "DATE"
     if column in INTS:
         return "INT"
     if column in FLOATS:
@@ -258,9 +305,14 @@ def test_files_are_numbered_ddl_then_views():
         assert len(numbers) == len(set(numbers)), f"duplicate numbers in sql/{kind}"
 
 
+def retired(sql: str) -> bool:
+    """A retired view's DROP, which apply moves ahead of the refresh (ops/ddl.py, W2-3)."""
+    return bool(ddl.FORMS["drop_view"].match(ddl._code_only(sql).strip().removesuffix(";").rstrip()))
+
+
 def test_statements_come_in_file_order_and_hold_no_semicolon():
     order = [f"{p.parent.name}/{p.name}" for p in ddl.files()]
-    names = [name for name, _ in ddl.statements() if name != ddl.REFRESH_FILE]
+    names = [name for name, sql in ddl.statements() if name != ddl.REFRESH_FILE and not retired(sql)]
     assert sorted(set(names), key=order.index) == order, "every file holds a statement"
     assert names == sorted(names, key=order.index)
     for _, sql in ddl.statements():
@@ -271,8 +323,11 @@ def test_every_view_is_dropped_before_the_views_are_created_again():
     """CREATE OR REPLACE VIEW cannot change a view's columns, so apply drops every view first,
     dependents before what they read (the reverse of file order)."""
     stmts = ddl.statements()
-    kinds = [("drop" if name == ddl.REFRESH_FILE else name.split("/")[0]) for name, _ in stmts]
-    assert kinds == sorted(kinds, key=["ddl", "drop", "views"].index)
+    kinds = [("drop" if name == ddl.REFRESH_FILE else "retired" if retired(sql) else name.split("/")[0])
+             for name, sql in stmts]
+    assert kinds == sorted(kinds, key=["ddl", "retired", "drop", "views"].index)
+    assert {sql.rsplit(".", 1)[1].rstrip(";") for name, sql in stmts if retired(sql) and name != ddl.REFRESH_FILE} \
+        == RETIRED_VIEWS
     drops = [sql.rsplit(".", 1)[1] for name, sql in stmts if name == ddl.REFRESH_FILE]
     created = [ddl.check_statement(sql).split(".", 1)[1] for name, sql in stmts
                if name.startswith("views/0") and ddl.FORMS["view"].match(ddl._code_only(sql).strip())]
@@ -355,12 +410,31 @@ def test_json_columns_are_jsonb_and_only_they(tables):
 
 
 def test_memory_store_columns_match_the_ddl(tables):
-    """MemoryStore refuses a column not in COLUMNS and stores a TIMESTAMP_COLUMNS value as Postgres does (clients/db.py;
-    9 Oct 2026). No column is a date or a timestamp without a zone, which it would have to convert as well."""
+    """MemoryStore refuses a column not in COLUMNS and stores a TIMESTAMP_COLUMNS or DATE_COLUMNS value as Postgres
+    does (clients/db.py; 9 Oct 2026, dates 19 Oct 2026). No column is a timestamp without a zone, which it would have
+    to convert as well."""
     assert {name: set(t.columns) for name, t in tables.items()} == {name: set(c) for name, c in COLUMNS.items()}
     stamps = {name: {c for c in t.columns if t.type(c) == "TIMESTAMPTZ"} for name, t in tables.items()}
     assert {name: c for name, c in stamps.items() if c} == {name: set(c) for name, c in TIMESTAMP_COLUMNS.items()}
-    assert not [f"{t.name}.{c}" for t in tables.values() for c in t.columns if t.type(c) in {"DATE", "TIMESTAMP"}]
+    days = {name: {c for c in t.columns if t.type(c) == "DATE"} for name, t in tables.items()}
+    assert {name: c for name, c in days.items() if c} == {name: set(c) for name, c in DATE_COLUMNS.items()}
+    assert not [f"{t.name}.{c}" for t in tables.values() for c in t.columns if t.type(c) == "TIMESTAMP"]
+
+
+def test_the_contracts_commit_adds_exactly_eleven_columns():
+    """W1-C's acceptance: the `db apply` dry run lists exactly 11 ADD COLUMN IF NOT EXISTS for its columns (3 on
+    accounts + 8 on contacts = 11), one each, with no default (the statement form allows none), so no stored row
+    moves; test_an_added_column_is_also_in_its_create_table holds each to its CREATE TABLE."""
+    want = {("accounts", "status_reason"): "text", ("accounts", "arm"): "text", ("accounts", "recheck_after"): "date",
+            ("contacts", "arm"): "text", ("contacts", "sham_arm"): "text", ("contacts", "industry_at_enrol"): "text",
+            ("contacts", "industry_group_at_enrol"): "text", ("contacts", "size_band_at_enrol"): "text",
+            ("contacts", "copy_level"): "text", ("contacts", "email1_subject"): "text",
+            ("contacts", "email_hashes"): "jsonb"}
+    assert len(want) == 11 and set(want) == {(t, c) for t, cols in W1C_COLUMNS.items() for c in cols}
+    add = re.compile(r"ALTER TABLE us_outbound\.(\w+) ADD COLUMN IF NOT EXISTS (\w+) (\w+)$")
+    found = [m.groups() for s in ddl.apply(Guard(), "", connect=no_connection) if (m := add.search(s.strip()))]
+    ours = [((t, c), kind) for t, c, kind in found if (t, c) in want]
+    assert len(ours) == 11 and dict(ours) == want
 
 
 def test_column_types(tables):
@@ -447,8 +521,9 @@ def test_v_queue_orders_for_enrollment(views):
     sql = views["v_queue"][1].sql("postgres")
     for status in ("'verified'", "'queued'"):
         assert status in sql
-    for tier in ("'Priority'", "'Standard'", "'Control'"):
+    for tier in ("'Queue'", "'Priority'", "'Standard'", "'Control'"):  # Queue, and the tiers before W2-2 until rescored
         assert tier in sql
+    assert "PARTITION BY" not in sql  # one queue, by score (W2-2)
     # Size bands 20-49 and 50-99 first, then 100-249, then 10-19 (SPEC 9).
     ranks = dict(re.findall(r"WHEN '(\d+-\d+)' THEN (\d)", sql))
     assert ranks == {"20-49": "1", "50-99": "1", "100-249": "2", "10-19": "3"}
@@ -520,15 +595,6 @@ S = SCHEMA
         f"CREATE VIEW {S}.v AS SELECT 1",
         "CREATE OR REPLACE VIEW other.v AS SELECT 1",
         f"CREATE OR REPLACE FUNCTION {S}.f() RETURNS int LANGUAGE sql AS 'SELECT 1'",
-        f"CREATE OR REPLACE VIEW {S}.v AS SELECT * FROM other.t",
-        f"CREATE OR REPLACE VIEW {S}.v AS SELECT * FROM accounts",
-        f'CREATE OR REPLACE VIEW {S}.v AS SELECT * FROM "other".t',
-        f"CREATE OR REPLACE VIEW {S}.v AS SELECT * FROM {S}.a AS a JOIN other.t AS t ON t.x = a.x",
-        f"CREATE OR REPLACE VIEW {S}.v AS SELECT * FROM {S}.a AS a, other.t AS t",
-        f"CREATE OR REPLACE VIEW {S}.v AS SELECT * FROM {S}.a AS a WHERE a.x IN (SELECT x FROM other.t)",
-        f"CREATE OR REPLACE VIEW {S}.v AS SELECT other.f(a.x) FROM {S}.a AS a",
-        f"CREATE OR REPLACE VIEW {S}.v AS SELECT * FROM db.{S}.a",
-        f"CREATE OR REPLACE VIEW {S}.v AS SELECT * FROM pg_catalog.pg_tables",
         f"CREATE OR REPLACE VIEW {S}.v AS SELECT 1; DROP TABLE {S}.accounts",
         f"CREATE OR REPLACE VIEW {S}.v AS SELECT 'unterminated",
         f"CREATE OR REPLACE VIEW {S}.v AS SELECT 1 /* unterminated",
@@ -565,14 +631,25 @@ def test_check_statement_targets():
 # -- ops/ddl.py: apply ---------------------------------------------------------------
 
 
-class FakeConnection:
-    """Records what apply() runs; stands in for a psycopg connection."""
+class FakeCursor:
+    def __init__(self, rows):
+        self.rows = rows
 
-    def __init__(self, log: list):
+    def fetchall(self):
+        return list(self.rows)
+
+
+class FakeConnection:
+    """Records what apply() runs; stands in for a psycopg connection. columns: the (table, column) pairs
+    information_schema answers with (none: an empty database)."""
+
+    def __init__(self, log: list, columns=()):
         self.log = log
+        self.columns = list(columns)
 
     def execute(self, sql, params=None):
         self.log.append(("execute", sql))
+        return FakeCursor(self.columns if sql == ddl.COLUMNS_SQL else [])
 
     def commit(self):
         self.log.append(("commit", None))
@@ -594,9 +671,13 @@ def test_apply_dry_run_returns_statements_and_connects_to_nothing():
 
 
 def test_apply_runs_every_statement_in_one_transaction_through_the_guard():
+    """lock_timeout first (W2-4; code-platform-ops B10), then the column read, then every statement: an empty
+    database has none of the added columns, so each ALTER runs."""
     guard, log = Guard(), []
     statements = ddl.apply(guard, "postgresql://unused", dry_run=False, connect=lambda: FakeConnection(log))
-    assert log == [("execute", s) for s in statements] + [("commit", None), ("close", None)]
+    assert log == ([("execute", ddl.LOCK_TIMEOUT), ("execute", ddl.COLUMNS_SQL)] + [("execute", s) for s in statements]
+                   + [("commit", None), ("close", None)])
+    assert ddl.LOCK_TIMEOUT == "SET lock_timeout = '5s'"
     calls = [c for c in guard.calls if c.system == "db"]
     assert len(calls) == len(statements)
     assert all(c.action == "ddl" and c.write and c.sent for c in calls)
@@ -606,16 +687,34 @@ def test_apply_runs_every_statement_in_one_transaction_through_the_guard():
     assert set(targets) == objects | {"us_outbound.schema"} | {f"us_outbound.{v}" for v in RETIRED_VIEWS}
 
 
+def test_apply_against_a_full_schema_alters_nothing_and_sets_the_lock_timeout():
+    """W2-4 (code-platform-ops B10): ALTER TABLE takes an ACCESS EXCLUSIVE lock even when the column is there, so a
+    column information_schema already has is skipped. Against a database holding every added column: 0 ALTER run;
+    every other statement runs, after SET lock_timeout."""
+    add = re.compile(r"ALTER TABLE us_outbound\.(\w+) ADD COLUMN IF NOT EXISTS (\w+) ")
+    statements = [s for _, s in ddl.statements()]
+    full = [m.groups() for s in statements if (m := add.search(s))]
+    assert full  # the DDL adds columns (the contracts commit's 11 among them)
+    log = []
+    ddl.apply(Guard(), "postgresql://unused", dry_run=False, connect=lambda: FakeConnection(log, full))
+    ran = [sql for kind, sql in log if kind == "execute"]
+    assert ran[0] == ddl.LOCK_TIMEOUT
+    assert not [s for s in ran if "ADD COLUMN" in s]
+    assert len(ran) == 2 + len(statements) - len(full)
+    half = full[: len(full) // 2]  # a database a deploy behind: only the missing columns are added
+    log.clear()
+    ddl.apply(Guard(), "postgresql://unused", dry_run=False, connect=lambda: FakeConnection(log, half))
+    assert len([sql for kind, sql in log if kind == "execute" and "ADD COLUMN" in sql]) == len(full) - len(half)
+
+
 def test_apply_checks_every_file_before_running_any(tmp_path):
     (tmp_path / "ddl").mkdir()
     (tmp_path / "views").mkdir()
     (tmp_path / "ddl" / "00_schema.sql").write_text(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA};\n")
-    (tmp_path / "views" / "00_v_bad.sql").write_text(
-        f"CREATE OR REPLACE VIEW {SCHEMA}.v_bad AS SELECT * FROM crm.companies;\n"
-    )
-    with pytest.raises(GuardViolation, match="crm"):
+    (tmp_path / "views" / "00_v_bad.sql").write_text(f"DROP TABLE {SCHEMA}.accounts;\n")
+    with pytest.raises(GuardViolation, match="not an allowed DDL statement"):
         ddl.apply(Guard(), "postgresql://unused", dry_run=False, connect=no_connection, root=tmp_path)
-    with pytest.raises(GuardViolation, match="crm"):
+    with pytest.raises(GuardViolation, match="not an allowed DDL statement"):
         ddl.statements(tmp_path)
 
 

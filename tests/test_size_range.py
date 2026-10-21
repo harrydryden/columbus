@@ -83,8 +83,21 @@ def test_the_sheet_takes_the_range_and_refuses_a_backwards_or_impossible_one():
 ])
 def test_verify_holds_accounts_to_the_general_range(change, wide, default):
     a = account(**change)
-    assert verify.check(a, {}, WIDE, set(), set()) == wide
-    assert verify.check(a, {}, BASE, set(), set()) == default
+    assert verify.check(a, {}, WIDE, set(), set()) == (("size", wide) if wide else None)
+    assert verify.check(a, {}, BASE, set(), set()) == ("size", default)  # the code verify writes: size (terminal)
+
+
+@pytest.mark.parametrize("settings, employees, passes", [
+    # M03/M35 (tests-mutation-targeting): the range's ends are inside it. 10 to 249 (SPEC 2, the default): 10 and
+    # 249 pass, one under the floor (9) and one over the ceiling (250) fail. A mutation of <= to < at either end
+    # fails one of the four. Size bands are left out, so the exact count alone decides.
+    (BASE, 10, True), (BASE, 249, True), (BASE, 9, False), (BASE, 250, False),
+    # 5 to 500 (Harry, 6 Oct 2026: "update that to say 5-500 easily"): 5 and 500 pass, 4 and 501 fail.
+    (WIDE, 5, True), (WIDE, 500, True), (WIDE, 4, False), (WIDE, 501, False),
+])
+def test_the_range_includes_both_its_ends(settings, employees, passes):
+    found = verify.check(account(employees=employees, size_band=None), {}, settings, set(), set())
+    assert found == (None if passes else ("size", verify.outside(settings)))
 
 
 def test_the_size_edges_follow_the_range():
@@ -134,7 +147,7 @@ def test_a_visitor_in_any_us_state_is_verified_and_tiered_but_an_account_from_a_
     assert verify.check(visitor, {}, BASE, set(), set()) is None
     assert "HQ" not in (tiers.hard_exclusion(visitor, {}, BASE) or "")
     searched = account(hq_state=state)
-    assert verify.check(searched, {}, BASE, set(), set()) in ("HQ in CA or WA", "HQ state not active")
+    assert verify.check(searched, {}, BASE, set(), set())[0] == "state"
     assert "HQ" in (tiers.hard_exclusion(searched, {}, BASE) or "")
 
 
@@ -143,5 +156,5 @@ def test_a_us_visitor_with_no_state_is_no_doubt_but_one_with_no_country_either_i
     assert verify.check(us, {}, BASE, set(), set()) is None and verify.doubts(us, BASE) == []
     assert tiers.hard_exclusion(us, {}, BASE) is None
     unknown = account(hq_state=None, source="site_visit", hq_country=None)
-    assert verify.check(unknown, {}, BASE, set(), set()) == "HQ state unknown"
+    assert verify.check(unknown, {}, BASE, set(), set()) == ("state_unknown", "HQ state unknown")
     assert verify.doubts(unknown, BASE) == [verify.NO_STATE]  # to the hand-check, where an Overrides row settles it

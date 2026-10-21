@@ -6,7 +6,7 @@ robust as possible."
 
 The short version: a contact's emails are fixed when they are enrolled; what every lead in a campaign shares is
 held while leads are in flight; safety always applies to everyone; and every contact carries the version of
-everything it was enrolled under, so the Monday readout and `us-outbound cohorts` compare like with like.
+everything it was enrolled under, so the Monday readout and `us-outbound report cohorts` compare like with like.
 
 ## What is fixed, what is shared, what always applies
 
@@ -29,8 +29,8 @@ campaign's last one finishes.
    check (`labels.py`; Harry, 7 Oct 2026) is content too: its prompt (`PROMPT_VERSION`), the label list and the
    Industries `definition` and `apollo_keywords` decide which label, and so which copy, a new company earns
    (`labels_hash`, in the config version). An edit to one makes every stored verdict stale: verify_accounts asks
-   again about 150 companies a run, so the queue is re-checked over about three weekdays (`us-outbound labels
-   audit --live` does it at once). Run `us-outbound labels eval --live` before shipping a change to the prompt,
+   again about 150 companies a run, so the queue is re-checked over about three weekdays (the `labels audit`
+   command that did it at once went in W2-4). Run `us-outbound labels eval --live` before shipping a change to the prompt,
    the decision rule, a definition or keywords, and put its score in the commit message.
    **A copy test changes what new contacts get; contacts in flight keep theirs** (Harry, 7 Oct 2026). Starting,
    stopping or changing an `ab` or `variant` test on the Tests tab (`enrol/variants.py`) reaches only contacts
@@ -45,19 +45,34 @@ campaign's last one finishes.
    `us-outbound campaigns ensure --fix --live`, or apply it to everyone in flight with
    `us-outbound campaigns ensure --fix --in-flight --live` (logged, with the lead count; it shows in the
    readout's *Settings changes*). `mailbox_health` and `mailbox check --fix` never apply these. Until then,
-   the morning mailbox check says what is held, `golive` warns, and `start` goes ahead (the campaign is
+   the morning mailbox check says what is held, the Campaigns check in `us-outbound status` warns, and `start` goes ahead (the campaign is
    consistent for its leads in flight). A step that has lost Instantly's unsubscribe link is put back for
    everyone at once: the opt-out is never held.
 3. **Safety always applies to everyone:** unsubscribes, bounces, complaints, kill rules, `stop`, the
    account-level stop, suppression, erasure. Never gate these on a cohort or a version.
 4. **Measurement changes move every cohort:** a view, the reply classifier or `sync_outcomes` changes the
-   numbers for old cohorts too. Say so in the commit; `us-outbound cohorts` prints the code each cohort was
+   numbers for old cohorts too. Say so in the commit; `us-outbound report cohorts` prints the code each cohort was
    enrolled under.
 5. **DDL is additive** (`CREATE … IF NOT EXISTS`, `ADD COLUMN IF NOT EXISTS`; `ops/ddl.py` refuses anything
    else) and is applied by `us-outbound db apply --live` on deploy. New columns are nullable; code reads NULL
    as "before this existed" (contacts enrolled before 8 Oct 2026 are "unstamped").
-6. **Dry-run first**, then `us-outbound golive`. A deploy while enrol (12:00 UK) or poll_approvals runs is
-   fine: jobs are idempotent and the scheduler drains for 30 seconds.
+6. **One scheduler runs** (W2-4, 20 Oct 2026): over a deploy the new worker waits for the old one's Postgres
+   advisory lock (`scheduler_lock_wait` in the log, every 2 s, usually 4 to 13 s in all) and starts nothing until
+   it holds it (`scheduler_lock_held`). Past 3 minutes it pings the outside watchdog's /fail and keeps waiting:
+   look for a second worker or a stuck old container. `heartbeat_check` at :05 shows the jobs ran.
+   **Dry-run first**, then `us-outbound status` (its go-live checks: Copy, Campaigns, Watchdog; `golive` went with
+   W2-1, 20 Oct 2026). A deploy while a frequent job runs (poll_replies, sync_outcomes) is
+   fine: jobs are idempotent, the scheduler drains for 30 seconds and the next run is minutes away. **Not from
+   11:55 UK until enrol's 12:00 heartbeat reads ok** (it is stopped at 15 minutes): an enrol cut off has its error
+   row, so the catch-up below does not run it again and that day's enrol is lost; if a deploy lands then anyway, run
+   `us-outbound run enrol --live` by hand once the new worker holds its lock. **Not from 06:55 to 07:15 UK**
+   (whole-wave review, 20 Oct 2026): mailbox_health runs only at 07:00, and a run cut off after 25 s stops part-way
+   through its Instantly writes (warmup, daily limits, sender names). The new scheduler catches up a daily job
+   whose time fell in the 90 minutes before it started only when no run of it began since (W2-4, 20 Oct 2026): a
+   run cut off has its error row, so it is not run again, and next runs the following 07:00, so the ramp's step-up of the daily limits is missed
+   for a day and heartbeat_check posts it failed (exit 143) or missed. Deploy after its 07:00 heartbeat reads ok
+   (07:15 to 08:45 is clear on a Tuesday to Friday; on a Monday, capture runs at 07:30 and the readout at 08:30).
+   If a deploy lands near 07:00 anyway, run `us-outbound run mailbox_health --live` by hand at once.
 7. **Never rename an owner** on the Mailboxes tab, and never pause a mailbox to "test" something: both move
    leads in flight (the campaign name and `accounts.sender` are the owner's name; Instantly hands a paused
    mailbox's follow-ups to the owner's other mailbox).
@@ -66,17 +81,29 @@ campaign's last one finishes.
 
 ## The config version
 
-Each contact carries `config_version`, `code_sha` and `copy_hash` (`config_version.py`, written by enrol and by a
-send approval's ✅). The version is a 12-character hash of: the versions in force of the Signals, Angles,
+Each contact carries `config_version`, `code_sha` and `copy_hash` (`config_version.py`, written by enrol; and by a
+send approval's ✅ until W2-1 removed them, 20 Oct 2026). The version is a 12-character hash of: the versions in force of the Signals, Angles,
 Industries, Roles and Overrides tabs; each sendable Copy row's content hash; the General keys that shape what is
 sent (`config_version.CONTENT_KEYS`: the subject and opener keys, `price_from`, the links, `email_format`,
-`send_window`, `utm_links`, the second-contact keys, `control_share`, `weekly_enrol_cap`, `label_check`); the
-running copy test (`copy_test`: an `ab` or `variant` test's id, arms and, for a variant, its change and texts); the
-signature template;
-the campaign constants; the label check's `labels_hash` (its prompt version, label list and definitions); and
-the code (`RAILWAY_GIT_COMMIT_SHA`, set by Railway on a deploy from GitHub; "dev" elsewhere). An edit to `live_sending`, the Claude cap, a draft Copy row or a mailbox's status starts no new
-version: they change nothing a contact is sent. The `config_versions` table keeps each version's snapshot, so
-`us-outbound cohorts changes` can say what differs in plain words.
+`send_window`, `utm_links`, `label_check`; the second-contact and `opener_focus` keys until W2-1 retired them, which
+moved every version once, 20 Oct 2026); the running copy test (`copy_test`: an `ab` or
+`variant` test's id, arms and, for a variant, its change and texts); the signature template; the campaign
+constants; and the label check's `labels_hash` (its prompt version, label list and definitions). An edit to
+`live_sending`, the Claude cap, `weekly_enrol_cap`, `explore_share`, a draft Copy row or a mailbox's status starts no
+new version: they change how many are enrolled, or which arm a contact is in (stamped on the contact as `arm`), not
+what a contact is sent.
+
+The code (`RAILWAY_GIT_COMMIT_SHA`, set by Railway on a deploy from GitHub; "dev" elsewhere) is not in the hash
+(W1-6, 19 Oct 2026). Each contact still carries its `code_sha`, and each `config_versions` row the deploy that first
+saw it, but a deploy alone no longer starts a version: before, all 50 deploys of the first 12 days did, which split
+every cohort and would have split a copy test's arms on code that changed nothing sent. Version ids changed once,
+discontinuously, at the deploy of W1-6 (it took `code_sha`, `weekly_enrol_cap` and the retired `control_share` out
+of the hash): `cohorts changes` across that deploy lists only the code line, and nothing a contact gets changed. The
+other side of this: a deploy that changes how emails are rendered (`enrol/render.py`, the copy rules) without
+touching a template, a tab or a General key starts no version either. Such a change is made through the steps above
+like any change to what is sent, and its cohorts are told apart by `code_sha` (and each step's `email_hashes`), not
+by `config_version`. The `config_versions` table keeps each version's snapshot, so `us-outbound cohorts changes` can
+say what differs in plain words.
 
 ## Cohorts
 

@@ -1,22 +1,20 @@
 """Monthly credit budgets, how the month is going against them, and the weekly enrolment target.
 
 Harry, 30 Sep 2026:
-  * apollo_monthly_credits and clay_monthly_credits are what the jobs may spend in a calendar
-    month (UK time), as Apollo and Clay themselves count credits. Spend is what credit_ledger
-    records. Each weekday may spend what is left of the month ÷ the weekdays left, including
-    today, so the budget lasts the month instead of going in the first week. The jobs that
-    spend (source_universe, verify_in_clay, pick_contacts) check this before every batch and
-    stop at zero (SPEC 1.6). Enrolment spends no credits, so budgets never hold it back directly.
-  * weekly_enrol_cap is the most new accounts enrolled in a week, Monday to Sunday, UK time (a second
-    contact at an account counts as one more; enrol/second.py, 6 Oct 2026).
+  * apollo_monthly_credits is what the jobs may spend in a calendar month (UK time), as Apollo itself counts
+    credits. Spend is what credit_ledger records. Each weekday may spend what is left of the month ÷ the weekdays
+    left, including today, so the budget lasts the month instead of going in the first week. The jobs that spend
+    (source_universe, pick_contacts) check this before every batch and stop at zero (SPEC 1.6). Enrolment spends no
+    credits, so budgets never hold it back directly. (clay_monthly_credits went with Clay: W2-1, 20 Oct 2026.)
+  * weekly_enrol_cap is the most new accounts enrolled in a week, Monday to Sunday, UK time.
     Each send day takes what is left of it ÷ the send days left in the week, so a short day
     is made up later in the same week.
 The Claude cap is monthly too, a UTC month as the Anthropic Console counts it (clients/claude.py).
 Unspent credits do not carry over to the next month.
 
 A share for some jobs (share_for_jobs; build, 1 Oct 2026, for the 5 Oct pilot): source_universe
-runs at 03:00, apollo_signals at 03:30 and apollo_enrich at 04:10 (2 Oct 2026), before pick_contacts
-at 05:30, so each may spend only its share of apollo_monthly_credits (sources/apollo_credits.py),
+runs at 03:00, apollo_enrich at 05:00 and apollo_signals at 05:10 (W1-3a, 19 Oct 2026), before
+pick_contacts at 05:30, so each may spend only its share of apollo_monthly_credits (sources/apollo_credits.py),
 paced by the weekday like the whole budget. Today's room is the smaller of what is left of the
 whole budget today and of the share today.
 """
@@ -34,7 +32,7 @@ from us_outbound.context import UK
 from us_outbound.settings.model import Settings
 from us_outbound.timeparse import uk_midnight, utc
 
-MONTHLY_KEYS = {"apollo": "apollo_monthly_credits", "clay": "clay_monthly_credits"}
+MONTHLY_KEYS = {"apollo": "apollo_monthly_credits"}
 AHEAD = 1.10  # spend more than 10% above the month's pace is "ahead of budget"
 PACE_WORDS = {"ahead": "ahead of pace", "on": "on pace", "behind": "behind pace"}
 
@@ -57,7 +55,7 @@ def weekdays(start: date, end: date) -> int:
 
 @dataclass(frozen=True)
 class Budget:
-    """One month's budget for apollo or clay, and how the month is going."""
+    """One month's budget for apollo, and how the month is going."""
 
     system: str
     budget: float
@@ -142,7 +140,7 @@ class Budget:
 
 
 def _n(x: float) -> str:
-    """Whole credits, except a fraction under 100 (Clay spends in halves)."""
+    """Whole credits, except a fraction under 100."""
     return f"{x:,.0f}" if abs(x) >= 100 or abs(x - round(x)) < 0.05 else f"{x:,.1f}"
 
 
@@ -157,7 +155,7 @@ def spent_in(store: Store, system: str, start: datetime, end: datetime, jobs: Co
 
 
 def monthly(store: Store, settings: Settings, system: str, now: datetime) -> Budget:
-    """This month's budget for apollo or clay, with what credit_ledger says is spent."""
+    """This month's budget for apollo, with what credit_ledger says is spent."""
     start, end = month_bounds(now)
     today = now.astimezone(UK).date()
     today_start = uk_midnight(today)
@@ -245,6 +243,5 @@ def weekly_target_today(settings: Settings, enrolled_this_week: int, days_left: 
 
 
 def enrolled_this_week(contacts: list[Mapping[str, Any]], now: datetime) -> int:
-    """Contacts enrolled this week, from contacts.enrolled_at: one a company, and a second contact at a company
-    counts as one more (enrol/second.py; Harry, 6 Oct 2026: it "counts against the day's enrolment number")."""
+    """Contacts enrolled this week, from contacts.enrolled_at: one a company."""
     return len({c.get("contact_id") or c.get("account_id") for c in contacts if in_week(c.get("enrolled_at"), now)})

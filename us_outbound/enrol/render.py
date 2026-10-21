@@ -29,8 +29,8 @@ to action.
     General email1_subject_share of accounts, by sha256 of the salted account id (its own salt, so the split is
     independent of the opener holdout's), are personal: email 1's subject is General email1_subject ("support
     for the {{company}} team") instead of the Copy row's s1_subject. The rest are copy. Emails 2 to 4 keep the
-    Copy row's subjects either way. render_sequence(subject_arm=...) renders the arm, so the send card, the
-    auto_send path, `copy preview` and `seed send` show the subject that is sent; enrol records the arm on the
+    Copy row's subjects either way. render_sequence(subject_arm=...) renders the arm, so enrol, `copy preview`
+    and `seed send` show the subject that is sent; enrol records the arm on the
     contact (contacts.subject_arm), and `signals review` and the daily post compare the arms' replies.
   * UTM tags (Harry, 6 Oct 2026; enrol/utm.py): with General utm_links = yes, the HTML's links to Spill's site
     and the signature's site or booking link carry utm_source, utm_medium, utm_campaign (the Copy row's
@@ -58,7 +58,6 @@ from us_outbound.copy import copy_markup, copy_rules
 from us_outbound.copy.variables import OPTIONAL_VARIABLES, PRICE_LINE, VARIABLES
 from us_outbound.enrol import utm
 from us_outbound.settings.model import (
-    CLAY_SKIP,
     COPY_STEPS,
     GENERAL_COPY,
     LEGAL_GROUP,
@@ -96,6 +95,9 @@ LAWFUL_BASIS = "legitimate interests: telling businesses about Spill"
 # Email 1's subject arm (contacts.subject_arm; Harry, 5 Oct 2026): General email1_subject, or the Copy row's s1_subject.
 PERSONAL_SUBJECT, COPY_SUBJECT = "personal", "copy"
 SUBJECT_ARMS = (PERSONAL_SUBJECT, COPY_SUBJECT)
+# Not drawn (W3-4, 21 Oct 2026): General live_split names another split, so email 1 has the Copy row's s1_subject and
+# the contact is in neither arm.
+NO_SUBJECT_ARM = "n/a"
 SUBJECT_SALT = "email1-subject:"  # not openers.HOLDOUT_SALT: the two splits never line up
 SUBJECT_STEP = 1  # only email 1's subject changes
 
@@ -240,8 +242,11 @@ def pick_opener(
 
 def subject_arm(account_id: Any, settings: Settings) -> str:
     """personal or copy, for the account: personal when sha256 of the salted account id falls below General
-    email1_subject_share (openers.in_holdout's rule, with its own salt), and email1_subject is not blank."""
+    email1_subject_share (openers.in_holdout's rule, with its own salt), and email1_subject is not blank; n/a
+    (NO_SUBJECT_ARM: the Copy row's subject) while General live_split names a split other than both or subject."""
     g = settings.general
+    if not settings.draws_subject_split():  # General live_split names another split (W3-4)
+        return NO_SUBJECT_ARM
     if not g.email1_subject.strip():
         return COPY_SUBJECT
     h = int(hashlib.sha256((SUBJECT_SALT + str(account_id)).encode()).hexdigest()[:15], 16)
@@ -399,18 +404,9 @@ def signature(settings: Settings, sender_name: str = "", *, body: copy_markup.Re
                    text=f"{name}\n{sig.text}" if name else sig.text), missing, kind
 
 
-def signature_texts(settings: Settings, sender_name: str = "") -> set[str]:
-    """Every line a signature can show, as plain text: the sender's full name and each kind's line.
-    approvals takes a signature pasted into an edit back off with these (render_step adds its own)."""
-    out = {copy_markup.render(line, {}).text.strip() for line, _ in _filled_lines(settings).values()}
-    return out | ({sender_name.strip()} if sender_name.strip() else set())
-
-
 def data_sources(settings: Settings) -> str:
-    """The contact-data providers in use: Clay only once it runs (clay_verification)."""
-    if settings.general.clay_verification == CLAY_SKIP:
-        return "Apollo"
-    return "Apollo and Clay"
+    """The contact-data providers in use: Apollo (Clay never ran, and was removed: W2-1, 20 Oct 2026)."""
+    return "Apollo"
 
 
 def data_record(settings: Settings) -> dict[str, Any]:

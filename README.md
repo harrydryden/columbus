@@ -13,70 +13,64 @@ database, but writes nothing to HubSpot, Instantly or the settings sheet, and po
 Slack only in `#us-outbound-dev`. Every outbound call goes through one guard
 (`us_outbound/clients/guard.py`), which also enforces the guardrails of SPEC 1 in any mode.
 
-- **Jobs** (`run <job>`, `rescore`, `sync`, `suppression load`) and `start` are live
+- **Jobs** (`run <job>`, `sync`) and `start` are live
   only with `--live` **and** `live_sending = yes` in the synced settings. Jobs read the copy of the
   sheet that `settings_sync` brought in: at 02:00 UK, at 11:30 UK on weekdays, or now with
   `us-outbound sync` (`start --live` syncs first by itself).
 - **Operator commands** whose writes never reach a prospect (`stop`, `mailbox`, `unenrol`,
-  `erase`, `test start`, `settings bootstrap|load`, `hubspot setup`, `campaigns ensure`,
-  `handcheck show|approve`, `killrules clear`, `replies skip`, `approvals contact|company`,
-  `clay check-email`) are live
-  with `--live` alone, so the phase-0 setup and the kill switch work while `live_sending` is still
-  `no`. `replies send` sends to a prospect and `approvals send` adds one to Instantly, so they need
-  both, like a job.
+  `erase`, `test start`, `settings load`, `campaigns ensure`, `report capture`,
+  `handcheck show|approve`, `killrules clear`, `replies skip`) are live
+  with `--live` alone, so the setup and the kill switch work while `live_sending` is still
+  `no`. `replies send` sends to a prospect, so it needs both, like a job.
 - **The brake** is `us-outbound stop --live`: `live_sending` = no stops nothing already active in
   Instantly. Harry's day-to-day is in [docs/daily.md](docs/daily.md).
 
 ## Commands
 
-`us-outbound --help` lists what Harry uses; the build and duplicate commands still work but are left out
-of it (marked * below).
+`us-outbound --help` lists every command: one table in `us_outbound/ops/cli.py` (`COMMANDS`, W2-4, 20 Oct 2026).
+`tests/test_cli.py` checks that every command an alert or a doc names is one the parser has.
 
 ```
-us-outbound status                                 the switches, when settings synced, what waits, jobs that need a look, retention
-us-outbound golive                                 the read-only go/no-go check before sending (exits 1 on a FAIL)
+us-outbound status                                 live_sending, when settings synced, what waits, jobs that need a look, retention, mailboxes, campaigns, and the go-live checks (Copy, Campaigns, Watchdog)
 us-outbound accounts [DOMAIN] [--csv]              the companies and contacts we hold (read-only): a summary and the list, one company, a CSV
 us-outbound accounts [--status S] [--tier T] [--industry X] [--limit N]   the list, narrowed (default 25; --limit 0 lists all)
-us-outbound sync [--live]                          bring the sheet's edits into force now (= settings sync)
-us-outbound seed send ADDRESS --owner NAME [--subject personal|copy] [--live] | seed check   the seed-inbox test of the unsubscribe link
-us-outbound start | stop [--live]                  resume (syncing first) / pause every US Outbound campaign and enrollment
-us-outbound approvals list                         emails waiting for a ✅ (auto_send = no): company, contact, sender, subject
-us-outbound approvals send <id> [--live]           ✅: add its lead to Instantly (= approvals approve)
-us-outbound approvals contact|company <id> [--live]   👤 not this person / 🚫 not this company (= approvals reject --contact|--company)
-us-outbound approvals redo <id>|all [--live]       withdraw waiting cards and post them again under the labels and emails as they are now
+us-outbound sync [--live]                          bring the sheet's edits into force now
+us-outbound start | stop [--no-db] [--live]        resume (syncing first) / pause every US Outbound campaign and enrollment; stop --no-db pauses the campaigns while the database is down
 us-outbound replies list                           reply items waiting for a human: class, account, role, excerpt, draft
 us-outbound replies send <id> [--text "..."] [--live]   send the draft (or that text) (= replies approve [--edit])
 us-outbound replies skip <id> [--live]             handled, nothing sent
+us-outbound handcheck show|approve [--pull ID ...] [--live]   this week's hand-check without Slack
+us-outbound handcheck export|migrate-tab [--live]   every decided Hand-check row into the database; or move the tab to its new columns once
 us-outbound killrules show|clear <item> [--live]   the kill-rule holds in force; lift one once checked
 us-outbound mailbox add <address> --owner "Name" [--domain D] [--daily-cap N] [--live]
 us-outbound mailbox pause|retire <address> [--live]
 us-outbound mailbox check [--fix] [--live]         mailbox_health by hand; --fix also sets each sender name to its owner's full name and runs campaigns ensure --fix
-us-outbound campaigns show                         each owner's campaign as Instantly holds it (read-only)
 us-outbound campaigns ensure [--fix] [--in-flight] [--live]   the sender campaigns (created paused) and drift; drift in the steps, delays or text_only waits while leads are in flight unless --in-flight
-us-outbound cohorts [--cut CUT] [--age N] [--weeks N]   each enrolment week at 7, 14, 21 and 28 days after email 1, and what changed between weeks (read-only)
 us-outbound cohorts changes [A B] | in-flight      what changed between two config versions (default the last two) | each campaign's leads in flight
+us-outbound test start|read <test_id> [--live]     a test on the Tests tab: ab, variant (one change to one email) or holdout
+us-outbound labels set|show <domain> [label] [--live] | labels eval [--from-corrections] [--from-sample] [--live]   a company's label set or shown; the label check scored on the gold set
 us-outbound copy check|preview|qa|draft [...]      the copy desk: check every row, preview one, QA it, draft one
-us-outbound settings sync|load|bootstrap [--live]  sync; load the build's tabs (--tab, --set, --take note) into the sheet; create it
-us-outbound handcheck show|approve [--pull ID ...] [--live]   this week's hand-check without Slack
-us-outbound clay check-email --first NAME --last NAME --domain spill.chat [--live]   one Work Email lookup for your own name, to confirm Clay's email fallback (exits 1 until it can go on)
-us-outbound phase0 check [--seed ADDRESS] [--apollo-credits] [--live]   the live checks of the API details still to confirm (docs/phase0-confirm.md)
+us-outbound seed send ADDRESS --owner NAME [--subject personal|copy] [--live] | seed check   the seed-inbox test of the unsubscribe link
+us-outbound settings load [--tab T] [--set K=V] [--take note] [--live]   the build's tabs (or the General notes) into the sheet
+us-outbound report cohorts [--cut CUT] [--age N] [--weeks N]   each enrolment week at 7, 14, 21 and 28 days after email 1 (read-only)
+us-outbound report signals | readout | pages | daily [--full]   which signals predict replies; the Monday readout; the page reader's coverage; the daily post (read-only)
+us-outbound report lookalikes [--top N] [--all]    the lookalike cells from Spill's HubSpot customers (read-only)
+us-outbound report capture [--live]                the reply read's weekly canary, checked the day after it went
 us-outbound erase --email <address> [--live]       an erasure request
-us-outbound relabel [--all] [--live]               the queued companies under the industry labels the rules give now; withdraws open cards it changes
+us-outbound unenrol --month YYYY-MM [--live]       a month's leads out of their campaigns, each recorded as stopped (the accounts are never enrolled again by themselves)
+us-outbound verify migrate-parked [--live]         once after W1-4: the companies left out while their industry was off, parked
+us-outbound db apply [--live]                      the DDL in sql/ against DATABASE_URL (prints it unless --live)
 us-outbound schedule                               the job table, UK times and next runs (also scheduler --list)
-us-outbound run <job> [--live]                     one job (what the scheduler starts)
-us-outbound unenrol --month YYYY-MM [--live]     * remove that month's leads from their campaigns
-us-outbound rescore [--live]                     * the score job
-us-outbound dry-run <job>                        * one job, dry-run
-us-outbound test start|read <test_id> [--live]   * a test on the Tests tab: ab, variant (one change to one email) or holdout
-us-outbound db apply [--live]                    * the DDL in sql/ against DATABASE_URL (prints it unless --live)
-us-outbound hubspot setup|ids [--live]           * the six properties; ids for the General tab
-us-outbound suppression load [--live]            * HubSpot opt-outs and bounces, hashed
-us-outbound lookalikes show [--top N] [--all]    * the lookalike cells from Spill's HubSpot customers
-us-outbound lookalikes fit                       * the accounts' lookalike fits and the tier mix the new rows give
-us-outbound pages show                           * the careers and benefits page reader's coverage
-us-outbound data show                            * what the sources have stored, in aggregate
-us-outbound scheduler                            * the always-on worker: starts every job on its schedule
+us-outbound run <job> [--live] [--due MINUTE]      one job (what the scheduler starts, with the minute it was due); `run score` rescores
+us-outbound scheduler                              the always-on worker: starts every job on its schedule
 ```
+
+Folded or removed in W2-4 (20 Oct 2026; git history keeps them): `daily`, `readout`, `signals review`, `pages show`,
+`lookalikes show` and `capture check` are `report ...`; `rescore`, `dry-run <job>` and `suppression load` are
+`run score`, `run <job>` and `run suppression_load`; `settings sync` is `sync`. Removed: `relabel` and `labels audit`
+(verify_accounts asks the label check about 150 companies each weekday, and again when a definition changes),
+`labels sample` (the `label_sample_monthly` job), `signals value`, `lookalikes fit`, `campaigns show`, `hubspot ids`,
+`settings bootstrap` and `data show`.
 
 Jobs are listed in `us_outbound/ops/cli.py` (`JOBS`) and scheduled in `us_outbound/ops/schedule.py`
 (cron in UK time; later-phase jobs disabled). A job of a later phase exits with "not built
@@ -92,6 +86,19 @@ python -m venv .venv && .venv/bin/pip install -e '.[dev]'
 
 Tests never touch a real system: `tests/fakes.py` records every HTTP request and
 `MemoryStore` stands in for the Postgres database.
+
+The database tests (`tests/test_db.py`, and the view and parity tests that import its fixtures) run the DDL, the views
+and `PostgresStore` against a real Postgres 15 or later; without one they skip. Locally, a throwaway one:
+
+```
+docker run --rm -d --name us-outbound-pg -e POSTGRES_PASSWORD=postgres -p 55432:5432 postgres:16
+US_OUTBOUND_TEST_DSN=postgresql://postgres:postgres@localhost:55432/postgres .venv/bin/python -m pytest
+```
+
+Each session creates its own database in it and drops it at the end. CI (`.github/workflows/tests.yml`, W3-1, 20 Oct
+2026) runs the whole suite on every push and pull request with a `postgres:16` service and `US_OUTBOUND_REQUIRE_DB`
+set, so there a missing database fails the run instead of skipping. Railway deploys on push whatever CI says until
+"wait for CI" is turned on for the service (Harry's D12).
 
 ## Deploying (Railway)
 
@@ -115,8 +122,8 @@ then [docs/phase0-runbook.md](docs/phase0-runbook.md).
 | Phase | State |
 | :- | :- |
 | 0 Foundations | Built and running on Railway: clients, guard, settings sync (02:00, and 11:30 on weekdays), DDL, registry, heartbeats, suppression, HubSpot setup, CLI, the scheduler |
-| 1 Universe | Built: scoring, the Apollo universe, job postings, the careers and benefits page reader (`read_pages`), Apollo's organization enrich (`apollo_enrich`), People leaders at every account (`apollo_people`), lookalikes, site visits (`site_visits`, 5 Oct), and `verify_accounts` while Clay verification is not built. Not built: public signals, `verify_in_clay` |
-| 2 First sends | Built; the pilot sends from Mon 5 Oct 2026: enrollment with send approvals in Slack (`auto_send` = no), the sending ramp, `golive`, reply ingest (`sync_outcomes`, `poll_replies`), the reply desk (`poll_approvals`, `replies` commands), the reply HubSpot writes and `hubspot_readback`; `retention` (7 Oct 2026: SPEC 6's retention rules and SPEC 13's 31 days) |
+| 1 Universe | Built: scoring, the Apollo universe, job postings, the careers and benefits page reader (`read_pages`), Apollo's organization enrich (`apollo_enrich`), People leaders and contactable candidates (`contact_precheck`, W3-3; `apollo_people` until then), lookalikes, site visits (`site_visits`, 5 Oct), and `verify_accounts`. (Public signals and `verify_in_clay` were never built, and went with Clay in W2-1, 20 Oct 2026) |
+| 2 First sends | Built; the pilot sends from Mon 5 Oct 2026: enrollment (send approvals in Slack until W2-1, 20 Oct 2026, removed them with `auto_send`), the sending ramp, the go-live checks in `status`, reply ingest (`sync_outcomes`, `poll_replies`), the reply desk (`poll_approvals`, `replies` commands), the reply HubSpot writes and `hubspot_readback`; `retention` (7 Oct 2026: SPEC 6's retention rules and SPEC 13's 31 days) |
 | 3 Learning loop | Kill rules and the daily post (with its "Needs you" line) built early (Harry, 1 Oct 2026); the Monday readout, the signal table, tests read at pre-registered looks, UTM tags and demo bookings read back (6 Oct 2026; docs/pipeline.md "How the system learns"); cohorts by enrolment week with the config version each contact was enrolled under (7 Oct 2026; docs/developing-while-live.md) |
 
 ## Deviations from the SPEC 13 layout
@@ -130,13 +137,19 @@ Files added beyond the SPEC 13 tree:
 - `suppression.py` (the one hashed suppression list)
 - `ops/bootstrap.py` (the production context), `ops/ddl.py` (applies `sql/`), `__main__.py`
 - `ops/schedule.py` (the job table) and `ops/scheduler.py` (the always-on worker that runs it)
-- `base/` (9 Oct 2026): the alert poster (`notify.py`), the heartbeats read back with the operator stop
-  (`heartbeats.py`) and the kill-rule holds (`holds.py`), one layer below enrolment, learning and operations
+- `base/` (9 Oct 2026): the alert poster (`notify.py`), the plain words of the alerts (`say.py`) and the kill-rule
+  holds (`holds.py`), one layer below enrolment, learning and operations
+- `ops/health.py` (W2-4, 20 Oct 2026): job health in one module, merging `ops/heartbeat.py`, `base/heartbeats.py`,
+  `ops/job_errors.py` and `ops/watchdog.py`: what a run records (`run_job`, the only writer of heartbeats rows, with
+  `duration_s` and `exit_code`), the operator stop, the `heartbeat_check` job and the outside watchdog's ping
 - `copy/` (9 Oct 2026): the copy rules, the Copy tab's markup, its variables and the variant-text check, moved
   out of `enrol/` so settings_sync checks copy without importing enrolment
 - `deploy/slack-app-manifest.yaml` (the Slack app)
 - `replies/outcomes.py` (sync_outcomes), `replies/optout.py` (one opt-out path for links and replies),
-  `replies/draft.py` (reply drafts); `replies/poll.py` holds the hitl_items contract with the reply desk
+  `replies/draft.py` (reply drafts); `replies/poll.py` (poll_replies, the one reader of received mail) holds the
+  hitl_items contract with the reply desk: `replies/desk.py` (the items and their close path),
+  `replies/poll_desk.py` (the poll_approvals job), `replies/escalation.py`, and `replies/follow_up.py` (the not-now
+  dates kept, daily at 08:45)
 
 Infrastructure (Harry, 30 Sep 2026): Railway instead of Google Cloud. Railway PostgreSQL
 replaces BigQuery (SPEC 3, 6). Sealed Railway variables replace Secret Manager (SPEC 1.7).
@@ -145,36 +158,37 @@ See [docs/railway-setup.md](docs/railway-setup.md#where-this-differs-from-spec-h
 
 Tables beyond SPEC 6: `heartbeats`, `credit_ledger`, `hitl_items`, `domain_aliases`,
 `partners`, `lookalike_cells`, `lookalike_growth`, `config_versions` and `config_log` (Harry, 7 Oct 2026: what
-each cohort was enrolled under, and each change to what the leads in flight share; `config_version.py`).
+each cohort was enrolled under, and each change to what the leads in flight share; `config_version.py`),
+`source_state` (W3-3: the sources' cursors and plans) and `metrics` (W3-1, 20 Oct 2026: the persisted series the
+readout and the learning loops read, one row per day, cut, measure and definition version; `learn/metrics.py`).
 `suppression` gains `expires_at` (only Suppress-signal domains expire) and
 `contacts` gains `last_step_at` and `lead_deleted_at` (for retention: when its Instantly lead was deleted, 31 days
 after its last step), and `config_version`, `code_sha` and `copy_hash` (what the
 contact's emails were rendered under; NULL, "unstamped", before 8 Oct 2026). `settings` also holds one `_order` row per
 tab, its keys in sheet order, so the jobs keep the sheet's order. General keys added by the build:
-`dev_channel`, `hubspot_pipeline_id`, `hubspot_deal_stage_id`, `hubspot_owner_id`, the two
-Clay function ids, the credits-per-account estimates, `stop_rule_bounce_rate` and
-`stop_rule_complaint_rate` (the stop rule's account-level thresholds) and `optout_tested` (the
-seed-inbox test of the unsubscribe link, which `golive` checks) and `auto_send` (no: every email
-waits for approval in Slack; Harry, 2 Oct 2026), and `email1_subject` and `email1_subject_share`
+`dev_channel`, `hubspot_pipeline_id`, `hubspot_deal_stage_id`, `hubspot_owner_id`, `stop_rule_bounce_rate` (the
+stop rule's account-level threshold; `stop_rule_complaint_rate` was retired in W2-3: nothing reports a complaint) and
+`optout_tested` (the
+seed-inbox test of the unsubscribe link, which enrol's live gate reads), and `email1_subject` and `email1_subject_share`
 (Harry, 5 Oct 2026: email 1's personal subject, "support for the {{company}} team", for half the
 companies by a hash of the account id; the rest keep the Copy row's `s1_subject`, and
-`contacts.subject_arm` records which, so `us-outbound signals review` can compare the two).
+`contacts.subject_arm` records which, so `us-outbound report signals` can compare the two).
 
 The reply desk (decision D11, Harry, 1 Oct 2026): approvers are `approver_slack_ids` plus a
 mailbox's owner for replies to that mailbox, from an optional `slack_id` column on the Mailboxes
 tab; approvals are ✅ or "send", "send: <text>", "edit: <text>", ❌ or "skip"; unanswered alerts
 are re-posted until 23:00 UK. `us-outbound replies list|approve|skip` does the same without Slack.
 
-Send approvals (Harry, 2 Oct 2026: "every single message that gets sent out comes to this channel
-first for approval"): while the General key `auto_send` is `no` (the default), `enrol` posts each
-account as a card in #us-outbound instead of adding its lead to Instantly: the company and its
-domain, the recipient linked to Apollo, the sender, email 1's subject and body, the count of emails,
-and emails 2 to 4 in the thread. An approver's ✅ (seeded by the bot, so it is one click) adds the
-lead; ❌ offers ✏️ edit (a thread reply, re-rendered and checked against the copy rules, then
-approved again), 👤 another contact, or 🚫 drop the company. A card not approved by the end of its
-next send day expires. With `auto_send` = `yes`, `enrol` adds leads straight away after the weekly
-hand-check, as before. `us_outbound/enrol/approvals/` has the hitl_items and events contract the
-daily report reads; `us-outbound approvals list|approve|reject` does the same work without Slack.
+Removed in W2-1 (20 Oct 2026; Harry's D6, D18 and his ruling on second contacts; git history keeps the code): the
+send approvals (`auto_send`: each email a card in #us-outbound for an approver's ✅; the live sheet had `auto_send` =
+yes, so `enrol` adds each day's leads straight to Instantly, as it did), every Clay path (the email waterfall, the
+cross-check, `verify_in_clay`, the Clay client and budget), second contacts (`second_contact`: one contact per
+company; `contacts.contact_slot` stays in the DDL), the one-off tools (`golive`, whose Copy, Campaigns and Watchdog
+checks now print in `status`; `phase0 check`; `clay check-email`; `labels crosswalk`), the Named accounts tab, the job
+board reader, the unbanded universe search and its size-band backfill, and the never-confirmed out-of-office
+re-timing. The retired General keys are in `settings/validate.RETIRED_GENERAL`: a sheet row for one warns and is not
+read. The `poll_approvals` job keeps its name; it runs the reply desk and the hand-check tab
+(`replies/poll_desk.poll_desk`), and closes any send approval left open, as expired.
 
 Jobs beyond SPEC 9: `retention` (daily 00:40, live: SPEC 6's retention rules and SPEC 13's 31 days, which SPEC 9
 gave to sync_outcomes; `ops/retention.py`, built 7 Oct 2026): it deletes each Instantly lead more than 31 days after
@@ -187,9 +201,9 @@ the database included. The daily post has one line when it deleted anything, and
 last did and what waits; `us-outbound run retention` shows what is due now. Apollo deletion notices have no API:
 Harry honours each within 30 days with `us-outbound erase --email ADDRESS --live` (docs/daily.md).
 `heartbeat_check` (hourly: a missed heartbeat alerts in Slack, and so do the
-errors a job caught and a key a service rejected, `ops/job_errors.py`; it then pings the outside
-watchdog, Healthchecks.io, which emails Harry when the worker, the database or Slack is down,
-`ops/watchdog.py`; Harry, 7 Oct 2026),
+errors a job caught and a key a service rejected; it then pings the outside
+watchdog, Healthchecks.io, which emails Harry when the worker, the database or Slack is down;
+`ops/health.py`; Harry, 7 Oct 2026),
 `blackout` (hourly at :40: every US Outbound campaign paused over the General `blackout_dates`, in US Eastern dates,
 and exactly the ones it paused started again after them, as Instantly's schedule knows weekdays only; a stop, a kill
 rule or an empty sending list keeps one paused; each pause and restart is a `config_log` row; `registry/blackout.py`,
@@ -197,10 +211,14 @@ Harry, 7 Oct 2026), `suppression_load` (daily: HubSpot opt-outs and bounces, and
 customer is kept out and its leads in flight stopped by the next night; Harry, 7 Oct 2026), `lookalikes` (the 1st of each month, from
 5 Oct 2026: Spill's HubSpot customers as lookalike cells, their growth from Apollo in aggregate, the
 lookalike fit and an early exclusion; `sources/lookalikes.py`, Harry, 1 and 5 Oct 2026;
-`us-outbound lookalikes show` lists the cells, `lookalikes fit` the fits) and `hand_check_post` (Mondays
-08:00: SPEC 11's weekly hand-check. Enrol waits for it only while `auto_send` = yes; with `auto_send`
-= no every email is approved in Slack, and the hand-check holds only accounts with doubtful Apollo
-facts). `stop` and `start` record the
+`us-outbound report lookalikes` lists the cells) and `hand_check_draw` (Mondays
+05:45, in place of `hand_check_post` at 08:00 since W1-5, 19 Oct 2026: SPEC 11's weekly hand-check, drawn from the
+accounts the coming send days would take, `hand_check_sample` of them, written to the Hand-check tab. With
+`hand_check_gate` = yes enrol waits for the whole check, as before; with `hand_check_gate` = no,
+Harry's D5, only the sampled companies wait, until judged or for 7 days), and `metrics_daily` (daily 08:50, W3-1, 20
+Oct 2026: yesterday's process numbers and each open step-1 cohort's outcomes into the `metrics` table, every
+design-final §4 measure that can be read now, by cut, under a definition version; each Monday the week's forecasts
+and last week's scores; it reads the database and writes only its table, so no `--live`; `learn/metrics.py`). `stop` and `start` record the
 enrollment pause as heartbeats rows (`operator_stop` / `operator_start`). Each kill rule that
 fires is a `hitl_items` row (kind `kill_rule`) that holds the mailbox, source, industry group or
 enrollment until it is cleared (`base/holds.py`). The sending ramp (`registry/ramp.py`: 10 a day
@@ -221,37 +239,38 @@ From name prospects see, are its owner's full name from the Mailboxes tab ("Hann
 `account.update_name`: a registry account, a mailbox owner's name, those two fields only).
 
 For the 5 Oct pilot (1 Oct 2026): `verify_accounts` (weekdays 04:30) verifies accounts on their
-Apollo data and HubSpot while the General key `clay_verification` is `skip` (Harry: go live before
-the Clay functions exist; `required` once they do). `source_universe` and `apollo_signals` run each
-weekday (03:00, 03:30) rather than monthly and on Mondays, to keep the queue two weeks deep with
-Apollo credits paced by the weekday (`us_outbound/sources/`).
+Apollo data and HubSpot (Clay was never built, and went with W2-1). `source_universe` and `apollo_signals` run each
+weekday (03:00; 05:10, after `verify_accounts`, since 19 Oct) rather than monthly and on Mondays, to keep
+the queue two weeks deep in companies that can be emailed ("contactable supply", W1-3a), with Apollo
+credits paced by the weekday (`us_outbound/sources/`).
 
-Clay narrowed (Harry, 2 Oct 2026): `read_pages` (weekdays 03:45) is our own careers and benefits
-page reader, in place of Clay's: each queued account's own careers, jobs and benefits pages and
-its public Greenhouse, Lever, Ashby or Workable board, with no Clay credits (`sources/pages.py`,
-source `careers_pages`, and `sources/job_posts.py`). `us-outbound pages show` and the daily post
-report its coverage for the decision on enhancing it. Clay is kept for what only it does (6 Oct:
-built, both switches off): the email waterfall, where with the General key `clay_email_fallback` =
-yes `pick_contacts` asks Clay's Work Email for a person Apollo has no verified email for, once
-`us-outbound clay check-email --live` has confirmed one lookup (`ops/clay_check.py`); and a
-cross-check, where with `clay_cross_check` = yes `verify_accounts` asks Clay's "US Outbound –
-Accounts" function for the HQ state and headcount of an account whose Apollo facts are doubtful (no
-HQ state or size, a count and band that disagree, a count near a size edge) before it goes to the
-weekly hand-check (`us_outbound/clay_cross_check.py`; the function's spec is in docs/pipeline.md).
+`read_pages` (weekdays 03:45; Harry, 2 Oct 2026) is our own careers and benefits page reader: each queued account's
+own careers, jobs and benefits pages, with no Clay credits (`sources/pages.py`, source `careers_pages`), and the
+home-page pass the label check uses. `us-outbound report pages` and the daily post report its coverage for the decision
+on enhancing it. Its job-board reader (`sources/job_posts.py`) found no candidate in any run and went with W2-1.
 
 Funding from Apollo's organization enrich (Harry, 2 Oct 2026): Apollo's search rows carry no
-funding and no employee count, so `apollo_enrich` (weekdays 04:10, before `verify_accounts`)
-enriches the queue accounts in the General key `apollo_enrich_groups` (default Technology &
-Startups), 1 credit per company found, within 15% of `apollo_monthly_credits`, each again after
+funding and no employee count, so `apollo_enrich` (weekdays 05:00, after `verify_accounts` since 19 Oct)
+enriches the verified accounts in the industry groups of `settings/model.APOLLO_ENRICH_GROUPS` (Technology &
+Startups; a General key until W2-4), 1 credit per company found, within 15% of `apollo_monthly_credits`, each again after
 180 days (`sources/apollo_enrich.py`). Its facts fire the funding signals, and its exact employee
-count replaces the searched size band unless an Overrides row or Clay says otherwise.
+count replaces the searched size band unless an Overrides row or Clay says otherwise; a count outside
+the General size range leaves the company out (`status_reason` `size`).
 
-People leaders at every account (Harry, 5 Oct 2026): `apollo_people` (weekdays 04:20, before
-`verify_accounts`' rescore) searches Apollo's free people search for the People leaders at each
-queue account, with no email filter, and for how many people Apollo holds there, so "New People
-leader" and "People leader in place" score before the queue is sorted rather than only for accounts
-`pick_contacts` reaches. A count of 0 is written only where Apollo holds at least half the headcount,
-which the new "First People hire (likely)" row reads (`sources/apollo_people.py`).
+People leaders (Harry, 5 Oct 2026): `contact_precheck` (weekdays 05:15, before `pick_contacts`' rescore; W3-3,
+in place of `apollo_people` at 04:20) searches Apollo's free people search for the People leaders at each verified
+account waiting for a contact, with no email filter, and for how many people Apollo holds there, so "New People
+leader" and "People leader in place" score before anyone is contacted; and counts the people pick_contacts could
+contact there, so an account with nobody is set aside before a credit is spent. A count of 0 is written only where
+Apollo holds at least half the headcount, which the new "First People hire (likely)" row reads
+(`contacts/precheck.py`).
 
-`sync_outcomes` runs every 15 minutes (SPEC 9: 01:00 daily), so the kill rules, the send forecast
-and same-day opt-outs (SPEC 13) see today's sends, bounces and unsubscribes.
+`sync_outcomes` runs every 15 minutes inside Instantly's US Eastern send window (13:00 to 22:59 UK on weekdays)
+and hourly otherwise (W2-4; SPEC 9: 01:00 daily), so the kill rules, the send forecast and same-day opt-outs (SPEC
+13) see today's sends, bounces and unsubscribes. It lists no received mail: `poll_replies` (every 15 minutes) is the
+one reader of it, and records each reply's event before it classifies it.
+
+The scheduler (W2-4, 20 Oct 2026; `ops/scheduler.py`): one runs. It holds a Postgres advisory lock before it starts
+anything, so over a deploy the new worker waits (logging `scheduler_lock_wait`) until the old one's SIGTERM frees it;
+a daily job whose time fell in the 90 minutes before it started, with no heartbeat since, is caught up once; and a
+start for a due minute claims the heartbeats row `<job>:<minute>`, so a second start for that minute runs nothing.

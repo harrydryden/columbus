@@ -4,7 +4,7 @@ Instantly marks an active campaign "completed" (status 3) once no lead is left t
 straight after `start` to the two campaigns with no leads yet (Harry Dryden's and Hannah MacIntosh's). Enrol gave
 only active campaigns leads, so they got none, stayed completed, and golive failed them however often
 `start --live` ran. Now a completed campaign takes leads, each add resumes it (capacity.resume_if_completed), and
-golive passes it. A paused campaign (a stop, a kill rule) still takes nothing and is never resumed by an add."""
+status's Campaigns check passes it (tests/test_live_checks.py). A paused campaign (a stop, a kill rule) still takes nothing and is never resumed by an add."""
 
 from __future__ import annotations
 
@@ -13,11 +13,9 @@ from types import SimpleNamespace
 import pytest
 
 from tests.test_enrol import CAMPAIGNS, make
-from tests.test_golive import lines_of, ready_world
 from tests.test_seed import C_HANNAH, SEED, h  # noqa: F401  (the seed harness fixture)
 from tests.test_seed import lead_posts
 from us_outbound.enrol import capacity, enrol
-from us_outbound.ops import cli
 
 HARRY = "US Outbound – Harry Dryden"
 
@@ -89,16 +87,3 @@ def test_a_seed_added_to_a_completed_campaign_resumes_it(h, capsys):  # noqa: F8
     assert h.run("seed", "send", SEED, "--owner", "Hannah Spalding", "--live") == 0
     assert len(lead_posts(h)) == 1 and h.instantly.by_name(C_HANNAH)["status"] == 1  # the fake's activate sets 1
     assert "Added. Instantly sends it in the campaign's window" in capsys.readouterr().out
-
-
-# -- golive ----------------------------------------------------------------------------------------------------------
-
-
-def test_golive_passes_a_completed_campaign_and_says_the_next_lead_resumes_it(monkeypatch, capsys):
-    f = ready_world(monkeypatch)
-    f.instantly.by_name(HARRY)["status"] = 3
-    assert cli.main(["golive"], context_factory=f) == 0
-    out = capsys.readouterr().out
-    assert lines_of(out)["Campaigns"].startswith("PASS  Campaigns")
-    assert f"{HARRY}: matches (completed); no lead left to email, and the next lead added resumes it" in out
-

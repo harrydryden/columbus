@@ -26,11 +26,10 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, replace
-from datetime import date, datetime
 from typing import Any
 
 from us_outbound.clients.guard import Op
-from us_outbound.clients.http import ApiError, HttpClient
+from us_outbound.clients.http import HttpClient
 
 MAX_PER_PAGE = 100
 MAX_PAGE = 500  # the display limit: 50,000 records = 500 pages of 100
@@ -55,10 +54,6 @@ READ_ENDPOINTS: dict[str, tuple[str, str]] = {
     "organizations.job_postings": ("GET", "/organizations/{organization_id}/job_postings"),
     "people.search": ("POST", "/mixed_people/api_search"),  # 0 credits; no emails returned
     "people.bulk_match": ("POST", "/people/bulk_match"),  # credits per revealed email
-    # Unused (docs/phase0-confirm.md, APO-VISIT-AGGREGATES): the REST path of Apollo's website-visitor domain
-    # aggregates, from the MCP tool apollo_website_visitors_domain_aggregates (organization_id, domain, from,
-    # to). Confirm it, and what a call costs, before a job calls it.
-    "website_visitors.domain_aggregates": ("GET", "/website_visitors/domain_aggregates"),
     # Organization search filtered to the companies that visited our tracked domain (sources/site_visits.py):
     # the same endpoint and price as organizations.search, its own action so the guard and the logs show it.
     "website_visitors.search": ("POST", "/mixed_companies/search"),
@@ -269,12 +264,6 @@ def _enrich_domain(domain: str) -> str:
     return str(domain or "").strip().lower().removeprefix("www.")
 
 
-def _yyyymmdd(value: date | datetime | str) -> str:
-    if isinstance(value, str):
-        return value.replace("-", "")
-    return value.strftime("%Y%m%d")
-
-
 class Apollo(HttpClient):
     system = "apollo"
     base_url = "https://api.apollo.io/api/v1"
@@ -448,34 +437,3 @@ class Apollo(HttpClient):
                 merged[key] += int(body.get(key) or 0)
             merged["credits_consumed"] += float(body.get("credits_consumed") or 0)
         return merged
-
-    def website_visitor_aggregates(
-        self,
-        domain: str,
-        organization_ids: Iterable[str],
-        *,
-        since: date | datetime | str | None = None,
-        until: date | datetime | str | None = None,
-    ) -> dict:
-        """{organization_id: aggregates} for visits to OUR tracked domain (spill.chat) by each company.
-
-        A company with no visits ("stats not found") maps to {}. Filtering paths to /us is
-        the caller's job (SPEC 7).
-        """
-        out: dict[str, Any] = {}
-        for org_id in dict.fromkeys(str(o) for o in organization_ids if o):
-            params: dict[str, Any] = {"domain": domain, "organization_id": org_id}
-            if since:
-                params["from"] = _yyyymmdd(since)
-            if until:
-                params["to"] = _yyyymmdd(until)
-            try:
-                out[org_id] = self._read(
-                    "website_visitors.domain_aggregates", target=domain, params=params, detail={"organization_id": org_id}
-                ) or {}
-            except ApiError as exc:
-                if exc.status in (404, 422):  # "stats not found": unconfirmed, as this is unused (APO-VISIT-AGGREGATES)
-                    out[org_id] = {}
-                else:
-                    raise
-        return out

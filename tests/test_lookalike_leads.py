@@ -17,10 +17,12 @@ import pytest
 
 from tests.fakes import FakeTransport, make_context
 from us_outbound.clients.http import ApiError
-from us_outbound.ops import cli, heartbeat, schedule
+from us_outbound.ops import cli, health, schedule
 from us_outbound.ops import scheduler as sch
+from us_outbound.clean.people import USPS_STATES
 from us_outbound.scoring.score import score_account
 from us_outbound.settings.model import SOURCE_FIELDS
+from us_outbound.sources import apollo_universe as uni
 from us_outbound.sources import lookalike_leads as ll
 from us_outbound.sources import lookalikes as lk
 from us_outbound.sources.lookalikes import Customer
@@ -217,11 +219,13 @@ def test_uk_seeds_bring_only_us_companies_in_active_states(default_settings, mon
     assert ctx.store.select("signal_events", {"account_id": a7, "source": "apollo_org", "fact": "hq_state"})[0]["value"] == "TX"
     assert not ctx.store.select("signal_events", {"account_id": "acc-old", "source": ll.SOURCE})  # found again: no fact
 
-    # Every lookalike search asks for the US, never CA or WA, the band, no insurers, and alike seeds, 5 at most.
+    # Every lookalike search asks for the active states (W3-3; code-sources B6: never the whole US, never CA or WA),
+    # the band, no insurers, and alike seeds, 5 at most.
     bodies = apollo.lookalike_bodies()
+    active = [f"{USPS_STATES[s]}, US" for s in uni.allowed_states(ctx.settings)]
     for b in bodies:
-        assert b["organization_locations"] == ["United States"]
-        assert b["organization_not_locations"] == ["California, US", "Washington, US"]
+        assert b["organization_locations"] == active and "organization_not_locations" not in b
+        assert not {"California, US", "Washington, US"} & set(b["organization_locations"])
         assert b["not_organization_naics_codes"] == ["524"] and len(b["organization_num_employees_ranges"]) == 1
         assert 1 <= len(b["lookalike_organization_ids"]) <= 5
         assert not ({"o-us1"} & set(b["lookalike_organization_ids"]) and len(b["lookalike_organization_ids"]) > 1)
@@ -258,7 +262,8 @@ def test_a_lookalike_lead_scores_the_signal(default_settings, monkeypatch):
     r = score_account(account, events, ctx.settings, ctx.today_uk())
     matched = {m.signal.signal: m.weight_applied for m in r.matches}
     assert matched["Found as a lookalike of a customer"] == 10
-    assert matched["Team of 10–49"] == 15 and r.tier == "Standard"  # measured on the company: out of Control
+    # Measured on the company: 15 + 10 = 25, in the queue (the tiers no longer split it by score: W2-2).
+    assert matched["Team of 10–49"] == 15 and (r.score, r.tier) == (25, "Queue")
     [m] = [m for m in r.matches if m.signal.signal == "Found as a lookalike of a customer"]
     assert "Found by Apollo's search by likeness as like an active Spill customer in the US" in m.evidence[0].text
 
@@ -361,11 +366,11 @@ def test_dry_run_writes_only_the_database(default_settings, monkeypatch):
 
 def test_once_a_month_and_the_daily_post(default_settings, monkeypatch):
     ctx, _ = world(default_settings, monkeypatch)
-    first = heartbeat.run_job(ctx, ll.run)
+    first = health.run_job(ctx, ll.run)
     assert first["status"] == "ok" and first["admitted"] == 3
     later = NOW + timedelta(hours=6)
     ctx2, _ = world(default_settings, monkeypatch, now=later, store=ctx.store)
-    second = heartbeat.run_job(ctx2, ll.run)
+    second = health.run_job(ctx2, ll.run)
     assert second["skipped"] and second["reason"].startswith("it ran on 01 Nov already")
     assert len(created(ctx2)) == 3  # nothing spent or added twice
 
@@ -381,22 +386,26 @@ def test_once_a_month_and_the_daily_post(default_settings, monkeypatch):
 
     # Next month it runs again, with that month's seeds.
     ctx4, _ = world(default_settings, monkeypatch, now=datetime(2026, 12, 1, 2, 50, tzinfo=UTC), store=ctx.store)
-    assert heartbeat.run_job(ctx4, ll.run)["status"] == "ok"
+    assert health.run_job(ctx4, ll.run)["status"] == "ok"
 
 
-def test_schedule_heartbeat_and_registry():
+def test_parked_off_the_schedule_and_not_expected_but_still_runnable_by_hand(default_settings):
+    """Parked before its first run on Sun 1 Nov (W0, 19 Oct 2026; code-sources B6): it paid for whole-US pages of
+    Apollo's search and kept only the active states. The scheduler never starts it, the heartbeat check never calls
+    it missed, and `us-outbound run lookalike_leads` still runs it (test_run_from_the_command_line)."""
     job = schedule.by_name()[ll.JOB]
-    assert (job.cron, job.live, job.enabled, job.timeout_minutes) == ("50 2 1 * *", False, True, 30)
-    assert cli.JOBS[ll.JOB] == "us_outbound.sources.lookalike_leads:run" and ll.JOB in heartbeat.scheduled_jobs()
-    # The 1st at 02:50 UK, after lookalikes (Mondays 02:30): 1 Nov 2026 is GMT.
-    assert sch.next_run(sch.Cron.parse(job.cron), datetime(2026, 10, 5, 12, tzinfo=UTC)) == datetime(
-        2026, 11, 1, 2, 50, tzinfo=UTC)
-    # A monthly job is never "missed" between its runs (31 days at most), and is once it skips a month.
-    assert heartbeat.EXPECTED[ll.JOB] == 32 * 24 * 60 and ll.JOB not in heartbeat.WEEKDAY_JOBS
+    assert (job.cron, job.live, job.enabled, job.timeout_minutes) == ("50 2 1 * *", False, False, 30)
+    assert ll.JOB in schedule.PARKED and ll.JOB not in schedule.enabled_names()
+    assert ll.JOB not in [j.name for j, _ in sch.Scheduler().jobs]
+    assert cli.JOBS[ll.JOB] == "us_outbound.sources.lookalike_leads:run" and ll.JOB in cli.built_jobs()
+    assert ll.JOB not in health.scheduled_jobs() and ll.JOB not in health.EXPECTED
+    # A run by hand on 1 Oct, then nothing for five weeks: a monthly job would be missed by 3 Nov (32 days of
+    # slack), a parked one is never flagged.
+    ctx = make_context(default_settings, now=datetime(2026, 11, 3, 3, 0, tzinfo=UTC))
     last = datetime(2026, 10, 1, 1, 55, tzinfo=UTC)
-    run = {"status": "ok", "started_at": last, "finished_at": last, "last_ok_at": last, "last_alive_at": last, "runs": 1}
-    assert heartbeat.overdue_minutes(ll.JOB, run, datetime(2026, 11, 1, 3, 0, tzinfo=UTC)) < 0
-    assert heartbeat.overdue_minutes(ll.JOB, run, datetime(2026, 11, 3, 3, 0, tzinfo=UTC)) > 0
+    ctx.store.insert("heartbeats", [{"run_id": "hand-1", "job": ll.JOB, "started_at": last, "finished_at": last,
+                                     "status": "ok", "dry_run": False, "detail": {}, "error": None}])
+    assert health.check_heartbeats(ctx, [ll.JOB]) == []
 
 
 def test_run_from_the_command_line(default_settings, monkeypatch, capsys):

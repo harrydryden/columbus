@@ -21,18 +21,35 @@ arms are uneven (share_a; Harry, 8 Oct 2026) counts N in its smaller arm and N s
 a count look, each arm's first N accounts (by step 1); for a date look, the accounts whose window had closed by
 that date. Replies count within each account's window and meetings until the look, so a read made a week late
 says what it would have said on time. Before the first look it refuses (exit 2) and says only how far each arm
-has got (accounts emailed, windows closed): never a reply, so nobody peeks. Reply rate decides (SPEC 12: the test
-detects a 2x difference); positive and meeting rates are for information, with the same two-proportion test as
-`signals review` (signal_review.p_value). Harry writes the result on the Tests tab.
+has got (accounts emailed, windows closed): never a reply, so nobody peeks. The registered metric decides, by the
+registered test (below; the read's summary line and `test read` say which, and whether it crosses); the other rates
+are for information. Harry writes the result on the Tests tab.
 
-An email an approver edited on its send card (approved_edited; enrol/approvals/) counts in the arm it was given,
-as assigned (Harry, 7 Oct 2026): leaving edits out would bias the comparison whenever approvers edit one arm's emails
-more than the other's (a warm intro they dislike, say), while counting them only dilutes it. Each arm's read says how
-many of its emails were edited (edited), so a large or lopsided number is seen.
+The test (W2-3, 20 Oct 2026; redteam-stats §3 L10), as the Tests tab pre-registers it (W3-4, 21 Oct 2026; settings/
+model.PRE_REGISTRATION): the metric (metric_id O4, any human reply within 28 days, or O3, a positive or referral one);
+the test (test fisher_exact: Fisher's exact two-sided p, learn/stats.fisher_exact, against this look's threshold; or
+beta_posterior: P(version_b > version_a) from Jeffreys Beta posteriors, stats.beta_posterior_gt, which crosses when it
+is above 1 - threshold/2 or below threshold/2, the two-sided equivalent); the total two-sided alpha; and the per-look
+thresholds (look_thresholds one_look: alpha at the read date, which is then the only look; obrien_fleming: the
+O'Brien-Fleming nominal p for the test's looks, stats.obrien_fleming: at the half-way look of two at 0.10, 0.011, and
+0.096 at the end). The other measure is printed beside it, never decided on. A test started before the registry
+(model.REGISTRY_FROM: warm-intro-70) is read as every test was until then: O4, Fisher, 0.10, O'Brien-Fleming (the
+model's DEFAULT_*). The pooled z-test used before W2-3 (signal_review's, gone) was anti-conservative at these rates:
+3 of 30 against 0 of 30 read p = 0.076 where Fisher's is 0.237.
+
+Each outcome is learn/outcomes.py's (the one definition, W2-3): an account's first step 1, delivered, a human reply
+within 28 days (the latest correction of a reply's class counting), meetings until the look.
+
+Every email counts in the arm it was given, as assigned (Harry, 7 Oct 2026). (An email an approver edited on its send
+card was counted that way too, and each read said how many; the send cards went with W2-1, 20 Oct 2026, after none was
+edited.)
 
 The Monday readout (learn/readout.py) lists each running test: a look reached in the last week, with its read,
 or how far it has got and its next look. The outcomes are counted as v_account_outcomes counts them, here in
 Python from the events table (as `test read` always did), so a read works on any store.
+
+Starting a test (start, from learn/copy_tests.py until W2-3; 9 Oct 2026, the refactoring scan's phase 6): a refusal is
+a ValueError, which `us-outbound test` reports in its own words (exit 2); reading before the first look is NotYet.
 """
 
 from __future__ import annotations
@@ -46,14 +63,15 @@ from us_outbound import fmt
 from us_outbound.base import say
 from us_outbound.clients.instantly import REPLY_WINDOW_DAYS
 from us_outbound.context import UK, Context
-from us_outbound.learn import signal_review
-from us_outbound.replies import kinds
-from us_outbound.settings.model import AB_TEST, HOLDOUT_ARMS, HOLDOUT_TEST, VARIANT_ARMS, VARIANT_TEST, Test
+from us_outbound.learn import outcomes, stats
+from us_outbound.settings.model import (AB_TEST, BETA_POSTERIOR, DEFAULT_ALPHA, HOLDOUT_ARMS, HOLDOUT_TEST, ONE_LOOK,
+                                        VARIANT_ARMS, VARIANT_TEST, Test)
 from us_outbound.timeparse import uk_midnight, utc
 
 WINDOW = timedelta(days=REPLY_WINDOW_DAYS)
-POSITIVE = kinds.WARM
-EDITED = "approved_edited"  # a send approval's outcome when the approver edited the card (enrol/approvals/)
+ALPHA = DEFAULT_ALPHA  # two-sided (one-sided 0.05): a test with no alpha on the Tests tab (one started before W3-4)
+MEASURES = {"O4": "replied", "O3": "positive"}  # metric_id -> the count it is decided on
+METRIC_WORDS = {"O4": "any human reply within 28 days", "O3": "a positive or referral reply within 28 days"}
 
 
 class NotYet(Exception):
@@ -62,26 +80,26 @@ class NotYet(Exception):
 
 @dataclass(frozen=True)
 class Outcome:
-    """One account in an arm: its first step 1 (delivered) and what followed."""
+    """One account in an arm: its first step 1 (delivered) and what followed (learn/outcomes.Outcome's)."""
 
     account_id: str
     step1_at: datetime
-    replies: tuple[tuple[datetime, str], ...] = ()  # (when, class) of each reply at the account
-    meetings: tuple[datetime, ...] = ()
-    edited: bool = False  # its step-1 contact's emails were edited on the send card before they went
+    did_reply: bool = False  # a human reply within the 28 days
+    did_positive: bool = False  # a positive or referral one
+    first_meeting_at: datetime | None = None
 
     @property
     def closes_at(self) -> datetime:
         return self.step1_at + WINDOW
 
     def replied(self) -> bool:
-        return any(self.step1_at <= t < self.closes_at and kinds.is_human(c) for t, c in self.replies)
+        return self.did_reply
 
     def positive(self) -> bool:
-        return any(self.step1_at <= t < self.closes_at and c in POSITIVE for t, c in self.replies)
+        return self.did_positive
 
     def met(self, by: datetime) -> bool:
-        return any(self.step1_at <= t < by for t in self.meetings)
+        return self.first_meeting_at is not None and self.first_meeting_at < by
 
 
 @dataclass
@@ -166,29 +184,12 @@ def arms(ctx: Context, test: Test) -> dict[str, Arm]:
         out[arm].accounts += 1
     if not members:
         return out
-    events = ctx.store.select("events", {"account_id": sorted(members),
-                                         "type": ["sent", "bounced", "replied", "meeting_booked", "send_approval"]})
-    by_account: dict[str, list[dict]] = {}
-    for e in events:
-        by_account.setdefault(str(e["account_id"]), []).append(e)
-    never = datetime.max.replace(tzinfo=UTC)
-    for account_id, arm in members.items():
-        evs = sorted(by_account.get(account_id, []),
-                     key=lambda e: (utc(e.get("occurred_at")) or never, str(e.get("event_id"))))
-        step1 = next((e for e in evs if e.get("type") == "sent" and e.get("step") == 1 and utc(e.get("occurred_at"))),
-                     None)
-        if step1 is None:
+    for o in outcomes.per_company(ctx):
+        arm = members.get(o.account_id)
+        if arm is None or not o.delivered:
             continue
-        bounced = any(e.get("type") == "bounced" and e.get("contact_id") == step1.get("contact_id")
-                      and e.get("step") in (1, None) for e in evs)
-        if bounced:
-            continue
-        replies = tuple((t, str(e.get("reply_class") or "").strip().lower()) for e in evs
-                        if e.get("type") == "replied" and (t := utc(e.get("occurred_at"))))
-        meetings = tuple(t for e in evs if e.get("type") == "meeting_booked" and (t := utc(e.get("occurred_at"))))
-        edited = any(e.get("type") == "send_approval" and e.get("approval") == EDITED
-                     and e.get("contact_id") == step1.get("contact_id") for e in evs)
-        out[arm].emailed.append(Outcome(account_id, utc(step1["occurred_at"]), replies, meetings, edited))
+        out[arm].emailed.append(Outcome(o.account_id, o.step1_at, o.replied_in_window, o.positive_in_window,
+                                        o.first_meeting_at))
     for a in out.values():
         a.emailed.sort(key=lambda o: (o.step1_at, o.account_id))
     return out
@@ -268,13 +269,20 @@ def read(ctx: Context, test_id: str) -> dict:
     for name, arm in by_arm.items():
         group = covered(arm, look)
         s = {"accounts": arm.accounts, "delivered": len(group), "replied": sum(o.replied() for o in group),
-             "positive": sum(o.positive() for o in group), "meetings": sum(o.met(look.reached_at) for o in group),
-             "edited": sum(o.edited for o in group)}  # counted in their arm, as assigned (module docstring)
+             "positive": sum(o.positive() for o in group), "meetings": sum(o.met(look.reached_at) for o in group)}
         versions[name] = {**s, "reply_rate": _rate(s["replied"], s["delivered"]),
                           "positive_rate": _rate(s["positive"], s["delivered"]),
                           "meeting_rate": _rate(s["meetings"], s["delivered"])}
     a, b = (versions[n] for n in arm_names(test))
-    p = signal_review.p_value(a["delivered"], a["replied"], b["delivered"], b["replied"])
+    measure = MEASURES[test.metric]
+    threshold = look_threshold(test, len(all_looks), look.number)
+    p = stats.fisher_exact(a[measure], a["delivered"], b[measure], b["delivered"]) if a["delivered"] and \
+        b["delivered"] else None
+    b_better = stats.beta_posterior_gt(b[measure], b["delivered"], a[measure], a["delivered"])
+    if test.method == BETA_POSTERIOR:
+        crossed = b_better > 1 - threshold / 2 or b_better < threshold / 2
+    else:
+        crossed = p is not None and p < threshold
     nxt = upcoming(all_looks, ctx.now)
     return {
         "test_id": test.test_id, "kind": test.kind, "version_a": test.version_a, "version_b": test.version_b,
@@ -282,26 +290,54 @@ def read(ctx: Context, test_id: str) -> dict:
                  "reached_at": look.reached_at.isoformat()},
         "next_look": nxt.label if nxt else None,
         "looks": [{"label": lk.label, "reached": lk in reached(all_looks, ctx.now)} for lk in all_looks],
-        "versions": versions, "reply_p_value": round(p, 4) if p is not None else None,
+        "versions": versions, "reply_p": round(p, 4) if p is not None else None,
+        "metric_id": test.metric, "measure": measure, "reply_test": test.method,
+        "look_threshold": round(threshold, 4), "alpha": test.total_alpha, "look_thresholds": test.look_rule,
+        "pre_registered": test.pre_registered,
+        "below_threshold": p is not None and p < threshold, "crossed": crossed,
+        "p_b_better": round(b_better, 3),
         "decision_rule": test.decision_rule, "status": test.status,
     }
 
 
+def look_threshold(test: Test, looks_n: int, number: int) -> float:
+    """The nominal two-sided p look `number` (1-based) of `looks_n` must beat, by the test's look_thresholds: one_look,
+    the alpha itself (the read date is the one look); obrien_fleming, stats.obrien_fleming at the test's alpha."""
+    if test.look_rule == ONE_LOOK:
+        return test.total_alpha
+    return stats.obrien_fleming(looks_n, test.total_alpha)[number - 1]
+
+
 def summary_line(result: Mapping[str, Any]) -> str:
-    """One line of a read: each arm's reply rate, and the test's p."""
-    arms_text = "; ".join(f"{name} {v['replied']} of {v['delivered']} replied ({fmt.pct(v['replied'], v['delivered'])})"
+    """One line of a read, as the test was registered (W3-4 r1): each arm's count of the measure it is decided on
+    (replied for O4, positive for O3), the decision statistic against this look's threshold (Fisher's p below it, or
+    P(b better) outside threshold/2 … 1 − threshold/2), whether it crosses, then the other statistic for information."""
+    measure = result.get("measure") or MEASURES["O4"]
+    arms_text = "; ".join(f"{name} {v[measure]} of {v['delivered']} {measure} ({fmt.pct(v[measure], v['delivered'])})"
                           for name, v in result["versions"].items())
-    p = result.get("reply_p_value")
-    return arms_text + (f" · p = {p:.2f}" if p is not None else "")
+    p, b_better, t = result.get("reply_p"), result.get("p_b_better"), result.get("look_threshold")
+    b_name = result.get("version_b") or "b"
+    fisher = f"Fisher p = {p:.3f}" if p is not None else "Fisher p not computable (an arm has no company)"
+    posterior = f"P({b_name} better) = {b_better:.3f}" if b_better is not None else ""
+    crosses = "crosses" if result.get("crossed") else "does not cross"
+    if result.get("reply_test") == BETA_POSTERIOR:
+        decide = f"{posterior} (crosses outside {t / 2:.3f} … {1 - t / 2:.3f})" if t is not None else posterior
+        other = fisher
+    else:
+        decide = f"{fisher} (this look's threshold {t:.3f})" if t is not None and p is not None else fisher
+        other = posterior
+    return f"{arms_text} · {decide}: {crosses}" + (f" · {other}, for information" if other else "")
 
 
-def edited_line(result: Mapping[str, Any]) -> str:
-    """How many emails each arm had edited on the send card, or "" when none was: they count in their arm."""
-    versions = result["versions"].items()
-    if not any(v.get("edited") for _, v in versions):
-        return ""
-    each = ", ".join(f"{name} {v.get('edited', 0)} of {v['delivered']}" for name, v in versions)
-    return f"Edited by an approver before sending, and counted in the arm they were given: {each}."
+def decides_line(result: Mapping[str, Any]) -> str:
+    """What decides the read, from its registration (`test read`; W3-4 r1): the metric, the test and the rule."""
+    metric = result.get("metric_id") or "O4"
+    how = (f"P({result.get('version_b') or 'b'} better) from Beta posteriors, crossing outside threshold/2 … "
+           "1 − threshold/2" if result.get("reply_test") == BETA_POSTERIOR
+           else "Fisher's exact two-sided p, crossing below this look's threshold")
+    rule = result.get("look_thresholds") or ""
+    return (f"{metric} ({METRIC_WORDS.get(metric, metric)}) decides, by {how} ({rule}, total alpha "
+            f"{result.get('alpha', ALPHA):.2f}); the other counts and meetings are for information.")
 
 
 KIND_WORDS = {AB_TEST: "A/B copy test", VARIANT_TEST: "one-change variant test", HOLDOUT_TEST: "holdout test"}
@@ -336,3 +372,100 @@ def readout_lines(ctx: Context, since: datetime) -> tuple[list[str], list[str]]:
         out.append(f"    *What to do:* apply its decision rule{rule} and write the outcome in the `result` column on "
                    f"the {tab}{then}. {read_cmd} has the full read.")
     return (out or ["  No test is running."]), at_look
+
+
+# -- starting a test (learn/copy_tests.py until W2-3) ------------------------------------------------------------------
+
+
+def start(ctx: Context, test_id: str) -> dict:
+    """Pre-registration first (SPEC 12; Harry, 6 Oct 2026: kind and looks, learn/looks.py). One copy test (kind ab,
+    or variant: Harry, 7 Oct 2026) runs at a time, since it decides each account's copy (SPEC 9); a holdout assigns
+    nothing, so it may run beside it, and its versions are the arms enrol records, not Copy rows. A variant's row is
+    checked as settings_sync checks it (its texts against the copy rules; enrol/variants.py), and refused when it
+    breaks one; the result says which sendable Copy rows the change can be made in (variants.coverage), and a
+    change that fits none of them is refused."""
+    from us_outbound.settings.model import AB_TEST, COPY_TEST_KINDS, TEST_KINDS, VARIANT_TEST
+    from us_outbound.settings.validate import parse_looks, parse_share, validate_tab
+
+    sheet_id = ctx.guard.bounds.settings_sheet_id
+    if not sheet_id:
+        raise ValueError("no settings sheet id: set US_OUTBOUND_SETTINGS_SHEET_ID")
+    rows = ctx.clients.sheets.read_tabs(sheet_id, ["Tests"])["Tests"]
+    row = next((r for r in rows if r.get("test_id", "").strip() == test_id), None)
+    if row is None:
+        raise ValueError(f"no test {test_id!r} on the Tests tab")
+
+    def kind(r: dict) -> str:
+        return (r.get("kind") or "").strip().lower() or AB_TEST
+
+    if kind(row) not in TEST_KINDS:
+        raise ValueError(f"kind {row.get('kind')!r} on the Tests tab is not one of {', '.join(TEST_KINDS)}")
+    others = [r["test_id"] for r in rows if r.get("status", "").strip().lower() == "running"
+              and r.get("test_id", "").strip() != test_id and kind(r) in COPY_TEST_KINDS]
+    if others and kind(row) in COPY_TEST_KINDS:
+        raise ValueError(f"only one copy test (ab or variant) runs at a time (SPEC 9); {', '.join(others)} is running")
+    copy_rows: dict[str, Any] = {}
+    if kind(row) == VARIANT_TEST:
+        from us_outbound.enrol import enrol, variants
+
+        checked, errors = validate_tab("Tests", [row])
+        if errors:
+            raise ValueError("the Tests tab's row does not pass the checks settings_sync makes: "
+                          + "; ".join(f"{e.column}: {e.message}" for e in errors[:6]))
+        fits, not_ = variants.coverage(checked[0], enrol.sendable_copy(ctx.settings).values(), ctx.settings)
+        if not_ and not fits:
+            raise ValueError("the change cannot be made in any sendable Copy row, so the test would have no accounts: "
+                          + "; ".join(f"{v}: {why}" for v, why in list(not_.items())[:4]))
+        copy_rows = {"change_fits": len(fits), "sendable": len(fits) + len(not_),
+                     "not_in_the_test": dict(list(not_.items())[:10])}
+    if row.get("status", "").strip().lower() == "running":
+        return {"test_id": test_id, "status": "running", "changed": False}
+    read_date = row.get("read_date", "").strip()
+    if not read_date or not row.get("decision_rule", "").strip():
+        raise ValueError("pre-register the read_date and decision_rule on the Tests tab first (SPEC 12)")
+    try:
+        parse_looks(row.get("looks", "") or "")
+    except ValueError as exc:
+        raise ValueError(f"looks on the Tests tab: {exc}") from exc
+    start = row.get("start_date", "").strip() or ctx.today_uk().isoformat()
+    # The row as it will be written, checked as settings_sync will read it, whatever its kind (9 Oct 2026: a read_date
+    # of 2026-9-30 passed a comparison of text, the sheet said running, and the next sync refused the tab).
+    checked_row, errors = validate_tab("Tests", [{**row, "status": "running", "start_date": start}])
+    if errors:
+        raise ValueError("the Tests tab's row would not pass the checks settings_sync makes once it is running: "
+                      + "; ".join(f"{e.column}: {e.message}" for e in errors[:6]))
+    # From REGISTRY_FROM (W3-4, 21 Oct 2026; design-final §5 L10): the one test running, and the one split drawing arms.
+    t = checked_row[0]
+    if t.registered:
+        running = [r["test_id"] for r in rows if r.get("status", "").strip().lower() == "running"
+                   and r.get("test_id", "").strip() != test_id]
+        if running:
+            raise ValueError(f"only one test runs at a time: {', '.join(running)} is running; stop it first")
+        split_now = ctx.settings.general.live_split
+        if split_now != t.split():
+            raise ValueError(f"set General live_split to {t.split()} first (it is {split_now}), so that this test is "
+                             "the one split drawing arms")
+    split: dict[str, str] = {}
+    if (row.get("share_a") or "").strip():  # version_a's share of the accounts (Harry, 8 Oct 2026)
+        try:
+            share = parse_share(row["share_a"])
+        except ValueError as exc:
+            raise ValueError(f"share_a on the Tests tab: {exc}") from exc
+        split = {"split": f"{row.get('version_a', '').strip()} {share:.0%}, {row.get('version_b', '').strip()} "
+                          f"{1 - share:.0%}"}
+    if kind(row) == AB_TEST:
+        missing = [
+            v for v in (row.get("version_a", "").strip(), row.get("version_b", "").strip())
+            if (c := ctx.settings.copy_row(v)) is None or c.status != "approved" or not c.qa_current
+        ]
+        if missing:
+            raise ValueError("copy is not approved, with a current QA pass, in the synced settings for: "
+                          + ", ".join(missing))
+    sheets = ctx.clients.sheets
+    writes = [("start_date", start)] if not row.get("start_date", "").strip() else []
+    for column, value in [*writes, ("status", "running")]:
+        if not sheets.update_cell(sheet_id, "Tests", {"test_id": test_id}, column, value):
+            raise ValueError(f"no row for test {test_id!r} on the Tests tab to update")
+    return {"dry_run": ctx.dry_run, "test_id": test_id, "kind": kind(row), "status": "running", "start_date": start,
+            "looks": row.get("looks", "").strip(), "read_date": read_date, "changed": ctx.live, **split,
+            **({"copy_rows": copy_rows} if copy_rows else {})}

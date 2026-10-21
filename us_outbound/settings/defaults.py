@@ -33,26 +33,55 @@ _GENERAL: list[tuple[str, str, str]] = [
         "live_sending",
         "no",
         "The master switch and Harry's sign-off. no: nothing reaches a prospect or Instantly. yes: emails go out "
-        "(each still waits for your ✅ while auto_send is no). Sheet edits apply at the next sync (02:00 and 11:30 "
+        "once the day's leads are added to Instantly. Sheet edits apply at the next sync (02:00 and 11:30 "
         "UK on weekdays), or now with `us-outbound sync`. To stop sending that is already under way, run "
         "`us-outbound stop --live`.",
     ),
+    ("weekly_enrol_cap", "150", "Most new contacts enrolled in a week (Monday to Sunday, UK time): one a company. Each send day takes what is left of it ÷ the send days left in the week."),
+    # control_share, priority_threshold, standard_threshold and auto_thresholds are retired
+    # (settings/validate.RETIRED_GENERAL; Harry's D7, 19 Oct 2026; W2-2): the tiers went, and explore_share's random
+    # arm took the Control tier's place.
     (
-        "auto_send",
-        "no",
-        "no (the pilot): every email waits for an approver's ✅ on its card in #us-outbound. yes: emails go straight "
-        "to Instantly once the weekly hand-check is approved. Nothing goes out while live_sending is no.",
+        "explore_share",
+        "0.15",
+        "Share of each day's new companies picked at random from the ready queue, within the Focus shares, instead "
+        "of in score order, so replies can show whether the score helps (contacts.arm). 0: none, every company in "
+        "score order. At most 0.25. Harry chose 0.15 (19 Oct 2026). Added by the build.",
     ),
-    ("weekly_enrol_cap", "150", "Most new contacts enrolled in a week (Monday to Sunday, UK time): one a company, and a second contact (second_contact) counts too. Each send day takes what is left of it ÷ the send days left in the week."),
-    ("control_share", "0.15", "Share of each day's enrollment taken from the Control tier."),
-    ("priority_threshold", "50", "Score at or above this is Priority."),
-    ("standard_threshold", "20", "Score at or above this is Standard; below it is Control."),
-    ("score_cap", "100", "Cap on an account's total score."),
     (
-        "clay_monthly_credits",
-        "2000",
-        "Clay credits the jobs may spend each calendar month (UK time), about 500 a week. "
-        "Each weekday may use what is left ÷ the weekdays left. 0 means no Clay calls.",
+        "hand_check_sample",
+        "10",
+        "How many companies the weekly hand-check asks you to judge, from 1 to 50. Added by the build (Harry, "
+        "19 Oct 2026).",
+    ),
+    (
+        "hand_check_gate",
+        "yes",
+        "yes: no new leads go to Instantly in a week until its hand-check is done (every sampled row has a decision). "
+        "no: only the companies picked for the hand-check wait, until you decide each one or for 7 days at most; "
+        "everyone else is emailed as usual. Added by the build (Harry, 19 Oct 2026).",
+    ),
+    (
+        "early_warning_pause",
+        "no",
+        "yes: when the early warning fires (no human reply from 100 companies whose reply window has closed), new "
+        "enrolment pauses as well as the alert. no: the alert only. Added by the build (Harry, 19 Oct 2026).",
+    ),
+    (
+        "live_split",
+        "both",
+        "Which random split new contacts are drawn into, so that one experiment runs at a time. both: as today, the "
+        "opener holdout, the email 1 subject split and the running test on the Tests tab. opener: the opener holdout "
+        "alone. subject: the subject split alone. test: the running test on the Tests tab alone. none: no split. "
+        "Contacts already enrolled keep theirs. Added by the build (21 Oct 2026).",
+    ),
+    (
+        "copy_level_policy",
+        "no",
+        "yes: a company's emails use its industry label's own copy only when the monthly label sample shows labels "
+        "decided that way are exactly right at least 90% of the time (20 or more judged); otherwise its group's "
+        "copy. no: as today. The Monday readout says what it would change either way. Added by the build "
+        "(20 Oct 2026).",
     ),
     (
         "apollo_monthly_credits",
@@ -65,11 +94,10 @@ _GENERAL: list[tuple[str, str, str]] = [
     (
         "approver_slack_ids",
         "",
-        "Slack member ids (U…) whose ✅ counts on send cards and reply drafts, comma-separated. Harry: U098X453UAG. "
+        "Slack member ids (U…) whose ✅ counts on reply drafts, comma-separated. Harry: U098X453UAG. "
         "A mailbox owner's slack_id (Mailboxes tab) can also approve replies to their own mailbox.",
     ),
-    ("escalation_email", "harry@spill.chat", "Where human-in-the-loop items go after escalation_hours."),
-    ("escalation_hours", "24", "Hours before an open item is emailed to escalation_email."),
+    ("escalation_email", "harry@spill.chat", "Where human-in-the-loop items go after 24 hours open."),
     ("alert_channel", "#us-outbound", "Alerts, approvals, the daily post and the Monday readout."),
     ("dev_channel", "#us-outbound-dev", "The only channel dry-run posts to. Added by the build."),
     ("booking_link", "https://meetings.hubspot.com/harry336/us-demo-link",
@@ -87,8 +115,6 @@ _GENERAL: list[tuple[str, str, str]] = [
         "2026-11-23..2026-11-27, 2026-12-18..2027-01-04",
         "No enrollment on these dates: comma-separated YYYY-MM-DD..YYYY-MM-DD ranges (Thanksgiving week; the holidays).",
     ),
-    ("recontact_person_months", "12", "Not used yet; leave as it is."),
-    ("recontact_account_months", "6", "Not used yet; leave as it is."),
     (
         "stop_rule_accounts",
         "1500",
@@ -102,12 +128,7 @@ _GENERAL: list[tuple[str, str, str]] = [
         "Stop rule: enrollment also pauses when more than this share of the accounts sent step 1 in the last "
         "30 days bounced (at least 100 accounts; kill_rules, hourly). Added by the build.",
     ),
-    (
-        "stop_rule_complaint_rate",
-        "0.003",
-        "Stop rule: and when more than this share of them made a spam complaint (Google's 0.3% line). "
-        "Added by the build.",
-    ),
+    # stop_rule_complaint_rate is retired (settings/validate.RETIRED_GENERAL; W2-3): nothing reports a complaint.
     (
         "optout_tested",
         "no",
@@ -116,90 +137,12 @@ _GENERAL: list[tuple[str, str, str]] = [
     ),
     ("hubspot_pipeline", "Spill 3.0", "Deals go in this pipeline."),
     ("hubspot_pipeline_id", "",
-     "The pipeline's id. From `us-outbound hubspot ids`. Without it, a positive reply creates no HubSpot deal."),
-    ("hubspot_deal_stage", "", "Not used yet; leave as it is."),
+     "The pipeline's id (HubSpot: Settings, Objects, Deals, Pipelines). Without it, a positive reply creates no "
+     "HubSpot deal."),
     ("hubspot_deal_stage_id", "",
-     "Its first stage's id. From `us-outbound hubspot ids`. Without it, a positive reply creates no HubSpot deal."),
+     "Its first stage's id (the same HubSpot page). Without it, a positive reply creates no HubSpot deal."),
     ("hubspot_owner_id", "",
-     "Harry's HubSpot owner id. From `us-outbound hubspot ids`. Without it, a positive reply creates no HubSpot deal."),
-    ("clay_accounts_function_id", "", "Clay function \"US Outbound – Accounts\", once built in phase 0."),
-    ("clay_contacts_function_id", "", "Clay function \"US Outbound – Contacts\", once built in phase 0."),
-    ("clay_credits_per_account", "0", "Not used yet; leave as it is."),
-    (
-        "clay_verification",
-        "skip",
-        "required: every account passes through Clay before it can be emailed (SPEC 2, verify_in_clay). "
-        "skip: verify_accounts verifies an account on its Apollo data and HubSpot instead. "
-        "Harry, 1 Oct 2026: go live on 5 Oct before the Clay functions exist; set to required once they do.",
-    ),
-    (
-        "clay_email_fallback",
-        "no",
-        "yes: when Apollo has no verified email for the chosen person (a miss or a catch-all), pick_contacts asks "
-        "Clay's Work Email waterfall, within clay_monthly_credits; only a valid result is used. "
-        "Harry, 2 Oct 2026: no until Clay's server-callable path is confirmed: run "
-        "`us-outbound clay check-email --first YOUR_FIRST_NAME --last YOUR_LAST_NAME --domain spill.chat --live` "
-        "first; it says when to set this to yes.",
-    ),
-    (
-        "clay_cross_check",
-        "no",
-        "yes: before an account whose HQ state or size Apollo leaves in doubt goes to the weekly hand-check, "
-        "verify_accounts asks Clay's \"US Outbound – Accounts\" function (clay_accounts_function_id) once, within "
-        "clay_monthly_credits. A doubt Clay settles is dropped; where Clay disagrees, the hand-check shows both counts or "
-        "states. A missing HQ state or size is filled in from Clay. Needs clay_accounts_function_id. Harry, 6 Oct 2026: "
-        "no until the function is built in Clay (docs/pipeline.md has its spec).",
-    ),
-    (
-        "second_contact",
-        "no",
-        "yes: at companies of second_contact_min_employees or more staff, a second person of another role (the "
-        "founder, say, when the first was the People leader) gets their own emails, from the same sender, "
-        "second_contact_delay_days after the first person's email 1. Second contacts take only the room the first "
-        "contacts of new companies leave, and count towards the week and each sender's day like anyone. When anyone "
-        "at the company replies, bounces, unsubscribes or complains, both people's emails stop. no: one person per "
-        "company. Harry, 6 Oct 2026: no while sending capacity is the limit.",
-    ),
-    (
-        "second_contact_min_employees",
-        "50",
-        "The smallest company, by staff, that gets a second contact. Read as the Roles tab reads size, so a company "
-        "in the 50-99 band counts as 50.",
-    ),
-    (
-        "second_contact_delay_days",
-        "3",
-        "Days after the first person's email 1 before the second person's, so the two never arrive the same day "
-        "(at least 1). A multiple of 7 would put the second's emails on the days of the first's follow-ups.",
-    ),
-    ("apollo_credits_per_account", "1", "Not used yet; leave as it is."),
-    (
-        "apollo_enrich_groups",
-        "Technology & Startups",
-        "Industry groups whose queued accounts apollo_enrich enriches through Apollo for funding and an exact "
-        "employee count, comma-separated (1 credit per company found, within 15% of apollo_monthly_credits; again "
-        "after 180 days). Blank enriches none. Harry, 2 Oct 2026: funding as a sign of change and growth, where "
-        "funding is common. Added by the build.",
-    ),
-    (
-        "site_visit_domain",
-        "spill.chat",
-        "The website Apollo's visitor tracker is installed on. Each morning at 06:00 UK, site_visits reads the "
-        "companies that visited it in the last 30 days for the website-visit signals (a few Apollo credits a "
-        "day). Blank: nothing is read. Added by the build.",
-    ),
-    (
-        "site_visit_us_paths",
-        "/us",
-        "Pages that count as a visit to the US site, comma-separated. A page counts when its path contains one "
-        "of these, so /us also counts /us/pricing. Added by the build.",
-    ),
-    (
-        "site_visit_intent_paths",
-        "/us/pricing, /us/demo, /us/book",
-        "Pages that count as a pricing or demo visit, comma-separated, matched the same way, so /us/book counts "
-        "/us/book-demo. Blank: no pricing or demo signal. Added by the build.",
-    ),
+     "Harry's HubSpot owner id (HubSpot: Settings, Users). Without it, a positive reply creates no HubSpot deal."),
     (
         "min_employees",
         "10",
@@ -260,18 +203,6 @@ _GENERAL: list[tuple[str, str, str]] = [
     ("opener_generic_ops", General.opener_generic_ops,
      "The generic opener for operations. Added by the build."),
     (
-        "opener_focus",
-        "no",
-        "yes: an account with no signal line gets opener_focus_line, with a short \"what they do\" phrase the "
-        "task model takes from Apollo's keywords and description (about $0.002 an account, once, in live runs "
-        "only; within the monthly cap). Added by the build.",
-    ),
-    (
-        "opener_focus_line",
-        "I came across {company} and its work on {focus}.",
-        "The line opener_focus uses. Tokens: {company}, {focus}, {city}. Added by the build.",
-    ),
-    (
         "email1_subject",
         General.email1_subject,
         "Email 1's personal subject, for the email1_subject_share of companies: short, lower case and about the "
@@ -283,7 +214,7 @@ _GENERAL: list[tuple[str, str, str]] = [
         "0.5",
         "Share of companies whose email 1 uses email1_subject instead of the Copy row's s1_subject, chosen by a "
         "hash of the account id (independent of the opener holdout), so replies can compare the two "
-        "(contacts.subject_arm; `us-outbound signals review`). 0: every email 1 keeps the Copy row's subject. "
+        "(contacts.subject_arm; `us-outbound report signals`). 0: every email 1 keeps the Copy row's subject. "
         "Added by the build (Harry, 5 Oct 2026).",
     ),
 ]
@@ -400,6 +331,8 @@ _BENEFITS_LINES = (
 
 # signal, source, looks_for, context_rule, weight, max_weight, action, suggests_angle, opener, counts_for_days,
 # active, note: the Signals tab's columns in order, but for the opener lines by role (_OPENERS, below).
+# W2-2 (20 Oct 2026; code-scoring B5): Nonprofit budget, Nonprofit fiscal year ahead (irs_bmf) and Named by Harry
+# (named) went: no source writes their facts. The Layoffs row and its Suppress action stay until D11.
 _SIGNALS: list[tuple[str, str, str, str, str, str, str, str, str, str, str, str]] = [
     (
         "Mental health support listed", "clay_careers, careers_pages, job_posts",
@@ -470,7 +403,7 @@ _SIGNALS: list[tuple[str, str, str, str, str, str, str, str, str, str, str, str]
         "open_people_roles >= 1 AND people_leader_count = 0 AND people_search_coverage >= 0.5",
         "", "20", "", "Score", "Growing team", _PEOPLE_ROLE_LINES[0], "60", "yes",
         "Harry, 5 Oct 2026: replaces First People hire, which could never fire, as nothing wrote a count of 0. "
-        "apollo_people (weekdays 04:20) writes people_leader_count = 0 only where Apollo holds at least half the "
+        "contact_precheck (weekdays 05:15) writes people_leader_count = 0 only where Apollo holds at least half the "
         "company's headcount (people_search_coverage), so finding no People leader there likely means there is none; "
         "the coverage is in the condition too, so a later thin search turns it off. +20, not +25: it is an inference. "
         f"People role open fires with it. {_CONTEXT_NOTE}",
@@ -516,15 +449,6 @@ _SIGNALS: list[tuple[str, str, str, str, str, str, str, str, str, str, str, str]
         f"{_APPENDIX_A}: +15 to +25; with Visited the US site it makes Priority.",
     ),
     (
-        "Nonprofit budget", "irs_bmf", "revenue >= 2000000 AND revenue <= 50000000",
-        "", "15", "", "Score", "", "", "400", "yes", "SPEC 5 default.",
-    ),
-    (
-        "Nonprofit fiscal year ahead", "irs_bmf",
-        "days_to_fiscal_year_start >= 60 AND days_to_fiscal_year_start <= 120",
-        "", "20", "", "Score", "", "", "1", "yes", "SPEC 5 default. Recomputed daily.",
-    ),
-    (
         "Q4 plan-year window", "calendar", "month in [10, 11, 12]",
         "", "10", "", "Score", "", "", "1", "no",
         f"{_APPENDIX_A}: inactive. It added 10 to every account from October to December, so it could not tell "
@@ -547,11 +471,6 @@ _SIGNALS: list[tuple[str, str, str, str, str, str, str, str, str, str, str, str]
         "Suppresses the domain for 90 days after a layoff. SPEC 5 default.",
     ),
     (
-        "Named by Harry", "named", "named = true",
-        "", "30", "", "Score", "", "", "365", "yes",
-        "Companies on the Named accounts tab (Harry, 30 Sep 2026). They pass every other check as usual.",
-    ),
-    (
         "Close match to Spill's customers", "lookalike", "lookalike_fit >= 70",
         "", "10", "", "Score", "", "", "120", "yes",
         "Harry, 5 Oct 2026: the lookalike graded by industry, size and growth rate. lookalike_fit (0 to 100; "
@@ -562,7 +481,7 @@ _SIGNALS: list[tuple[str, str, str, str, str, str, str, str, str, str, str, str]
         "standard_threshold, and on 5 Oct Control held 300 of 432 open accounts. So a close lookalike with no "
         "observed signal is Standard now, and Control holds the accounts that fit less well. On 5 Oct any weight "
         "from +5 to +15 gave the same tiers (Standard 163 of 421, 39%), and +10 leaves room for observed signals "
-        "to order them. `us-outbound lookalikes fit` shows the fits and the tier mix these rows give.",
+        "to order them. `us-outbound report lookalikes` shows the top cells and what the signal scores.",
     ),
     (
         "Some match to Spill's customers", "lookalike", "lookalike_fit >= 45 AND lookalike_fit < 70",
@@ -831,6 +750,11 @@ _FIRST_TEST = {
     "text_b": "",
     "find": "",
     "share_a": "",
+    "metric_id": "O4",
+    "definition_version": "2026-10-20",  # learn/metrics.DEFINITION_VERSION
+    "test": "fisher_exact",
+    "alpha": "0.10",
+    "look_thresholds": "one_look",
 }
 
 
@@ -869,7 +793,6 @@ def default_tabs() -> dict[str, list[dict[str, str]]]:
         "Overrides": [],
         "Tests": [dict(_FIRST_TEST)],
         "Focus": _rows("Focus", _FOCUS),
-        "Named accounts": [],
     }
     for tab, rows in tabs.items():
         for row in rows:

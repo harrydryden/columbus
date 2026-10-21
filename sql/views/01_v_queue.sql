@@ -1,16 +1,19 @@
 -- v_queue: the accounts waiting to be enrolled, in enrollment order (SPEC 9).
--- SPEC 9, daily enrollment: "Of that number, control_share comes from the Control tier.
--- The rest comes from Priority, then Standard, ordered by score, then by size band
--- (20 to 99 first), then by industry priority."
---   in the queue:  status verified or queued, tier Priority, Standard or Control.
+-- SPEC 9, daily enrollment, as built since W2-2 (20 Oct 2026; Harry's D7): the accounts are taken by score, then by
+-- size band (20 to 99 first), then by industry priority; explore_share of each day's number comes from the random
+-- arm pick_contacts drew (accounts.arm), which this view does not order. The Priority, Standard and Control tiers
+-- were score ranges, so the order by score is the order they gave; a row a rescore has not reached since still
+-- carries one of them and reads as Queue until it does.
+--   in the queue:  status verified or queued, tier Queue (or a retired Priority, Standard or Control). Never new (not
+--                  checked yet), disqualified (left out), parked (out while its industry is switched off: W1-4), or
+--                  a NULL tier (not scored yet).
 --   left out:      a domain suppressed now (directly or through an alias), a partner
 --                  domain (never prospected, SPEC 9), or an industry switched off on the
 --                  Industries tab. An industry label not on the tab is kept.
---   verified:      Clay has checked it; only verified accounts may be emailed (SPEC 2:
---                  every account passes through Clay before it can be emailed).
--- Order: tier_rank, then rank_in_tier (score desc with no score last, size_band_rank,
--- industry_priority, first_seen, account_id). A view's ORDER BY is not kept by queries on
--- it, so readers order by tier_rank, rank_in_tier themselves.
+--   verified:      verify_accounts has checked it; only verified accounts may be emailed.
+-- Order: rank_in_tier (score desc with no score last, size_band_rank, industry_priority, first_seen, account_id),
+-- over the whole queue now; tier_rank is 1 for every row (kept as a column, as a view keeps its columns). A view's
+-- ORDER BY is not kept by queries on it, so readers order by tier_rank, rank_in_tier themselves.
 -- Settings values are sheet text: priority counts only when it is a whole number.
 CREATE OR REPLACE VIEW us_outbound.v_queue AS
 WITH industries_raw AS (
@@ -69,7 +72,7 @@ queue AS (
     a.first_seen,
     a.last_scored,
     a.status = 'verified' AS verified,
-    CASE a.tier WHEN 'Priority' THEN 1 WHEN 'Standard' THEN 2 WHEN 'Control' THEN 3 END AS tier_rank,
+    1 AS tier_rank,
     CASE a.size_band
       WHEN '20-49' THEN 1
       WHEN '50-99' THEN 1
@@ -82,7 +85,7 @@ queue AS (
   LEFT JOIN industries AS i
     ON i.industry = a.industry
   WHERE a.status IN ('verified', 'queued')
-    AND a.tier IN ('Priority', 'Standard', 'Control')
+    AND a.tier IN ('Queue', 'Priority', 'Standard', 'Control')
     AND COALESCE(i.active, TRUE)
     AND NOT EXISTS (
       SELECT 1 FROM suppressed_domains AS sd WHERE sd.domain = lower(a.domain)
@@ -94,9 +97,8 @@ queue AS (
 SELECT
   q.*,
   row_number() OVER (
-    PARTITION BY q.tier
     ORDER BY q.score DESC NULLS LAST, q.size_band_rank, q.industry_priority, q.first_seen, q.account_id
   ) AS rank_in_tier
 FROM queue AS q
 ORDER BY q.tier_rank, rank_in_tier;
-COMMENT ON VIEW us_outbound.v_queue IS 'Accounts waiting to be enrolled (status verified or queued; tier Priority, Standard or Control; not suppressed), in enrollment order: tier, score, size band (20-99 first), industry priority (SPEC 9).';
+COMMENT ON VIEW us_outbound.v_queue IS 'Accounts waiting to be enrolled (status verified or queued; tier Queue, or a retired Priority, Standard or Control a rescore has not reached; not suppressed), in enrollment order: score, size band (20-99 first), industry priority (SPEC 9; W2-2).';

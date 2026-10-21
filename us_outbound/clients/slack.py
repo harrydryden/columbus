@@ -8,17 +8,15 @@ NAME, since that is what the guard checks; request bodies carry the resolved id.
 Slack answers errors with HTTP 200 and ok: false, which raises ApiError here.
 
 Approvals (SPEC 11, poll_approvals) read thread replies and the reactions on one message.
-Both callers (the reply desk and enrol/approvals/) read a thread with replies() and then the
-reactions on a message in it, so replies() keeps the reactions conversations.replies already
+The reply desk reads a thread with replies() and then the reactions on a message in it, so replies() keeps the reactions conversations.replies already
 returned with each message (the parent too), and reactions() answers from them when Slack listed
 every user of every reaction (count == len(users)), instead of one reactions.get per open item: at
 a hundred or so open cards those calls alone passed Slack's per-minute limit and poll_approvals'
 timeout. A message read without a reactions list, or read more than REACTIONS_FRESH seconds ago,
 is asked for with reactions.get as before; the bot's own react() forgets that message's reactions.
 The bot adds reactions of its own (react) only on the two US Outbound channels: it seeds ✅ and
-❌ on a send approval's card (enrol/approvals/; Harry, 2 Oct 2026) and on a reply alert
-(replies/poll.py) so deciding is one click, and bot_user_id tells the approvals pass which
-reactions are its own. In dry-run a reaction lands only on the dev channel.
+❌ on a reply alert (replies/poll.py) so deciding is one click, and bot_user_id tells the reply desk which
+reactions are its own (APPROVE_REACTIONS and SKIP_REACTIONS are the ones that decide). In dry-run a reaction lands only on the dev channel.
 Direct messages (dm) go only to the approvers in approver_slack_ids (the guard checks), for
 escalation when the forward endpoint is missing; in dry-run they go to the dev channel instead.
 """
@@ -35,6 +33,8 @@ from us_outbound.logs import log
 
 LIST_PAGE = 200  # Slack recommends no more than 200 per page
 REACTIONS_FRESH = 60.0  # seconds a thread read's reactions answer reactions() for its messages
+APPROVE_REACTIONS = frozenset({"white_check_mark", "heavy_check_mark"})  # ✅ (and ✔️): send the draft
+SKIP_REACTIONS = frozenset({"x"})  # ❌: send nothing
 
 
 
@@ -185,7 +185,7 @@ class Slack(HttpClient):
     def auth_test(self) -> dict:
         """auth.test (no scope needed): Slack's answer for this token. Raises ApiError when Slack rejects it
         (invalid_auth, not_authed, token_revoked, account_inactive): the outside watchdog's check that alerts can
-        still be posted (ops/watchdog.py)."""
+        still be posted (ops/health.py)."""
         body = self._api("GET", "auth.test", Op("auth.test")) or {}
         if body.get("user_id"):
             self._bot_user = str(body["user_id"])
@@ -194,7 +194,7 @@ class Slack(HttpClient):
     def bot_user_id(self) -> str:
         """The bot's own Slack user id (auth.test, no scope needed), cached; "" when Slack will not say.
 
-        The approvals pass leaves the bot's own reactions out (the ✅ and ❌ it seeds on a card).
+        The reply desk leaves the bot's own reactions out (the ✅ and ❌ it seeds on an alert).
         """
         if self._bot_user is None:
             try:

@@ -2,7 +2,7 @@
 
   * "One test record flows end to end in dry-run": settings_sync -> an account and its facts
     -> score -> a contact -> enrol, every job run by the CLI (`us-outbound dry-run <job>`)
-    with bootstrap.build_context and ops.heartbeat.run_job, as the Railway scheduler runs them.
+    with bootstrap.build_context and ops.health.run_job, as the Railway scheduler runs them.
   * "Changing a weight in the sheet changes a test account's score after the next sync."
   * "A bad row in the sheet is rejected, with a Slack message."
 
@@ -30,7 +30,9 @@ from us_outbound.clients.guard import Guard
 from us_outbound.context import Secrets
 from us_outbound.enrol.enrol import iso_week
 from us_outbound.logs import hash_email
-from us_outbound.ops import bootstrap, cli
+from us_outbound.ops import bootstrap, cli, health
+from us_outbound.enrol import openers
+from us_outbound.scoring.angle import angle_setter
 from us_outbound.scoring.score import score_account
 from us_outbound.settings.defaults import COLUMNS, default_tabs
 from us_outbound.settings.model import TABS
@@ -220,12 +222,12 @@ def flow() -> dict:
     out: dict[str, Any] = {"world": w}
     assert not any(validate_all(w.sheet)[1].values()), "the phase-0 sheet must validate"
 
-    out["sync1"] = w.run("dry-run", "settings_sync")
+    out["sync1"] = w.run("run", "settings_sync")
 
     # What source_universe and verify_in_clay (phase 1) will write: the account and its facts.
     w.store.insert("accounts", [dict(ACCOUNT)])
     w.store.insert("signal_events", facts())
-    out["score"] = w.run("dry-run", "score")
+    out["score"] = w.run("run", "score")
     out["scored"] = dict(w.account())
 
     # What pick_contacts (phase 2) will write, and Harry's approval of this week's hand-check.
@@ -233,18 +235,18 @@ def flow() -> dict:
     w.store.insert("hitl_items", [{"item_id": "hc-1", "kind": "hand_check", "status": "handled",
                                    "created_at": NOW - timedelta(hours=3),
                                    "payload": {"iso_week": iso_week(NOW.date()), "pulled_account_ids": []}}])
-    out["enrol"] = w.run("dry-run", "enrol")
+    out["enrol"] = w.run("run", "enrol")
     out["after_enrol"] = (dict(w.account()), dict(w.store.get("contacts", contact_id=CONTACT["contact_id"])))
 
     _, row = signal_row(w.sheet, "New People leader")
     assert row["weight"] == "30"
     row["weight"] = "5"
-    out["sync2"] = w.run("dry-run", "settings_sync")
+    out["sync2"] = w.run("run", "settings_sync")
     out["reweighted"] = dict(w.account())
 
     out["bad_row"], bad = signal_row(w.sheet, "Q4 plan-year window")
     bad["weight"] = "ten"
-    out["sync3"] = w.run("dry-run", "settings_sync")
+    out["sync3"] = w.run("run", "settings_sync")
     out["kept"], _ = load_current(w.store)
     return out
 
@@ -263,18 +265,22 @@ def test_first_sync_versions_every_tab_and_sends_nothing(flow):
     assert settings.general.approver_slack_ids == (PHASE0_GENERAL["approver_slack_ids"],)
 
 
-def test_the_account_scores_priority_with_the_eap_angle_and_evidence(flow):
+def test_the_account_scores_90_in_the_queue_with_the_eap_angle_and_evidence(flow):
     a = flow["scored"]
     # Mental health support 15, EAP named 5, Progressive benefits 5 (mental health days), People leader
     # in place 10, New People leader 30, Hiring and growth 15; the values page no longer scores.
-    assert (a["score"], a["tier"], a["angle"]) == (90, "Priority", "Upgrade the EAP")  # + Team of 50–99 (its band)
+    assert (a["score"], a["tier"], a["angle"]) == (90, "Queue", "Upgrade the EAP")  # + Team of 50–99 (its band)
     assert "capped" not in a["tier_reason"] and "New People leader (+30)" in a["tier_reason"]
     matched = [e["value"]["signal"] for e in flow["world"].store.select("signal_events", {"source": "scoring"})]
     assert "EAP named" in matched and "New People leader" in matched
     settings, _ = load_current(flow["world"].store)
     events = flow["world"].store.select("signal_events", {"account_id": a["account_id"]})
     r = score_account(a, events, settings, NOW.date())
-    assert r.opener == "Saw your benefits page mentions EAP."  # the EAP named opener, filled with its evidence
+    # The angle setter's plain opener, filled with its evidence as enrol fills it when no line by role fits
+    # (enrol/openers.fill_opener; the scoring-time opener went with W2-2).
+    setter = angle_setter(r.angle, r.matches)
+    ev = next(e for e in setter.evidence if e.term or e.quote)
+    assert openers.fill_opener(setter.signal.opener, ev) == "Saw your benefits page mentions EAP."
 
 
 def test_enrol_renders_four_compliant_steps_for_the_senders_campaign(flow):
@@ -339,6 +345,12 @@ def test_every_job_left_a_heartbeat(flow):
         hb = flow[stage]["heartbeat"]
         assert (hb["job"], hb["status"], hb["dry_run"]) == (job, "ok", True), stage
         assert hb["finished_at"] and hb["error"] is None
+        # Each job's real summary maps to the status it meant (W1-1): enrol's "skipped" is its count of accounts
+        # passed over, never a skip, and every live enrol run was stored as skipped until 19 Oct 2026.
+        assert health.summary_status(hb["detail"]) == hb["status"], stage
+    enrol = flow["enrol"]["heartbeat"]["detail"]
+    assert enrol["status"] == "ok" and isinstance(enrol["skipped"], dict)
+    assert health.summary_status({**enrol, "skipped": {"no contact": 335}}) == "ok"
     assert len(beats) == 5 and all(b["status"] == "ok" for b in beats)
 
 
@@ -351,7 +363,7 @@ def test_changing_a_weight_changes_the_score_after_the_next_sync(flow):
     assert detail["rescored"] is True
     before, after = flow["scored"], flow["reweighted"]
     assert before["score"] - after["score"] == 25
-    assert after["tier"] == "Priority" and "New People leader (+5)" in after["tier_reason"]
+    assert after["tier"] == "Queue" and "New People leader (+5)" in after["tier_reason"]
     history = flow["world"].store.select("settings", {"tab": "Signals", "key": "New People leader"})
     assert sorted((r["values"]["weight"], r["effective_to"] is None) for r in history) == [("30", False), ("5", True)]
 

@@ -303,7 +303,7 @@ def preview(row: CopyRow, settings: Settings, *, role: str = "", sender: str = "
 
 
 def render_overlay(account: Mapping[str, Any], settings: Settings) -> str:
-    from us_outbound.scoring.angle import legal_overlay
+    from us_outbound.enrol.openers import legal_overlay
 
     return legal_overlay(settings.industry_group_of(account))
 

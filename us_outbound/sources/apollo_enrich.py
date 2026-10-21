@@ -4,20 +4,24 @@ The first live run (2 Oct 2026) showed that Apollo's organization search rows ca
 and no employee count, so the funding signals ("Funding in the last 6 months", "Funding 6–12 months
 ago"; sources apollo_org and clay_funding) never fired. Harry, 2 Oct 2026: funding is a sign that a
 company is in a period of change and growth; take it from Apollo's organization enrich (1 credit a
-company) for the industry groups where funding is common (General apollo_enrich_groups, default
+company) for the industry groups where funding is common (settings/model.APOLLO_ENRICH_GROUPS, the General key until W2-4:
 Technology & Startups).
 
-Each weekday at 04:10 UK, after read_pages starts (03:45) and before verify_accounts (04:30), whose
-rescore scores the new facts before pick_contacts (05:30), for the queue accounts (new, queued or
-verified, not Excluded or Held) in those groups with a domain: never-enriched accounts first, then
-those enriched more than REFRESH_DAYS ago; within each, the Focus tab's groups, then queue order
-(enrol/queue.order_key), as apollo_signals takes them.
-  1. Bulk Organization Enrichment, up to BULK_ENRICH_MAX domains a call (clients/apollo.py). A domain
-     the bulk answer does not carry is asked once more by Organization Enrichment, whose answer
-     settles it: a record (found) or none (not found), so a company Apollo files under another domain
-     is not lost. The run carries on with single calls when Apollo refuses a bulk call, or its answer
-     carries a record that matches no domain asked or says it found more than it carries: a single
-     call costs the same credits, only more requests (the bulk answer's shape: confirmed live 5 Oct 2026).
+Each weekday at 05:00 UK, after verify_accounts (04:30) and before pick_contacts (05:30), whose rescore
+scores the new facts, for the verified accounts (not Excluded or Held) in those groups with a domain:
+never-enriched accounts first, then those enriched more than REFRESH_DAYS ago; within each, the Focus
+tab's groups, then queue order (enrol/queue.order_key), as apollo_signals takes them. Verified only
+(W1-3a, 19 Oct 2026; code-sources B4): until then it ran at 04:10 for new and queued accounts too, and
+paid for companies the label check then left out (13 Oct: 62 of 103). It does not rescore (RS P0-8).
+  1. Bulk Organization Enrichment, up to BULK_ENRICH_MAX domains a call (clients/apollo.py). A record is
+     matched to the account whose apollo_org_id is its organization id first, then by domain, as
+     site_visits matches (code-sources B5: by domain alone, a company Apollo files under another
+     domain was paid for in the bulk call and again by a single call; a mismatch every run from 14 Oct).
+     A domain the bulk answer still does not carry is asked once more by Organization Enrichment, whose
+     answer settles it: a record (found) or none (not found). The run carries on with single calls when
+     Apollo refuses a bulk call, or its answer carries a record that matches no account asked or says it
+     found more than it carries: a single call costs the same credits, only more requests (the bulk
+     answer's shape: confirmed live 5 Oct 2026).
   2. Facts, as source_universe writes them (apollo_universe.org_facts, source apollo_org):
      days_since_funding (as of today; scoring ages it), funding_stage, funding_amount_usd, employees
      (estimated_num_employees) and headcount_growth_12m; description, technologies and keywords only
@@ -27,8 +31,10 @@ those enriched more than REFRESH_DAYS ago; within each, the Focus tab's groups, 
      accounts are tried again next run.
   3. The account row: an exact count supersedes the searched band, so employees and size_band
      (clean.people.size_band) are written, unless an Overrides row sets either or Clay has confirmed
-     them (apollo_universe.CLAY_OWNED). verify_accounts then handles a count outside the size range as it
-     already does; a verified account the count puts outside goes back to new, so verify sees it again.
+     them (apollo_universe.CLAY_OWNED). The exact count is the last size check: one outside the General
+     size range leaves the account out for good, disqualified and Excluded with status_reason size
+     (code-sources B3: sent back to new, a 5,100-staff company stayed in the queue and reached the
+     hand-check sample).
 
 Credits. 1 credit per company found and 0 for one not found (Apollo's docs; PHASE0-CONFIRM). Each call
 is reserved in credit_ledger before it is made (a bulk call at its domains, a single call at 1) and
@@ -64,7 +70,7 @@ from us_outbound.facts import newest, newest_by
 from us_outbound.logs import log
 from us_outbound.scoring import tiers
 from us_outbound.scoring.score import aged_value
-from us_outbound.settings.model import Settings
+from us_outbound.settings.model import APOLLO_ENRICH_GROUPS, Settings
 from us_outbound.sources import apollo_credits as credits
 from us_outbound.sources import apollo_universe as uni
 from us_outbound.timeparse import utc, utc_strict
@@ -80,6 +86,8 @@ FUNDING_FACTS = ("days_since_funding", "funding_stage", "funding_amount_usd")
 FACTS = frozenset({*FUNDING_FACTS, "employees", "headcount_growth_12m"})  # written at every enrich
 EXTRA_FACTS = frozenset({"description", "technologies", "keywords"})  # written only while none is stored
 SIZE_FIELDS = frozenset({"employees", "size_band"})
+VERIFIED = "verified"  # the only status enriched (W1-3a)
+DISQUALIFIED, SIZE_REASON = "disqualified", "size"  # an exact count outside the range (verify.REASON_CODES: terminal)
 MAX_ACCOUNTS_PER_RUN = 500  # a company not found costs no credit, only a request: well inside the timeout
 MAX_ERRORS = 5  # Apollo errors before the run stops
 DONE, SPENT = "every account due an enrich is enriched", "today's Apollo credits for enrichment are used"
@@ -108,11 +116,12 @@ def history(ctx: Context, account_ids: Sequence[str]) -> tuple[dict[str, datetim
 
 
 def candidates(ctx: Context) -> tuple[list[dict], dict[str, set[str]]]:
-    """Queue accounts in apollo_enrich_groups with a domain, not enriched within REFRESH_DAYS, in enriching order;
-    and the apollo_org facts each has stored."""
+    """Verified accounts in APOLLO_ENRICH_GROUPS with a domain, not enriched within REFRESH_DAYS, in enriching order;
+    and the apollo_org facts each has stored. Verified only: credits buy facts for companies that passed the free
+    checks and the label check (code-sources B4)."""
     s = ctx.settings
-    wanted = {g.casefold() for g in s.general.apollo_enrich_groups}
-    rows = [a for a in ctx.store.select("accounts", {"status": list(uni.OPEN_STATUSES)})
+    wanted = {g.casefold() for g in APOLLO_ENRICH_GROUPS}
+    rows = [a for a in ctx.store.select("accounts", {"status": VERIFIED})
             if a.get("domain") and a.get("tier") not in uni.OUT_OF_QUEUE_TIERS
             and s.industry_group_of(a).casefold() in wanted]
     seen, stored = history(ctx, [a["account_id"] for a in rows])
@@ -169,8 +178,10 @@ def size_update(account: Mapping[str, Any], employees: Any, settings: Settings) 
     """(the account's employees and size_band from Apollo's exact count, ""), or (None, why the row keeps its own).
 
     The exact count supersedes the band searched. An Overrides row for either field wins (SPEC 5),
-    and so do sizes Clay has confirmed (apollo_universe.CLAY_OWNED). A verified account the count puts
-    outside the General size range goes back to new, so verify_accounts checks it as it checks every new account.
+    and so do sizes Clay has confirmed (apollo_universe.CLAY_OWNED). A count outside the General size range is
+    the last size check (W1-3a; code-sources B3): the account is left out for good, disqualified and Excluded
+    with status_reason size, the code verify_accounts writes for the same failure (verify.REASON_CODES). Until
+    19 Oct it went back to new, where verify failed it every morning without a mark and it stayed in the queue.
     """
     n = tiers.as_number(employees)
     if n is None:
@@ -180,11 +191,14 @@ def size_update(account: Mapping[str, Any], employees: Any, settings: Settings) 
     if account.get("clay_checked_at"):
         return None, "Clay confirmed the size"
     n, band = int(n), size_band(n)
-    if account.get("employees") == n and account.get("size_band") == band:
+    outside = not settings.size_in_range(n)
+    if account.get("employees") == n and account.get("size_band") == band and not outside:
         return None, ""
     row: dict[str, Any] = {"account_id": account["account_id"], "employees": n, "size_band": band}
-    if not settings.size_in_range(n) and account.get("status") == "verified":
-        row["status"] = "new"
+    if outside:
+        lo, hi = settings.general.min_employees, settings.general.max_employees
+        row.update(status=DISQUALIFIED, tier=tiers.EXCLUDED, tier_reason=f"size: {n} outside {lo}–{hi} employees",
+                   status_reason=SIZE_REASON)
     return row, ""
 
 
@@ -200,7 +214,7 @@ class _Run:
     credits: float = 0.0
     facts: int = 0
     sized: int = 0  # accounts whose employees and size_band were written
-    back_to_verify: int = 0
+    sized_out: int = 0  # accounts the exact count put outside the size range: disqualified
     kept: Counter[str] = field(default_factory=Counter)  # why an account's row kept its own size
     waiting: int = 0  # accounts a bulk call left unanswered with no credit left for a single call
     errors: list[str] = field(default_factory=list)
@@ -222,7 +236,10 @@ def ask_bulk(ctx: Context, batch: Sequence[Mapping[str, Any]], r: _Run, room: cr
 
     Reserved at one credit a domain and settled at the companies found: the records it carries, or
     what it reports when that is more (PHASE0-CONFIRM: unique_enriched_records, credits_consumed).
-    An answer that carries a record matching no domain asked, or reports more found than it carries,
+    A record belongs to the account whose apollo_org_id is its organization id, else to the domains it
+    names (org_keys), as site_visits.enrich matches (code-sources B5): a company Apollo files under
+    another domain is the account Apollo's own search found, so it is not asked for, and paid for, again.
+    An answer that carries a record matching no account asked, or reports more found than it carries,
     turns bulk calls off for the rest of the run, so no company is paid for twice unseen.
     """
     domains = [str(a["domain"]) for a in batch]
@@ -241,8 +258,10 @@ def ask_bulk(ctx: Context, batch: Sequence[Mapping[str, Any]], r: _Run, room: cr
     r.credits += spent
     r.bulk_calls += 1
     asked, out, unmatched = set(domains), {}, 0
+    by_id = {str(a["apollo_org_id"]): str(a["domain"]) for a in batch if a.get("apollo_org_id")}
     for org in orgs:
-        hits = org_keys(org) & asked
+        oid = apollo_org_id(org)
+        hits = {by_id[oid]} if oid in by_id else org_keys(org) & asked
         unmatched += not hits
         for d in hits:
             out.setdefault(d, org)
@@ -251,7 +270,7 @@ def ask_bulk(ctx: Context, batch: Sequence[Mapping[str, Any]], r: _Run, room: cr
         # Handled, not an error (Harry, 14 Oct 2026: it reached Slack as one): the rest of the run asks one domain at a
         # time, which is how a mismatch is kept from being paid for twice. The summary and the log keep it.
         r.bulk = False
-        r.fallback = (f"bulk_enrich carried {len(orgs)} records, {unmatched} matching no domain asked, and reported "
+        r.fallback = (f"bulk_enrich carried {len(orgs)} records, {unmatched} matching no account asked, and reported "
                       f"{reported:.0f} found: single calls from here")
         log("apollo_enrich_bulk_off", run_id=ctx.run_id, reason=r.fallback)
     return out
@@ -335,11 +354,11 @@ def latest_run(store: Any) -> str | None:
 
 def post_lines(ctx: Context) -> list[str]:
     """The daily post's lines: the last run and every account enriched so far (learn/daily_post.py)."""
-    groups = ", ".join(ctx.settings.general.apollo_enrich_groups) or "no group: apollo_enrich_groups is blank"
+    groups = ", ".join(APOLLO_ENRICH_GROUPS) or "no group: APOLLO_ENRICH_GROUPS is empty"
     today = ctx.today_uk()
     total = tally(ctx.store, today)
     if not total.accounts:
-        return [f"Funding (Apollo enrich, {groups}): no account enriched yet (apollo_enrich, weekdays 04:10)."]
+        return [f"Funding (Apollo enrich, {groups}): no account enriched yet (apollo_enrich, weekdays 05:00)."]
     run_id = latest_run(ctx.store)
     last = tally(ctx.store, today, run_id=run_id) if run_id else Tally()
     return [f"Funding (Apollo enrich, {groups}): last run {last.describe()}.", f"  So far {total.describe()}."]
@@ -356,10 +375,18 @@ def _done(ctx: Context, summary: dict) -> dict:
 def run(ctx: Context) -> dict:
     """The apollo_enrich job (JOB CONTRACT: run(ctx) -> summary)."""
     s = ctx.settings
-    summary: dict[str, Any] = {"job": JOB, "dry_run": ctx.dry_run, "groups": list(s.general.apollo_enrich_groups)}
-    if not s.general.apollo_enrich_groups:
-        summary.update(skipped=True, reason="apollo_enrich_groups is blank, so no industry group is enriched")
+    summary: dict[str, Any] = {"job": JOB, "dry_run": ctx.dry_run, "groups": list(APOLLO_ENRICH_GROUPS)}
+    if not APOLLO_ENRICH_GROUPS:
+        summary.update(skipped=True, reason="APOLLO_ENRICH_GROUPS is empty, so no industry group is enriched")
         return _done(ctx, summary)
+    # The groups were a General key checked against the Industries tab at each sync; as a constant, a group renamed
+    # on the tab would match no account and enrich nothing without a word. It fails the run instead (an error
+    # heartbeat that heartbeat_check reports), before any Apollo call.
+    on_tab = {i.industry_group.casefold() for i in s.industries}
+    unknown = [g for g in APOLLO_ENRICH_GROUPS if g.casefold() not in on_tab]
+    if unknown:
+        raise ValueError(f"APOLLO_ENRICH_GROUPS (settings/model.py) names {', '.join(map(repr, unknown))}, not an "
+                         "industry_group on the Industries tab: rename it in the code to the tab's group")
     todo, stored = candidates(ctx)
     if not todo:
         summary.update(status="ok", candidates=0, stopped_by="no account in these groups is due an enrich")
@@ -406,12 +433,12 @@ def run(ctx: Context) -> dict:
                 r.kept[kept] += 1
             if row:
                 rows.append(row)
-                r.back_to_verify += row.get("status") == "new"
+                r.sized_out += row.get("status") == DISQUALIFIED
         if facts:  # each batch as it is answered, so a run stopped by its timeout keeps what it paid for
             ctx.store.insert("signal_events", facts)
             r.facts += len(facts)
         if rows:
-            ctx.store.upsert("accounts", rows)  # partial rows: only employees, size_band (and status) change
+            ctx.store.upsert("accounts", rows)  # partial rows: the size, and the status and tier of one sized out
             r.sized += len(rows)
     if r.waiting and stopped == DONE:
         stopped = SPENT
@@ -420,7 +447,7 @@ def run(ctx: Context) -> dict:
         status="ok", stopped_by=stopped, candidates=len(todo), enriched=t.accounts, found=t.found,
         not_found=t.not_found, with_funding=t.with_funding, funding_within_180=t.within_180,
         funding_within_365=t.within_365, with_employees=t.with_employees, size_written=r.sized,
-        size_kept=dict(r.kept), back_to_verify=r.back_to_verify, left_for_next_run=len(todo) - t.accounts,
+        size_kept=dict(r.kept), sized_out=r.sized_out, left_for_next_run=len(todo) - t.accounts,
         bulk_calls=r.bulk_calls, single_calls=r.single_calls, bulk_unmatched=r.unmatched, credits=r.credits,
         credits_per_account=round(r.credits / max(1, t.accounts), 3), facts=r.facts, budget=room.as_dict(),
         errors=r.errors[:20], bulk_off=r.fallback or None,

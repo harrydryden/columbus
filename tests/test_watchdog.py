@@ -1,4 +1,4 @@
-"""The outside watchdog (ops/watchdog.py; Harry, 7 Oct 2026): heartbeat_check pings Healthchecks.io every hour, and
+"""The outside watchdog (ops/health.py; Harry, 7 Oct 2026): heartbeat_check pings Healthchecks.io every hour, and
 /fail when a job is missed or failed or Slack cannot take alerts, so a dead worker, database or Slack token still
 reaches Harry by email."""
 
@@ -13,8 +13,8 @@ from tests.test_heartbeat import MON_NOON, beat
 from us_outbound.clients.db import MemoryStore
 from us_outbound.clients.guard import Boundaries, Guard, GuardViolation, Op
 from us_outbound.context import Secrets, boundaries_for
-from us_outbound.ops import bootstrap, cli, watchdog
-from us_outbound.ops import heartbeat as hb
+from us_outbound.ops import bootstrap, cli, health
+from us_outbound.ops import health as hb
 from us_outbound.settings.model import General, Settings
 
 SECRET_ID = "7d1e0c2a-5b6f-4c3d-9e8f-test"
@@ -38,8 +38,8 @@ def world(now=MON_NOON, *, live=True, url=PING, auth=True, posts=True, settings=
     t = slack(FakeTransport(), auth=auth, posts=posts)
     ctx = make_context(settings, job="heartbeat_check", now=now, transport=t, live=live)
     ctx.clients.secrets = Secrets(ctx.guard, fetch=lambda n: url if n == "US_OUTBOUND_WATCHDOG_URL" else f"test-{n}")
-    ping_url = watchdog.read(ctx.clients.secrets)[0]
-    ctx.guard.configure(bounds=boundaries_for(settings, TEST_SHEET_ID, job="heartbeat_check", watchdog_url=ping_url))
+    ping_url = health.watchdog_url(ctx.clients.secrets)[0]
+    ctx.guard.configure(bounds=boundaries_for(settings, TEST_SHEET_ID, watchdog_url=ping_url))
     return ctx, t
 
 
@@ -64,7 +64,7 @@ def posts(t: FakeTransport) -> list[dict]:
 ])
 def test_the_url_is_read_through_the_secrets_client(value, url, why):
     guard = Guard()
-    assert watchdog.read(Secrets(guard, fetch=lambda n: value)) == (url, why)
+    assert health.watchdog_url(Secrets(guard, fetch=lambda n: value)) == (url, why)
     assert [(c.system, c.target) for c in guard.calls] == [("secrets", "US_OUTBOUND_WATCHDOG_URL")]
 
 
@@ -244,12 +244,38 @@ def test_heartbeat_check_runs_on_the_defaults_when_the_settings_are_unusable_and
         factory("daily_post", True)
     assert factory("heartbeat_check", False).dry_run  # without --live it stays dry
     assert cli.main(["run", "heartbeat_check", "--live"], context_factory=factory) == 0
-    # The real clock: in the 09:00 UK hour the missed-heartbeat reminder posts too (heartbeat.REMINDER_HOUR_UK).
+    # The real clock: in the 09:00 UK hour the missed-heartbeat reminder posts too (health.REMINDER_HOUR_UK).
     sent = posts(t)
     assert sent and {p["channel"] for p in sent} == {"C_ALERT"}  # live on the defaults: not the dev channel
     [post] = [p for p in sent if "Some automatic jobs ran into problems" in p["text"]]
     assert "*The jobs have stopped (since " in post["text"]
-    assert "General tab" in post["text"] and "every job except the hourly health check refuses to start" in post["text"]
+    assert "General tab" in post["text"] and "every job but the safety jobs refuses to start (the safety jobs run on a fallback that only pauses)" in post["text"]
     assert pings(t) == [PING + "/fail"]
     [row] = [r for r in store.select("heartbeats") if r["job"] == "heartbeat_check"]
     assert row["status"] == "ok" and row["dry_run"] is False and row["detail"]["failed"] == ["settings_sync"]
+
+
+# -- the scheduler's own /fail, from the environment alone (W2-4, 20 Oct 2026; RS P0-4) -------------------------------
+
+
+def test_the_scheduler_pings_fail_from_the_environment_alone_and_never_raises():
+    """While it waits for its lock or for Postgres, the scheduler has no settings and no database: health.ping_from_env
+    reads the URL from the environment, GETs exactly its /fail form through a guarded client (the ping goes in
+    dry-run, as heartbeat_check's does), and never raises: no URL, a bad URL or a transport that fails each come back
+    as a result, and the URL is never in it."""
+    t = FakeTransport()
+    t.route("GET", "hc-ping.com", {})
+    out = health.ping_from_env("the scheduler has waited 180 s for its lock", env={"US_OUTBOUND_WATCHDOG_URL": PING},
+                               transport=t)
+    assert out == {"pinged": True, "fail": True, "status": 200,
+                   "reasons": ["the scheduler has waited 180 s for its lock"]}
+    assert [(r.method, r.url) for r in t.requests] == [("GET", f"{PING}/fail")]
+    assert health.ping_from_env("x", env={})["off"] == "US_OUTBOUND_WATCHDOG_URL is not set"
+    assert health.ping_from_env("x", env={"US_OUTBOUND_WATCHDOG_URL": "http://hc-ping.com/x"})["pinged"] is False
+
+    class Down(FakeTransport):
+        def send(self, *a, **kw):
+            raise ConnectionError(f"cannot reach {PING}")
+
+    down = health.ping_from_env("x", env={"US_OUTBOUND_WATCHDOG_URL": PING}, transport=Down())
+    assert down["pinged"] is False and SECRET_ID not in str(down)

@@ -4,12 +4,19 @@ Jobs talk to a Store. PostgresStore is the real one; MemoryStore backs the tests
 local dry-runs. Both take and return plain dicts of Python values: JSON columns (jsonb)
 take and return Python objects, and timestamps come back as aware UTC datetimes, so no
 job ever handles JSON text or a naive time. The tables are created by ops/ddl.py from
-sql/ddl; TABLE_KEYS, JSON_COLUMNS, TIMESTAMP_COLUMNS and COLUMNS here are what that DDL
+sql/ddl; TABLE_KEYS, JSON_COLUMNS, TIMESTAMP_COLUMNS, DATE_COLUMNS and COLUMNS here are what that DDL
 must match (tests/test_sql.py).
+
+A run that must not be seen half done (the rescore: W2-2, 20 Oct 2026) writes inside store.transaction(), which
+commits on leaving it and rolls back on an exception, and may take store.advisory_lock(key) inside it: held until
+the transaction ends, so a second run asking for the same key waits for the first (up to wait_seconds, then
+LockTimeout). PostgresStore uses pg_advisory_xact_lock; MemoryStore a process-wide lock per key and a copy of its
+tables to roll back to.
 
 MemoryStore stores a timestamp as Postgres does (9 Oct 2026): ISO text, a naive datetime
 (UTC) and a date (UTC midnight) become an aware UTC datetime, and text that is no time
-raises, as Postgres refuses it. It refuses a column the table does not have, in a row or
+raises, as Postgres refuses it. A date column (DATE_COLUMNS) likewise keeps a date: an aware
+datetime is taken on its UTC day, as the store's UTC session casts it, and text by its date. It refuses a column the table does not have, in a row or
 a where. So a test cannot pass on a value or a filter that production would never see.
 """
 
@@ -18,11 +25,13 @@ from __future__ import annotations
 import copy
 import json
 import re
+import threading
 import uuid
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from itertools import groupby
 from typing import Any
 
@@ -51,6 +60,8 @@ TABLE_KEYS: dict[str, tuple[str, ...] | None] = {
     "lookalike_growth": ("cell_id",),  # sources/lookalikes.py: customers by growth band (Harry, 5 Oct 2026)
     "config_versions": ("config_version",),  # config_version.py: what a cohort was enrolled under (Harry, 7 Oct 2026)
     "config_log": ("log_id",),  # changes to what in-flight leads share (registry/mailboxes.py; Harry, 7 Oct 2026)
+    "source_state": ("key",),  # the sources' cursors, plan and visitor state (sources/source_state.py; W3-3)
+    "metrics": ("day", "segment_key", "metric", "definition_version"),  # the persisted series (learn/metrics.py; W3-1)
     "raw_irs_bmf": None,
     "raw_job_posts": None,
     "raw_clay_accounts": None,
@@ -58,6 +69,11 @@ TABLE_KEYS: dict[str, tuple[str, ...] | None] = {
     "raw_site_visits": None,
     "raw_layoffs": None,
 }
+
+# Unique indexes besides the primary key, as insert_new honours them (MemoryStore; Postgres has the index). accounts'
+# domain: one account per root domain (SPEC 13), unique once `accounts dedupe --live` has applied
+# sql/deferred/01_accounts_domain_unique.sql (W3-3; code-sources B7). A NULL never conflicts, as in Postgres.
+UNIQUE_COLUMNS: dict[str, tuple[tuple[str, ...], ...]] = {"accounts": (("domain",),)}
 
 # Columns stored as jsonb.
 JSON_COLUMNS: dict[str, frozenset[str]] = {
@@ -72,13 +88,15 @@ JSON_COLUMNS: dict[str, frozenset[str]] = {
     "raw_site_visits": frozenset({"payload"}),
     "raw_layoffs": frozenset({"payload"}),
     "events": frozenset({"language_terms"}),
-    "contacts": frozenset({"signals_at_enrol", "data_record"}),  # enrol._record_enrolled (5 Oct 2026)
+    "contacts": frozenset({"signals_at_enrol", "data_record",  # enrol._record_enrolled (5 Oct 2026)
+                           "email_hashes"}),  # each step's rendered body, hashed (the W1-C contracts, 19 Oct 2026)
     "config_versions": frozenset({"step_days", "settings_versions", "copy_hashes", "general",  # 7 Oct 2026
                                   "copy_test"}),  # the running copy test (config_version.copy_test; 7 Oct 2026)
     "config_log": frozenset({"changed_keys", "detail"}),
+    "source_state": frozenset({"value"}),
 }
 
-# Columns stored as timestamptz (sql/ddl has no date column).
+# Columns stored as timestamptz (the date columns are DATE_COLUMNS).
 TIMESTAMP_COLUMNS: dict[str, frozenset[str]] = {
     "accounts": frozenset({"label_checked_at", "clay_checked_at", "first_seen", "last_scored"}),
     "contacts": frozenset({"created_at", "last_step_at", "enrolled_at", "lead_deleted_at"}),
@@ -101,6 +119,14 @@ TIMESTAMP_COLUMNS: dict[str, frozenset[str]] = {
     "lookalike_growth": frozenset({"computed_at"}),
     "config_versions": frozenset({"first_seen"}),
     "config_log": frozenset({"changed_at"}),
+    "source_state": frozenset({"updated_at"}),
+    "metrics": frozenset({"computed_at"}),
+}
+
+# Columns stored as date (the W1-C contracts commit, 19 Oct 2026): a re-check falls due on a day, not at an instant.
+DATE_COLUMNS: dict[str, frozenset[str]] = {
+    "accounts": frozenset({"recheck_after"}),
+    "metrics": frozenset({"day"}),  # the day a metrics row is about (W3-1)
 }
 
 # Every table's columns: MemoryStore refuses any other, in a row or a where, as Postgres does.
@@ -110,22 +136,29 @@ COLUMNS: dict[str, frozenset[str]] = {
         "account_id", "domain", "clean_name", "legal_name", "apollo_org_id", "hq_city", "hq_state", "hq_country",
         "industry", "industry_group", "label_source", "label_confidence", "label_checked_at", "naics", "employees",
         "us_employees", "size_band", "founded_year", "source", "score", "tier", "tier_reason", "angle", "sender",
-        "status", "clay_checked_at", "clay_credits_used", "hubspot_company_id", "first_seen", "last_scored"}),
+        "status", "clay_checked_at", "clay_credits_used", "hubspot_company_id", "first_seen", "last_scored",
+        "status_reason", "arm", "recheck_after"}),
     "contacts": frozenset({
         "contact_id", "account_id", "role", "title", "first_name", "last_name", "email", "email_sha256", "email_status",
         "email_source", "person_state", "enrolment_month", "angle", "copy_version", "test_id", "mailbox",
         "instantly_campaign", "instantly_lead_id", "hubspot_contact_id", "suppressed", "suppressed_reason",
         "created_at", "last_step_at", "enrolled_at", "opener_arm", "opener_source", "signals_at_enrol",
         "score_at_enrol", "tier_at_enrol", "data_record", "subject_arm", "contact_slot", "config_version", "code_sha",
-        "copy_hash", "lead_deleted_at", "test_arm"}),
+        "copy_hash", "lead_deleted_at", "test_arm", "arm", "sham_arm", "industry_at_enrol", "industry_group_at_enrol",
+        "size_band_at_enrol", "copy_level", "email1_subject", "email_hashes"}),
     "signal_events": frozenset({
         "event_id", "account_id", "source", "fact", "value", "quote", "source_url", "observed_at"}),
     "events": frozenset({
         "event_id", "contact_id", "account_id", "type", "step", "mailbox", "reply_class", "reply_text",
-        "language_terms", "competitor_named", "approval", "approved_by", "occurred_at", "source"}),
+        "language_terms", "competitor_named", "approval", "approved_by", "occurred_at", "source",
+        "analytics_source",  # W2-4 (20 Oct 2026): a booker's hs_analytics_source (crm/readback.py)
+        "amount",  # W2-3 (20 Oct 2026): apollo_balance's balance (learn/spend.py)
+        "ai_interest_value",  # W3-4 (21 Oct 2026): Instantly's own interest read of a reply (replies/poll.py)
+        "source_detail"}),  # 20 Oct 2026: the form or workflow a created HubSpot record came from (crm/readback.py)
     "suppression": frozenset({"email_sha256", "domain", "reason", "source", "added_at", "expires_at"}),
     "settings": frozenset({"tab", "key", "values", "effective_from", "effective_to", "synced_at"}),
-    "heartbeats": frozenset({"run_id", "job", "started_at", "finished_at", "status", "dry_run", "detail", "error"}),
+    "heartbeats": frozenset({"run_id", "job", "started_at", "finished_at", "status", "dry_run", "detail", "error",
+                             "duration_s", "exit_code"}),  # the last two from W2-4 (20 Oct 2026; ops/health.py)
     "credit_ledger": frozenset({
         "entry_id", "system", "job", "run_id", "account_id", "credits", "usd", "occurred_at", "note"}),
     "hitl_items": frozenset({
@@ -151,6 +184,8 @@ COLUMNS: dict[str, frozenset[str]] = {
     "config_log": frozenset({
         "log_id", "changed_at", "kind", "campaign", "changed_keys", "detail", "leads_in_flight", "code_sha",
         "changed_by", "run_id"}),
+    "source_state": frozenset({"key", "value", "updated_at"}),
+    "metrics": frozenset({"day", "segment_key", "metric", "n", "k", "value", "definition_version", "computed_at"}),
 }
 
 Where = dict[str, Any]  # {col: value} equality; a list, tuple or set: IN; None: IS NULL; Range: lo <= col < hi
@@ -194,6 +229,13 @@ def new_id() -> str:
     return str(uuid.uuid4())
 
 
+class LockTimeout(Exception):
+    """advisory_lock waited wait_seconds and another run still holds the key."""
+
+
+IN_TRANSACTION_QUERY = "Store.query is not run inside store.transaction(): read with select there"
+
+
 def _check_table(table: str) -> None:
     if table not in TABLE_KEYS:
         raise GuardViolation(f"unknown table {table!r}; add it to sql/ddl and TABLE_KEYS first")
@@ -217,6 +259,18 @@ class Store(ABC):
         """Insert rows, replacing any existing row with the same primary key (TABLE_KEYS)."""
 
     @abstractmethod
+    def claim(self, table: str, row: dict) -> bool:
+        """Insert the row unless one with its primary key exists; True if it was inserted. One statement, so of two
+        callers with the same key exactly one gets True (the scheduler's claim row, ops/health.run_job)."""
+
+    @abstractmethod
+    def insert_new(self, table: str, row: dict) -> bool:
+        """Insert the row unless it would break any unique rule of the table (its primary key, or a unique index such
+        as accounts' domain once `accounts dedupe` has made it: W3-3); True if it was inserted. One statement (Postgres
+        INSERT ... ON CONFLICT DO NOTHING with no conflict target), so of two runs admitting one domain at once exactly
+        one makes the row (code-sources B7). MemoryStore holds UNIQUE_COLUMNS as the index does."""
+
+    @abstractmethod
     def select(self, table: str, where: Where | None = None) -> list[dict]: ...
 
     @abstractmethod
@@ -231,6 +285,20 @@ class Store(ABC):
 
         Tests register handlers on MemoryStore.
         """
+
+    @abstractmethod
+    def transaction(self) -> Any:
+        """A context manager: the writes inside it commit together on leaving it, or none on an exception. One
+        inside another is a savepoint of it. query() is refused inside it: on Postgres its SET TRANSACTION READ ONLY
+        would outlast its savepoint and fail every later write in the transaction."""
+
+    @abstractmethod
+    def advisory_lock(self, key: int, *, wait_seconds: float = 60.0) -> None:
+        """Take the lock on key until the transaction it is taken in ends, waiting at most wait_seconds for a run
+        that holds it (then LockTimeout). Only inside transaction()."""
+
+    def _lock_op(self) -> None:
+        self.guard.authorize("db", Op("advisory_lock", target=f"{self.schema}.advisory_lock", write=False))
 
     def get(self, table: str, **key: Any) -> dict | None:
         rows = self.select(table, key)
@@ -277,6 +345,21 @@ def _timestamp(v: Any) -> Any:
     return None if v is None else utc_strict(v).astimezone(UTC)
 
 
+def _date(v: Any) -> Any:
+    """A date value as Postgres stores and returns it: None, or a date. An aware datetime is taken on its UTC day (the
+    store's session time zone is UTC), a naive one on its own day, and text by its leading YYYY-MM-DD; any other text,
+    blank included, raises, as Postgres refuses it for a date."""
+    if v is None:
+        return None
+    if isinstance(v, datetime):
+        return (v.astimezone(UTC) if v.tzinfo else v).date()
+    if isinstance(v, date):
+        return v
+    if isinstance(v, str):
+        return date.fromisoformat(v.strip()[:10])  # ValueError on blank or no date, as Postgres refuses it
+    raise TypeError(f"not a date: {v!r}")
+
+
 def _known(table: str, cols: Iterable[str]) -> None:
     """Refuse a column the table does not have, as Postgres does (an unknown table is the guard's to refuse)."""
     have = COLUMNS.get(table)
@@ -287,30 +370,74 @@ def _known(table: str, cols: Iterable[str]) -> None:
 def _stored(table: str, row: Mapping[str, Any]) -> dict:
     """A copy of row as Postgres would store it: its columns checked, its timestamptz columns converted."""
     _known(table, row)
-    times = TIMESTAMP_COLUMNS.get(table, frozenset())
-    return {c: _timestamp(v) if c in times else v for c, v in copy.deepcopy(dict(row)).items()}
+    times, days = TIMESTAMP_COLUMNS.get(table, frozenset()), DATE_COLUMNS.get(table, frozenset())
+    return {c: _timestamp(v) if c in times else _date(v) if c in days else v
+            for c, v in copy.deepcopy(dict(row)).items()}
 
 
 class MemoryStore(Store):
-    """Dict-of-lists store with the database's write rules enforced by the same guard."""
+    """Dict-of-lists store with the database's write rules enforced by the same guard.
+
+    transaction() keeps a copy of the tables to roll back to, per thread; advisory_lock() takes a process-wide lock
+    per key (LOCKS), held until the thread's outermost transaction ends, and the copy is taken again once the lock is
+    held, so a run that waited for another rolls back to what that one committed, never past it. Writes made in the
+    transaction before the lock was taken are not rolled back (the rescore takes it first)."""
+
+    LOCKS: dict[int, threading.Lock] = {}
+    _LOCKS_GUARD = threading.Lock()
 
     def __init__(self, guard: Guard):
         super().__init__(guard)
         self.tables: dict[str, list[dict]] = {t: [] for t in TABLE_KEYS}
         self.query_handlers: dict[str, Callable[..., list[dict]]] = {}
+        self._local = threading.local()
+
+    def _state(self) -> Any:
+        st = self._local
+        if not hasattr(st, "saved"):
+            st.saved, st.held = [], []
+        return st
+
+    @contextmanager
+    def transaction(self) -> Iterator[None]:
+        st = self._state()
+        st.saved.append(copy.deepcopy(self.tables))
+        try:
+            yield
+        except BaseException:
+            self.tables = st.saved[-1]
+            raise
+        finally:
+            st.saved.pop()
+            if not st.saved:
+                while st.held:
+                    st.held.pop().release()
+
+    def advisory_lock(self, key: int, *, wait_seconds: float = 60.0) -> None:
+        st = self._state()
+        if not st.saved:
+            raise RuntimeError("advisory_lock is taken inside store.transaction()")
+        self._lock_op()
+        with self._LOCKS_GUARD:
+            lock = self.LOCKS.setdefault(key, threading.Lock())
+        if not lock.acquire(timeout=max(0.0, wait_seconds)):
+            raise LockTimeout(f"advisory lock {key} is held by another run")
+        st.held.append(lock)
+        st.saved[0] = copy.deepcopy(self.tables)
 
     def _where(self, table: str, where: Where | None) -> Where:
         """where with its columns checked against the table and a timestamptz column's values stored as Postgres
         compares them."""
         _known(table, where or {})
-        times = TIMESTAMP_COLUMNS.get(table, frozenset())
+        times, days = TIMESTAMP_COLUMNS.get(table, frozenset()), DATE_COLUMNS.get(table, frozenset())
         out: Where = {}
         for col, want in (where or {}).items():
-            if col in times and isinstance(want, Range):
-                want = Range(_timestamp(want.lo), _timestamp(want.hi))  # an open end stays open
-            elif col in times and not callable(want):
+            as_stored = _timestamp if col in times else _date if col in days else None
+            if as_stored is not None and isinstance(want, Range):
+                want = Range(as_stored(want.lo), as_stored(want.hi))  # an open end stays open
+            elif as_stored is not None and not callable(want):
                 many = isinstance(want, (list, tuple, set, frozenset))
-                want = [_timestamp(v) for v in want] if many else _timestamp(want)
+                want = [as_stored(v) for v in want] if many else as_stored(want)
             out[col] = want
         return out
 
@@ -337,6 +464,29 @@ class MemoryStore(Store):
                 existing.append(r)
         return len(rows)
 
+    def claim(self, table, row):
+        row = _stored(table, row)
+        self._authorize("insert", table, write=True)
+        key = TABLE_KEYS[table]
+        if key is None:
+            raise ValueError(f"{table} has no key to claim")
+        k = tuple(row.get(c) for c in key)
+        if any(tuple(old.get(c) for c in key) == k for old in self.tables[table]):
+            return False
+        self.tables[table].append(row)
+        return True
+
+    def insert_new(self, table, row):
+        row = _stored(table, row)
+        self._authorize("insert", table, write=True)
+        keys = [k for k in (TABLE_KEYS[table], *UNIQUE_COLUMNS.get(table, ())) if k]
+        for key in keys:
+            k = tuple(row.get(c) for c in key)
+            if None not in k and any(tuple(old.get(c) for c in key) == k for old in self.tables[table]):
+                return False
+        self.tables[table].append(row)
+        return True
+
     def select(self, table, where=None):
         self._authorize("select", table, write=False)
         where = self._where(table, where)
@@ -361,6 +511,8 @@ class MemoryStore(Store):
         return n
 
     def query(self, sql, params=None):
+        if self._state().saved:
+            raise RuntimeError(IN_TRANSACTION_QUERY)
         for name, handler in self.query_handlers.items():
             if name in sql:
                 return handler(self, params or {})
@@ -400,17 +552,24 @@ class PostgresStore(Store):
     identifiers, never text from the data; values are always bound parameters.
     """
 
-    def __init__(self, guard: Guard, dsn: str, *, connect: Callable[[], Any] | None = None):
+    def __init__(self, guard: Guard, dsn: str, *, connect: Callable[[], Any] | None = None,
+                 connect_timeout: int | None = None, options: str | None = None):
         """connect: a zero-argument callable returning a psycopg connection, used instead of
-        psycopg.connect(dsn) (tests). The dsn carries the password: never log it."""
+        psycopg.connect(dsn) (tests). connect_timeout: seconds to wait for the server (the scheduler's
+        heartbeat write after a failed run, ops/scheduler.py); None waits as libpq does. options: libpq's
+        options string, such as "-c statement_timeout=5000" (the same store). The dsn carries the password: never
+        log it."""
         super().__init__(guard)
         self.dsn = dsn
         self._connect = connect
+        self._connect_kwargs: dict[str, Any] = {"connect_timeout": connect_timeout} if connect_timeout else {}
+        if options:
+            self._connect_kwargs["options"] = options
         self._conn: Any = None
 
     def _connection(self) -> Any:
         if self._conn is None or self._conn.closed:
-            conn = self._connect() if self._connect is not None else psycopg.connect(self.dsn)
+            conn = self._connect() if self._connect is not None else psycopg.connect(self.dsn, **self._connect_kwargs)
             conn.autocommit = True
             conn.row_factory = dict_row
             conn.execute("SET TIME ZONE 'UTC'")  # timestamptz values load as UTC datetimes
@@ -421,6 +580,28 @@ class PostgresStore(Store):
         if self._conn is not None:
             self._conn.close()
             self._conn = None
+
+    @contextmanager
+    def transaction(self) -> Iterator[None]:
+        """psycopg's: BEGIN, COMMIT on leaving, ROLLBACK on an exception; the one-statement transactions of the
+        methods inside it become savepoints of it."""
+        with self._connection().transaction():
+            yield
+
+    def advisory_lock(self, key: int, *, wait_seconds: float = 60.0) -> None:
+        """pg_advisory_xact_lock(key) with lock_timeout wait_seconds for this statement only (restored after), so a
+        held key raises LockTimeout rather than waiting for ever; released at COMMIT or ROLLBACK."""
+        conn = self._connection()
+        if conn.info.transaction_status != psycopg.pq.TransactionStatus.INTRANS:
+            raise RuntimeError("advisory_lock is taken inside store.transaction()")
+        self._lock_op()
+        before = conn.execute("SELECT current_setting('lock_timeout') AS t").fetchone()["t"]
+        conn.execute("SELECT set_config('lock_timeout', %s, true)", [f"{max(1, int(wait_seconds * 1000))}ms"])
+        try:
+            conn.execute("SELECT pg_advisory_xact_lock(%s)", [key])
+        except psycopg.errors.LockNotAvailable as exc:
+            raise LockTimeout(f"advisory lock {key} is held by another run") from exc
+        conn.execute("SELECT set_config('lock_timeout', %s, true)", [before])
 
     def _table(self, table: str) -> Identifier:
         return Identifier(self.schema, table)
@@ -502,6 +683,24 @@ class PostgresStore(Store):
                 cur.executemany(query, params)
         return len(rows)
 
+    def claim(self, table, row):
+        row = dict(row)
+        self._authorize("insert", table, write=True)
+        key = TABLE_KEYS[table]
+        if key is None:
+            raise ValueError(f"{table} has no key to claim")
+        cols = sorted(set(row) | set(key))
+        query = SQL("{} ON CONFLICT ({}) DO NOTHING").format(
+            self._insert_sql(table, cols), SQL(", ").join(Identifier(c) for c in key))
+        return self._connection().execute(query, self._row(table, cols, row)).rowcount == 1
+
+    def insert_new(self, table, row):
+        row = dict(row)
+        self._authorize("insert", table, write=True)
+        cols = sorted(row)
+        query = SQL("{} ON CONFLICT DO NOTHING").format(self._insert_sql(table, cols))
+        return self._connection().execute(query, self._row(table, cols, row)).rowcount == 1
+
     def _upsert_sql(self, table: str, key: tuple[str, ...], cols: list[str]) -> Composable:
         sets = [SQL("{0} = EXCLUDED.{0}").format(Identifier(c)) for c in cols if c not in key]
         action = SQL("DO UPDATE SET {}").format(SQL(", ").join(sets)) if sets else SQL("DO NOTHING")
@@ -553,9 +752,82 @@ class PostgresStore(Store):
             raise GuardViolation("Store.query is read only; use insert/upsert/update/delete")
         self.guard.authorize("db", Op("query", target=f"{self.schema}.query", write=False))
         conn = self._connection()
+        if conn.info.transaction_status == psycopg.pq.TransactionStatus.INTRANS:
+            raise RuntimeError(IN_TRANSACTION_QUERY)
         try:
             with conn.transaction():
                 conn.execute("SET TRANSACTION READ ONLY")
                 return conn.execute(sql, params, binary=True).fetchall()
         except psycopg.errors.ReadOnlySqlTransaction as exc:
             raise GuardViolation("Store.query is read only; it may not change data") from exc
+
+
+# -- the scheduler's lock (W2-4, 20 Oct 2026; RS P0-4) -----------------------------------------------------------
+
+
+class LockUnavailable(Exception):
+    """The database could not be reached to take or check the lock. The message names the error's type only (a
+    connection error's text can carry the host)."""
+
+
+class SessionLock:
+    """A Postgres session advisory lock on a connection of its own (ops/scheduler.py: one live scheduler).
+
+    pg_try_advisory_lock never waits: try_acquire() says at once whether this session holds the lock. A session lock
+    is released when its connection ends, so the old container's SIGTERM (or its death) frees it; the connection asks
+    the server for TCP keepalives every 10 s after 30 s idle, so a peer that vanished without a goodbye is noticed in
+    about a minute, not after the system's two hours. held() checks the connection is still alive: a lock whose
+    connection dropped is gone, and the caller must take it again before it runs anything."""
+
+    KEEPALIVE = "-c tcp_keepalives_idle=30 -c tcp_keepalives_interval=10 -c tcp_keepalives_count=3"
+
+    def __init__(self, guard: Guard, dsn: str, key: int, *, connect: Callable[[], Any] | None = None,
+                 connect_timeout: int = 5, statement_timeout_ms: int = 5000):
+        self.guard, self.dsn, self.key = guard, dsn, key
+        self._connect = connect
+        self._kwargs: dict[str, Any] = {
+            "connect_timeout": connect_timeout, "autocommit": True,
+            "options": f"{self.KEEPALIVE} -c statement_timeout={statement_timeout_ms}",
+            "keepalives": 1, "keepalives_idle": 30, "keepalives_interval": 10, "keepalives_count": 3}
+        self._conn: Any = None
+        self._held = False
+
+    def _connection(self) -> Any:
+        if self._conn is None or self._conn.closed:
+            self._held = False
+            self._conn = self._connect() if self._connect is not None else psycopg.connect(self.dsn, **self._kwargs)
+        return self._conn
+
+    def try_acquire(self) -> bool:
+        """True once this session holds the lock (at once if it already does); LockUnavailable if Postgres cannot be
+        reached."""
+        self.guard.authorize("db", Op("advisory_lock", target=f"{DB_SCHEMA}.scheduler_lock", write=False))
+        try:
+            row = self._connection().execute("SELECT pg_try_advisory_lock(%s) AS got", [self.key]).fetchone()
+        except psycopg.Error as exc:
+            self.close()
+            raise LockUnavailable(type(exc).__name__) from exc
+        got = next(iter(row.values()), False) if isinstance(row, Mapping) else row[0]
+        self._held = bool(got)
+        return self._held
+
+    def held(self) -> bool:
+        """Whether the lock is still held: this session took it and its connection still answers."""
+        if not self._held or self._conn is None or self._conn.closed:
+            self._held = False
+            return False
+        try:
+            self._conn.execute("SELECT 1")
+        except psycopg.Error:
+            self.close()
+            return False
+        return True
+
+    def close(self) -> None:
+        """Drop the connection, and with it the lock."""
+        conn, self._conn, self._held = self._conn, None, False
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass

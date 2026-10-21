@@ -13,7 +13,7 @@ from tests.test_render import make_settings
 from us_outbound.clients.instantly import LEAD_ACTIVE, LEAD_BOUNCED, LEAD_PAUSED, LEAD_UNSUBSCRIBED
 from us_outbound.enrol import capacity
 from us_outbound.ops import retention
-from us_outbound.ops.heartbeat import run_job
+from us_outbound.ops.health import run_job
 from us_outbound.replies import account_stop, optout
 
 NOW = datetime(2026, 12, 15, 17, 0, tzinfo=UTC)  # Tuesday 15 Dec 2026, 12:00 US Eastern
@@ -307,7 +307,7 @@ def test_a_failed_delete_is_reported_and_tried_again():
 
 def test_a_deleted_lead_is_no_lead_to_the_code_that_reads_one():
     """The account-level stop, the in-flight list and enrol all read instantly_lead_id; a deleted lead has none."""
-    from us_outbound.enrol import enrol, second
+    from us_outbound.enrol import enrol
 
     w = World(now=datetime(2026, 12, 11, 17, tzinfo=UTC))
     first = w.contact(date(2026, 10, 6))
@@ -320,7 +320,7 @@ def test_a_deleted_lead_is_no_lead_to_the_code_that_reads_one():
             reply_class="positive")
     assert account_stop.to_stop(w.ctx) == []
     assert capacity.in_flight(w.ctx.store, SETTINGS, TODAY) == []
-    assert second.is_enrolled(row) and enrol.contact_block(row, set(), set()) == "contact already enrolled"
+    assert row["enrolled_at"] and enrol.contact_block(row, set(), set()) == "contact already enrolled"
 
 
 def test_the_job_runs_with_a_heartbeat():
@@ -391,7 +391,7 @@ def test_reply_text_is_purged_after_90_days_and_the_rest_stays():
 
 
 def test_a_purged_card_still_reads_on_the_reply_desk():
-    from us_outbound.replies.items import ReplyItem
+    from us_outbound.replies.desk import ReplyItem
 
     w = reply_world()
     w.run()
@@ -512,6 +512,9 @@ UNIVERSE = {
     "a-stale": "", "a-stale-too": "", "a-refreshed": "Apollo saw it again in September", "a-new": "first seen recently",
     "a-contact": "a contact", "a-event": "an event", "a-item": "a hitl item", "a-enrolled": "enrolled",
     "a-disqualified": "disqualified", "a-named-source": "from the Named accounts tab",
+    # W1-4: parked is held out by a setting (an industry switched off), not forgotten: kept like disqualified, though
+    # first seen 13+ months ago (OLD, 1 Oct 2026, against UNIVERSE_NOW, 20 Nov 2027) with no fresh source fact.
+    "a-parked": "parked",
     "a-named": "named by Harry", "a-declined": "dropped with a 🚫", "a-undated": "no first_seen",
 }
 
@@ -532,6 +535,7 @@ def universe_rows(store, first_seen=OLD) -> None:
                   {"event_id": f"f{i}-doubt", "account_id": aid, "source": "verify_accounts", "fact": "doubt",
                    "value": "size", "observed_at": FRESH}]
     rows = [{**r, **{"a-enrolled": {"status": "enrolled"}, "a-disqualified": {"status": "disqualified"},
+                     "a-parked": {"status": "parked"},
                      "a-named-source": {"source": "named"}}.get(r["account_id"], {})} for r in rows]
     facts += [{"event_id": "f-fresh", "account_id": "a-refreshed", "source": "apollo_org", "fact": "employees",
                "value": 41, "observed_at": FRESH},

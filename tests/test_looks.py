@@ -10,7 +10,7 @@ from datetime import UTC, date, datetime, timedelta
 import pytest
 
 from tests.fakes import make_context
-from tests.test_cli import Harness, _approved, _tests_tab
+from tests.test_cli import Harness, _approved, _split, _tests_tab
 from tests.test_registry import SETTINGS
 from us_outbound.learn import looks
 from us_outbound.settings import load
@@ -245,16 +245,190 @@ def test_the_readout_lists_a_test_at_a_look_and_otherwise_its_progress():
 # -- test start ------------------------------------------------------------------------------------------------------------
 
 
-def test_a_holdout_starts_without_copy_and_beside_the_running_copy_test(capsys):
+def test_a_holdout_starts_without_copy_but_never_beside_another_running_test(capsys):
+    """W3-4 (21 Oct 2026; design-final §5 L10): one test runs at a time, so a holdout started from 21 Oct is refused
+    beside the running copy test (it ran beside one before); alone, with General live_split = opener (its arms are
+    contacts.opener_arm), it starts with no copy at all."""
     running = _tests_tab(test_id="t1", status="running", start_date="2026-10-20")
-    holdout = _tests_tab(test_id="t2", kind="holdout", version_a="opener", version_b="holdout", looks="100")
-    h = Harness(dataclasses.replace(SETTINGS, copy=_approved()), sheet_tabs={"Tests": [running, holdout]})
-    assert h.run("test", "start", "t2", "--live") == 0
-    assert h.sheet_tabs["Tests"][1]["status"] == "running"
+
+    def holdout() -> dict:
+        return _tests_tab(test_id="t2", kind="holdout", version_a="opener", version_b="holdout", looks="100",
+                          look_thresholds="obrien_fleming")
+
+    h = Harness(_split(SETTINGS, "opener"), sheet_tabs={"Tests": [running, holdout()]})
+    assert h.run("test", "start", "t2", "--live") == 2
+    assert "only one test runs at a time: t1 is running" in capsys.readouterr().err
+    h1 = Harness(_split(SETTINGS, "opener"), sheet_tabs={"Tests": [holdout()]})
+    assert h1.run("test", "start", "t2", "--live") == 0
+    assert h1.sheet_tabs["Tests"][0]["status"] == "running"
+    h1b = Harness(_split(SETTINGS, "test"), sheet_tabs={"Tests": [holdout()]})  # the copy test's split, not its own
+    assert h1b.run("test", "start", "t2", "--live") == 2
+    assert "set General live_split to opener first (it is test)" in capsys.readouterr().err
     third = _tests_tab(test_id="t3")
-    h2 = Harness(dataclasses.replace(SETTINGS, copy=_approved()), sheet_tabs={"Tests": [running, third]})
+    h2 = Harness(_split(dataclasses.replace(SETTINGS, copy=_approved())), sheet_tabs={"Tests": [running, third]})
     assert h2.run("test", "start", "t3", "--live") == 2
     assert "only one copy test (ab or variant) runs at a time" in capsys.readouterr().err
     h3 = Harness(dataclasses.replace(SETTINGS, copy=_approved()), sheet_tabs={"Tests": [_tests_tab(looks="soon")]})
     assert h3.run("test", "start", "t1", "--live") == 2
     assert "looks on the Tests tab" in capsys.readouterr().err
+
+
+# -- the exact test at a look (W2-3; redteam-stats §3 L10) ------------------------------------------------------------
+
+
+def test_a_read_uses_fisher_s_exact_test_against_the_look_s_threshold():
+    """3 of 30 replied with eap-v1, 0 of 30 with general-v1, all matured, read at the read date with no interim look.
+    Fisher's two-sided p: margins 3 successes in 60, 30 a side; P(x) = C(30, x)·C(30, 3 − x)/C(60, 3) with C(60, 3) =
+    34,220: x = 0 and x = 3 are 4,060/34,220 = 0.11864 each, as likely as the table seen; p = 0.237. The pooled z-test
+    this replaced read 0.076 (tests/test_stats.py), below 0.10: a swap back fails here. One look: its threshold is the
+    whole alpha, 0.10, so the read does not pass it."""
+    ctx = world(ab_test(read_date=date(2026, 11, 20)))
+    for i in range(60):
+        arm = "eap-v1" if i < 30 else "general-v1"
+        emailed(ctx, i, arm, T0, reply="objection" if i < 3 else None)
+    result = looks.read(ctx, "t1")
+    assert result["reply_test"] == "fisher_exact" and result["reply_p"] == 0.2373
+    assert result["look_threshold"] == 0.1 and result["below_threshold"] is False
+    assert result["p_b_better"] < 0.05  # general-v1 replied less: P(general-v1 better) is small
+    assert "Fisher p = 0.237 (this look's threshold 0.100)" in looks.summary_line(result)
+
+
+def test_two_looks_use_the_o_brien_fleming_thresholds():
+    """A count look at 30 a side and the read date: two looks at alpha 0.10. The first's threshold is 0.0111 (each side
+    spends 2 − 2Φ(1.96/√½) = 0.0056; tests/test_stats.py), the read date's 0.0965.
+
+    5 of 30 replied with eap-v1, 0 of 30 with general-v1. Fisher's two-sided p: 5 successes in 60, 30 a side;
+    P(x) = C(30, x)·C(30, 5 − x)/C(60, 5), C(60, 5) = 5,461,512; x = 5 and x = 0 are C(30, 5) = 142,506 each, 0.026093,
+    and every other table is likelier (x = 1: 30·27,405 = 822,150, 0.1505), so p = 0.0522. That is above the first
+    look's 0.0111 (not below its threshold, though below the whole alpha, 0.10: a read that compared p with ALPHA at an
+    interim look would stop the test early) and below the read date's 0.0965."""
+    ctx = world(ab_test(looks=(30,), read_date=date(2026, 12, 21)))
+    for i in range(60):
+        emailed(ctx, i, "eap-v1" if i < 30 else "general-v1", T0, reply="objection" if i < 5 else None)
+    first = looks.read(ctx, "t1")
+    assert first["look"]["number"] == 1 and first["look_threshold"] == 0.0111
+    assert first["reply_p"] == 0.0522 and first["below_threshold"] is False
+    later = looks.read(dataclasses.replace(ctx, now=datetime(2026, 12, 22, tzinfo=UTC)), "t1")
+    assert later["look"]["number"] == 2 and later["look_threshold"] == 0.0965
+    assert later["reply_p"] == 0.0522 and later["below_threshold"] is True
+
+
+# -- the pre-registration read (W3-4, 21 Oct 2026; settings/model.PRE_REGISTRATION) -----------------------------------
+
+
+def _registered(**kw) -> CopyTest:
+    return ab_test(**{"metric_id": "O3", "definition_version": "2026-10-20", "test": "fisher_exact", "alpha": 0.10,
+                      "look_thresholds": "one_look", "read_date": date(2026, 11, 20), **kw})
+
+
+def test_a_pre_registered_test_is_decided_on_its_own_metric():
+    """eap-v1: 3 positive and 2 objections of 30; general-v1: none of 30. On O3 (positive), Fisher's p for 3 of 30
+    against 0 of 30 is 0.237 (C(30, 3)/C(60, 3) = 4,060/34,220 = 0.1186 at each end); on O4 (any human reply) it would
+    be 5 of 30 against 0, 0.0522 (test_two_looks_use_the_o_brien_fleming_thresholds). The read decides on O3, against
+    the one look's whole alpha 0.10: not crossed. The same world under the old defaults (O4) crosses: a mutation that
+    ignores metric_id fails here."""
+    def run(test: CopyTest) -> dict:
+        ctx = world(test)
+        for i in range(60):
+            arm = "eap-v1" if i < 30 else "general-v1"
+            emailed(ctx, i, arm, T0, reply="positive" if i < 3 else "objection" if i < 5 else None)
+        return looks.read(ctx, "t1")
+
+    o3 = run(_registered())
+    assert (o3["metric_id"], o3["measure"], o3["reply_p"], o3["look_threshold"]) == ("O3", "positive", 0.2373, 0.1)
+    assert o3["crossed"] is False and o3["pre_registered"] is True
+    # The line shows the counts the read decided on (positive, 3 and 0, not the 5 human replies) and says it does not
+    # cross (W3-4 r1: it printed "replied" counts beside the positive p before).
+    line = looks.summary_line(o3)
+    assert line.startswith("eap-v1 3 of 30 positive (10.0%); general-v1 0 of 30 positive (0.0%) · Fisher p = 0.237 "
+                           "(this look's threshold 0.100): does not cross · P(general-v1 better) = ")
+    assert "replied" not in line and line.endswith(", for information")
+    assert looks.decides_line(o3).startswith("O3 (a positive or referral reply within 28 days) decides, by Fisher's")
+    old = run(ab_test(read_date=date(2026, 11, 20)))  # started 28 Sep, no pre-registration: O4, Fisher, 0.10, O'Brien-Fleming over one look
+    assert (old["metric_id"], old["reply_p"], old["look_threshold"], old["crossed"]) == ("O4", 0.0522, 0.1, True)
+    assert old["pre_registered"] is False
+    assert "eap-v1 5 of 30 replied (16.7%)" in looks.summary_line(old)
+    assert "Fisher p = 0.052 (this look's threshold 0.100): crosses ·" in looks.summary_line(old)
+
+
+def test_a_beta_posterior_test_crosses_on_p_b_better_beyond_half_the_threshold_each_side():
+    """5 of 30 replied with eap-v1 (a), 0 of 30 with general-v1 (b): P(b > a) from Jeffreys posteriors Beta(0.5, 30.5)
+    against Beta(5.5, 25.5) is 0.0053, below 0.10 / 2 = 0.05, so a beta_posterior test on O4 at alpha 0.10 crosses."""
+    ctx = world(_registered(metric_id="O4", test="beta_posterior"))
+    for i in range(60):
+        emailed(ctx, i, "eap-v1" if i < 30 else "general-v1", T0, reply="objection" if i < 5 else None)
+    result = looks.read(ctx, "t1")
+    assert result["reply_test"] == "beta_posterior" and result["p_b_better"] == 0.005 and result["crossed"] is True
+    line = looks.summary_line(result)
+    assert ("· P(general-v1 better) = 0.005 (crosses outside 0.050 … 0.950): crosses · Fisher p = 0.052, for "
+            "information") in line
+    assert "beta posteriors" in looks.decides_line(result).casefold()
+
+
+def test_a_beta_posterior_between_half_the_threshold_and_the_threshold_does_not_cross():
+    """4 of 30 replied with eap-v1 (a), 1 of 30 with general-v1 (b). P(b > a) from Beta(1.5, 29.5) against Beta(4.5,
+    26.5): stats.beta_posterior_gt gives 0.078 (a normal approximation, means 0.048 and 0.145, sd of the difference
+    √(0.00144 + 0.00388) = 0.0729, gives Φ(−0.097 ÷ 0.0729) = Φ(−1.33) ≈ 0.09; the right skew of the smaller arm's
+    posterior lowers it).
+    It is above 0.10 / 2 = 0.05 and below 0.95, so the two-sided rule at alpha 0.10 does not cross; the mutation that
+    drops the halving (crossing below 0.10) would call it. Fisher's p, for information: 5 successes in 60, 30 a side,
+    C(60, 5) = 5,461,512; tables as or less likely than x = 4: x = 4 and 1 (27,405 × 30 = 822,150 each), x = 5 and 0
+    (142,506 each), so p = 1,929,312 / 5,461,512 = 0.353."""
+    ctx = world(_registered(metric_id="O4", test="beta_posterior"))
+    for i in range(60):
+        emailed(ctx, i, "eap-v1" if i < 30 else "general-v1", T0, reply="objection" if i in (0, 1, 2, 3, 30) else None)
+    result = looks.read(ctx, "t1")
+    assert (result["versions"]["eap-v1"]["replied"], result["versions"]["general-v1"]["replied"]) == (4, 1)
+    assert 0.05 < result["p_b_better"] < 0.10 and result["p_b_better"] == 0.078
+    assert result["reply_p"] == 0.3533 and result["crossed"] is False
+    assert ("P(general-v1 better) = 0.078 (crosses outside 0.050 … 0.950): does not cross · Fisher p = 0.353, for "
+            "information") in looks.summary_line(result)
+
+
+def test_the_first_look_at_145_calls_nothing_at_6_against_2():
+    """warm-intro-70's first look: 145 a side. 6 of 145 against 2 of 145: Fisher's two-sided p = 0.282 (computed:
+    stats.fisher_exact), above the whole alpha 0.10 and far above the O'Brien-Fleming half-way threshold 0.0111."""
+    ctx = world(ab_test(looks=(145,), read_date=date(2027, 4, 26)))
+    for i in range(290):
+        arm = "eap-v1" if i < 145 else "general-v1"
+        emailed(ctx, i, arm, T0, reply="objection" if i < 6 or 145 <= i < 147 else None)
+    result = looks.read(ctx, "t1")
+    assert result["look"]["number"] == 1 and result["look_threshold"] == 0.0111
+    assert result["reply_p"] == 0.2822 and result["crossed"] is False
+
+
+def _false_positives(first: float, last: float, test, seeds: int = 2000) -> float:
+    """Two looks (145 and 290 a side) at a true 3% in both arms: the share of 2,000 seeded worlds that call a
+    difference at either look."""
+    import random
+
+    hits = 0
+    for seed in range(seeds):
+        r = random.Random(seed)
+        a = [r.random() < 0.03 for _ in range(290)]
+        b = [r.random() < 0.03 for _ in range(290)]
+        if test(sum(a[:145]), 145, sum(b[:145]), 145) < first or test(sum(a), 290, sum(b), 290) < last:
+            hits += 1
+    return hits / seeds
+
+
+def test_under_no_difference_two_corrected_looks_call_at_most_10_5_percent():
+    """RT §0.2: the pooled z-test at p < 0.10 at both looks called a difference that is not there in 15.5% of these
+    worlds (17.5% in the review's run); Fisher's test against the O'Brien-Fleming thresholds (0.0111, 0.0965) in 6.0%
+    (both counted here over the same 2,000 seeds), inside the 10.5% bound. Swapping the z-test back, uncorrected,
+    breaks the bound."""
+    import math
+    from statistics import NormalDist
+
+    from us_outbound.learn import stats
+
+    def z_test(k1, n1, k2, n2):  # the pooled two-proportion z-test W2-3 removed, as a mutation probe
+        p = (k1 + k2) / (n1 + n2)
+        if p in (0, 1):
+            return 1.0
+        return 2 * (1 - NormalDist().cdf(abs(k1 / n1 - k2 / n2) / math.sqrt(p * (1 - p) * (1 / n1 + 1 / n2))))
+
+    first, last = stats.obrien_fleming(2, 0.10)
+    corrected = _false_positives(first, last, stats.fisher_exact)
+    assert corrected <= 0.105 and corrected == 0.06
+    assert _false_positives(0.10, 0.10, z_test) == 0.1545 > 0.105

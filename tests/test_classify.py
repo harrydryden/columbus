@@ -8,9 +8,9 @@ import pytest
 
 from tests.fakes_replies import NOW, classification
 from tests.test_client_claude import FakeSDK, make
-from us_outbound.clients.claude import BudgetExceeded, PRICES, estimate_call_usd
-from us_outbound.crm.hubspot_writes import REPLY_CLASSES
-from us_outbound.replies import classify, draft
+from us_outbound.clients.claude import BudgetExceeded, ClaudeError, PRICES, estimate_call_usd
+from us_outbound.clients.instantly import UNSUBSCRIBE_HTML, UNSUBSCRIBE_PLAIN
+from us_outbound.replies import classify, desk, draft
 
 RECEIVED = date(2026, 10, 27)
 
@@ -46,6 +46,32 @@ def test_reply_text_cuts_the_thread_and_our_own_lines():
     assert not classify.asks_to_stop(classify.strip_quoted(gmail))
 
 
+def test_C3_our_current_footer_left_unquoted_is_never_read_as_a_stop_request():
+    """Probe C3 (tests-mutation-safety-measure §4): the footer since 5 Oct 2026, "Not relevant? Unsubscribe here",
+    left unquoted by a mail client, is cut back to the prospect's words, so the stop rule never reads it."""
+    words = "Sounds good, send me some times."
+    assert classify.strip_quoted(words + UNSUBSCRIBE_PLAIN) == words
+    assert not classify.asks_to_stop(classify.strip_quoted(words + UNSUBSCRIBE_PLAIN))
+    assert not classify.asks_to_stop(classify.reply_text({"body": {"html": f"<div>{words}</div>{UNSUBSCRIBE_HTML}"}}))
+
+
+# The warm and referral replies code-replies-crm H2 probed: the stop rule matches 6 of these 7, so each must still
+# reach the model (W1-2).
+WARM_WITH_A_STOP_WORD = [
+    "Sounds interesting, can we talk Tuesday? Please remove me from the newsletter though.",
+    "Not the right person, please remove me and contact our HR lead Sam Lee instead.",
+    "We would love a demo. No more emails needed, just send a calendar link.",
+    "Can you take us off the waitlist and book a demo?",
+    "Happy to chat. Please unsubscribe my old address and use this one.",
+    "Yes please, but stop emailing my colleague, I am the one to talk to.",
+]
+
+
+@pytest.mark.parametrize("text", WARM_WITH_A_STOP_WORD)
+def test_the_stop_rule_catches_these_warm_replies_so_the_model_must_still_read_them(text):
+    assert classify.asks_to_stop(text)
+
+
 def test_reply_text_reads_html_when_there_is_no_text_part():
     email = {"body": {"html": "<div>Sounds <b>good</b>&nbsp;&amp; thanks<br>Jane</div>"}}
     assert classify.reply_text(email) == "Sounds good\xa0& thanks\nJane"
@@ -55,8 +81,8 @@ def test_reply_text_reads_html_when_there_is_no_text_part():
 # -- the answer, checked -------------------------------------------------------------------------------------
 
 
-def test_the_classes_are_spec_11s_and_hubspots():
-    assert set(classify.CLASSES) == set(REPLY_CLASSES)
+def test_the_classes_are_spec_11s_and_the_desks_words():
+    assert set(classify.CLASSES) == set(desk.CLASS_WORDS)
     assert classify.SCHEMA["properties"]["class"]["enum"] == list(classify.CLASSES)
 
 
@@ -70,7 +96,35 @@ def test_asking_to_stop_is_unsubscribe_at_any_confidence_but_a_warm_reply_keeps_
     assert classify.from_answer(classification("unsubscribe", confidence=0.4), RECEIVED).reply_class == "unsubscribe"
     assert classify.from_answer(classification("negative", asks_to_stop=True), RECEIVED).reply_class == "unsubscribe"
     assert classify.from_answer(classification("out_of_office", asks_to_stop=True), RECEIVED).reply_class == "unsubscribe"
-    assert classify.from_answer(classification("positive", asks_to_stop=True), RECEIVED).reply_class == "positive"
+    v = classify.from_answer(classification("positive", asks_to_stop=True), RECEIVED)
+    assert (v.reply_class, v.asks_to_stop, v.source) == ("positive", True, "model")
+
+
+def test_C1_a_low_confidence_reply_asking_to_stop_is_unsubscribe_unless_a_person_must_answer_it():
+    """Probe C1, changed knowingly (W1-2; RS §2 W1-2): at confidence 0.3 with asks_to_stop, negative, objection,
+    not_now and other are unsubscribe (CAN-SPAM: a missed opt-out at any confidence); wrong_person keeps its class,
+    as positive and referral do, so a person answers it, and poll_replies suppresses the address either way
+    (test_poll_replies: every one of the five is suppressed and blocklisted)."""
+    for cls in ("negative", "objection", "not_now", "other"):
+        v = classify.from_answer(classification(cls, confidence=0.3, asks_to_stop=True), RECEIVED)
+        assert (v.reply_class, v.asks_to_stop) == ("unsubscribe", True), cls
+    v = classify.from_answer(classification("wrong_person", confidence=0.3, asks_to_stop=True), RECEIVED)
+    assert (v.reply_class, v.asks_to_stop) == ("wrong_person", True)
+    # Without a stop request, 0.3 is below SPEC 11's 0.7: "other", not wrong_person.
+    assert classify.from_answer(classification("wrong_person", confidence=0.3), RECEIVED).reply_class == "other"
+    assert classify.KEEP_ON_STOP == {"positive", "referral", "wrong_person"}
+
+
+@pytest.mark.parametrize("cls, kept", [("positive", "positive"), ("referral", "referral"),
+                                        ("wrong_person", "wrong_person"), ("negative", "unsubscribe"),
+                                        ("not_now", "unsubscribe"), ("other", "unsubscribe"),
+                                        ("out_of_office", "unsubscribe"), ("unsubscribe", "unsubscribe")])
+def test_the_stop_rule_kept_apart_from_the_models_flag(cls, kept):
+    """stop= is the regex's verdict: with it, the model's own asks_to_stop may be false and the rule still holds;
+    the source says both looked (model+rule)."""
+    v = classify.from_answer(classification(cls, confidence=0.9, asks_to_stop=False), RECEIVED, stop=True)
+    assert (v.reply_class, v.asks_to_stop, v.source, v.model_class) == (kept, True, "model+rule", cls)
+    assert v.by_rule
 
 
 def test_dates_must_parse_and_not_be_in_the_past():
@@ -126,8 +180,46 @@ def test_the_cap_refuses_classification_before_any_request():
     with pytest.raises(BudgetExceeded):
         classify.classify(Ctx(claude), "Sounds good.", received=NOW)
     assert sdk.calls == []
-    # The stop rule needs no model, so it is never refused.
-    assert classify.classify(Ctx(claude), "unsubscribe", received=NOW).reply_class == "unsubscribe"
+    # A stop phrasing is still asked about, and the cap's refusal is the stop rule's own unsubscribe.
+    v = classify.classify(Ctx(claude), "unsubscribe", received=NOW)
+    assert (v.reply_class, v.source) == ("unsubscribe", "rule") and v.error.startswith("BudgetExceeded")
+    assert sdk.calls == []
+
+
+class Raises:
+    """A task model that fails the way a live call can: anything, a timeout included."""
+
+    def __init__(self, exc):
+        self.exc, self.calls = exc, 0
+
+    def json(self, *a, **kw):
+        self.calls += 1
+        raise self.exc
+
+
+@pytest.mark.parametrize("exc", [ClaudeError("Claude API error 529"), BudgetExceeded("cap"), OSError("reset"),
+                                 TimeoutError("ReadTimeout"), RuntimeError("anything")])
+def test_with_a_stop_phrasing_any_model_failure_is_the_stop_rules_unsubscribe(exc):
+    model = Raises(exc)
+    text = "Sounds interesting, can we talk Tuesday? Please remove me from the newsletter though."
+    v = classify.classify(Ctx(model), text, received=NOW)
+    assert model.calls == 1 and (v.reply_class, v.source, v.asks_to_stop) == ("unsubscribe", "rule", True)
+    assert v.error.startswith(type(exc).__name__)
+
+
+def test_without_a_stop_phrasing_a_model_failure_is_raised_as_before():
+    with pytest.raises(ClaudeError):
+        classify.classify(Ctx(Raises(ClaudeError("Claude API error 529"))), "Sounds good.", received=NOW)
+    with pytest.raises(OSError):
+        classify.classify(Ctx(Raises(OSError("reset"))), "Sounds good.", received=NOW)
+
+
+def test_a_warm_reply_with_a_stop_word_is_classified_and_keeps_its_class():
+    claude, _, sdk, _ = make(sdk=FakeSDK(text='{"class": "positive", "confidence": 0.9, "asks_to_stop": false}'),
+                             model="claude-sonnet-5-5")
+    v = classify.classify(Ctx(claude), WARM_WITH_A_STOP_WORD[0], received=NOW)
+    assert len(sdk.calls) == 1
+    assert (v.reply_class, v.asks_to_stop, v.source) == ("positive", True, "model+rule")
 
 
 def test_effort_goes_in_output_config_and_must_be_a_known_level():

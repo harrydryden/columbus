@@ -1,0 +1,311 @@
+"""The daily post's funnel sections (learn/daily_post.py; learn/daily_report.py until W2-3; Harry, 2 Oct 2026): the
+headline, Found, Pipeline, and To improve with its thresholds. (The Approvals section and the ❌ and edit lines of To
+improve went with the send approvals: W2-1, 20 Oct 2026.)"""
+
+from __future__ import annotations
+
+import dataclasses
+from datetime import UTC, datetime, timedelta
+
+from tests.fakes import sendable_general_copy
+from tests.test_daily_post import MON, TUE_9, ev, world
+from tests.test_registry import HANNAH
+from us_outbound.learn import daily_post
+from us_outbound.settings.model import Focus
+
+SAT_9 = datetime(2026, 10, 24, 8, 0, tzinfo=UTC)  # 09:00 UK (BST), Sat 24 Oct: the post covers Fri 23 alone
+SECTIONS = ("*Sent and outcomes*", "*Found*", "*Pipeline*", "*To improve*", "*Today's number*",
+            "*Sources*", "*Mailboxes*", "*Kill rules and items waiting*")
+
+
+def default_settings_copy():
+    from us_outbound.settings.defaults import default_tabs
+    from us_outbound.settings.validate import validate_all
+
+    return validate_all(default_tabs())[0].copy
+
+
+def acct(aid, **kw):
+    return {"account_id": aid, "domain": f"{aid}.com", "clean_name": f"Company {aid}", "first_seen": MON - timedelta(days=20),
+            **kw}
+
+
+def person(cid, aid, **kw):
+    return {"contact_id": cid, "account_id": aid, "email": f"pat.lee@{aid}.com", "email_status": "verified",
+            "email_source": "apollo", "person_state": "NY", "role": "People leader",
+            "created_at": MON - timedelta(days=10), **kw}
+
+
+def funnel(now=TUE_9):
+    """world() plus a pipeline: new, queued, verified, ready, waiting, enrolled and finished accounts."""
+    ctx, t = world(now=now)
+    # The General Copy rows sendable, as on the live sheet: pick.waiting counts only accounts enrol could email (W1-6).
+    ctx.settings = dataclasses.replace(ctx.settings, copy=sendable_general_copy(default_settings_copy()))
+    ctx.store.insert("accounts", [
+        # Found yesterday: two from Apollo, one named; tiers as the rescore left them (n2's a tier from before W2-2,
+        # which a rescore has not reached yet).
+        acct("n1", source="apollo", tier="Queue", status="queued", size_band="20-49", first_seen=MON),
+        acct("n2", source="apollo", tier="Control", status="new", size_band="50-99", first_seen=MON),
+        acct("n3", source="named", status="new", first_seen=MON + timedelta(hours=1)),
+        acct("old", source="apollo", tier="Control", status="new", size_band="10-19"),  # found before yesterday
+        acct("q1", source="apollo", tier="Standard", status="queued"),  # no size band; doubtful facts
+        acct("e1", source="apollo", tier="Excluded", status="new"),  # not in the queue
+        # Ready: verified, in the queue (r4 under a tier from before W2-2, read as Queue), with a sendable contact;
+        # pick drew r3 for the random arm.
+        acct("r1", tier="Queue", status="verified", industry_group="Legal Teams", size_band="20-49"),
+        acct("r2", tier="Queue", status="verified", industry_group="Legal Teams", size_band="50-99"),
+        acct("r3", tier="Queue", status="verified", size_band="20-49", arm="random"),
+        acct("r4", tier="Standard", status="verified", size_band="20-49"),
+        # Verified, waiting for a contact; at w2 nobody suitable was found yesterday.
+        acct("w1", tier="Standard", status="verified", size_band="20-49"),
+        acct("w2", tier="Standard", status="verified"),
+        # In sequence, finished, stopped.
+        acct("s1", tier="Standard", status="enrolled"),
+        acct("s2", tier="Standard", status="enrolled"),
+        acct("s3", tier="Standard", status="engaged"),
+    ])
+    ctx.store.insert("contacts", [
+        person("c_r1", "r1", created_at=MON + timedelta(hours=2)),
+        person("c_r2", "r2", role="Founder or executive"),
+        person("c_r3", "r3"),
+        person("c_r4", "r4"),
+        person("c_q1", "q1", email_source="clay", role="Founder or executive", created_at=MON + timedelta(hours=3)),
+        person("c_s1", "s1", enrolled_at=datetime(2026, 10, 23, 14, 0, tzinfo=UTC), enrolment_month="2026-10"),
+        person("c_s2", "s2", enrolled_at=datetime(2026, 9, 25, 14, 0, tzinfo=UTC), enrolment_month="2026-09"),
+        person("c_s3", "s3", enrolled_at=datetime(2026, 10, 20, 14, 0, tzinfo=UTC), enrolment_month="2026-10"),
+    ])
+    ctx.store.insert("events", [ev(40, "replied", contact_id="c_s3", account_id="s3", reply_class="positive",
+                                   at=datetime(2026, 10, 22, 15, 0, tzinfo=UTC))])
+    ctx.store.insert("signal_events", [
+        {"event_id": "f1", "account_id": "w2", "source": "pick_contacts", "fact": "contact_pick",
+         "value": {"outcome": "none", "reason": "company size unknown"}, "observed_at": MON},
+        {"event_id": "f2", "account_id": "zz", "source": "pick_contacts", "fact": "contact_pick",
+         "value": {"outcome": "none", "reason": "no sendable email among the top 2 (email status unverified, contact in CA "
+                                                "or WA)"}, "observed_at": MON},
+        {"event_id": "f3", "account_id": "r1", "source": "pick_contacts", "fact": "contact_pick",
+         "value": {"outcome": "picked"}, "observed_at": MON},
+        {"event_id": "d1", "account_id": "q1", "source": "verify_accounts", "fact": "doubtful_facts",
+         "value": {"reasons": ["employee count unknown"]}, "observed_at": MON},
+    ])
+    ctx.store.insert("heartbeats", [
+        {"run_id": "v1", "job": "verify_accounts", "status": "ok", "started_at": MON.replace(hour=4, minute=30),
+         "detail": {"verified": 4}},
+        {"run_id": "v0", "job": "verify_accounts", "status": "ok", "started_at": MON - timedelta(days=3),
+         "detail": {"verified": 9}},  # Friday's run, not yesterday's
+    ])
+    return ctx, t
+
+
+def section(lines, title):
+    """The lines of the section whose title starts with `title`, title first, up to the blank line."""
+    i = next(n for n, line in enumerate(lines) if line.startswith(title))
+    end = next((n for n in range(i, len(lines)) if not lines[n]), len(lines))
+    return lines[i:end]
+
+
+# -- the headline and the order ---------------------------------------------------------------------
+
+
+def test_the_headline_and_the_sections_top_to_bottom():
+    ctx, t = funnel()
+    lines, out = daily_post.build(ctx)  # the full post (`us-outbound daily --full`)
+    # Ready: r1 to r4, each verified in a queue tier with a sendable contact (no send approval holds r4 any more).
+    assert lines[1] == ("Yesterday: 8 sent · 3 replies (1 positive) · 1 unsubscribe · 3 companies, 2 contacts found"
+                        " · 4 ready to send")
+    at = [next(n for n, line in enumerate(lines) if line.startswith(s)) for s in SECTIONS]
+    assert at == sorted(at)
+    assert all(lines[n - 1] == "" for n in at)  # a blank line before each title
+    assert (out["found_companies"], out["found_contacts"], out["ready_to_send"]) == (3, 2, 4)
+    assert "Company r1" not in "\n".join(section(lines, "*Pipeline*") + section(lines, "*Found*"))  # aggregates only
+
+
+# -- Found and Pipeline --------------------------------------------------------------------------------
+
+
+def test_found_counts_the_period():
+    ctx, _ = funnel()
+    lines, nums = daily_post.build(ctx)
+    assert section(lines, "*Found*") == [
+        "*Found* · Yesterday, Mon 26 Oct",
+        "  Companies: 3 new (apollo 2, named 1); tiers now: Queue 1, Control 1, not scored yet 1",
+        "  Verified: 4",
+        "  Contacts: 2 new (apollo 1, clay 1; Founder or executive 1, People leader 1)",
+        "  No suitable contact: 2 accounts (company size unknown 1, no sendable email among the top candidates 1)",
+    ]
+    assert nums["found_by_source"] == {"apollo": 2, "named": 1} and nums["verified_in_period"] == 4
+
+
+def test_found_says_when_verify_did_not_run():
+    ctx, _ = funnel()
+    ctx.store.delete("heartbeats", {"job": "verify_accounts"})
+    lines, _ = daily_post.build(ctx)
+    assert "  Verified: 0 (verify_accounts did not run)" in lines
+    assert not any("Clay" in line for line in section(lines, "*Found*"))  # Clay's verify path went with W2-1
+
+
+def test_pipeline_counts_now():
+    ctx, _ = funnel()
+    lines, nums = daily_post.build(ctx)
+    pace = nums["supply_pace"]
+    # The smaller of sending capacity (11 free slots) and the weekly target: none enrolled this ISO week (Mon 26 Oct;
+    # c_s1 went on Fri 23), 150 over the 4 send days left is 37.5, so 38. No send approval holds a slot any more.
+    assert pace == min(11, 38) == 11
+    assert nums["limited_by"] == ("Today: 4, limited by ready accounts (weekly target 38, sending capacity 11, ready "
+                                  "accounts 4).")
+    assert section(lines, "*Pipeline*") == [
+        "*Pipeline* · now",
+        "  Ready to send: 4 (1 drawn for the random arm)",
+        "    By group: Legal Teams 2, no group 2",
+        f"  Supply: {round(4 / pace, 1)} send days at {pace} a day",  # 4 ÷ 11 = 0.36, 0.4
+        "  Waiting for a contact: 2 (1 where nobody suitable was found; searched again after 14 days)",
+        "  Waiting for verification: 5 (1 with doubtful Apollo facts, for the hand-check)",
+        "  In sequence: 1 account with follow-ups to come · finished 1 · stopped 1 (reply, bounce or unsubscribe)",
+    ]
+    assert (nums["ready_random_arm"], nums["waiting_for_contact"], nums["waiting_for_verification"]) == (1, 2, 5)
+    assert "ready_by_tier" not in nums  # the tiers went with W2-2 (Harry's D7)
+    assert (nums["in_sequence"], nums["finished"], nums["stopped"]) == (1, 1, 1)
+    assert nums["ready_accounts"] == 4 and "awaiting_approval" not in nums  # the enrol job's own candidates
+
+
+def test_pipeline_by_the_focus_tab_s_groups():
+    ctx, _ = funnel()
+    ctx.settings = dataclasses.replace(ctx.settings, focus=(Focus("Legal Teams", 0.4), Focus("Retail", 0.2)))
+    lines, _ = daily_post.build(ctx)
+    assert "    Focus: Legal Teams 2, Retail 0, other 2" in lines  # r3 and r4 have no group
+
+
+def test_saturday_covers_friday_only():
+    """The post runs Tuesday to Saturday and covers the day before alone (metrics-audit L1): Saturday's has Friday's
+    sends and finds, and neither Thursday's nor Saturday morning's."""
+    ctx, _ = world(now=SAT_9)
+    fri, thu, sat = datetime(2026, 10, 23, 15, 0, tzinfo=UTC), datetime(2026, 10, 22, 15, 0, tzinfo=UTC), \
+        datetime(2026, 10, 24, 6, 0, tzinfo=UTC)
+    ctx.store.insert("events", [ev(70, "sent", mailbox=HANNAH, step=1, account_id="f1", contact_id="kf", at=fri),
+                                ev(71, "unsubscribed", contact_id="kf", account_id="f1", at=sat),
+                                ev(72, "sent", mailbox=HANNAH, step=1, account_id="t1", contact_id="kt", at=thu)])
+    ctx.store.insert("accounts", [acct("fri", source="apollo", status="new", first_seen=fri),
+                                  acct("thu", source="apollo", status="new", first_seen=thu)])
+    ctx.store.insert("contacts", [person("c_fri", "fri", created_at=fri)])
+    lines, nums = daily_post.build(ctx)
+    # Friday's one send (world's Monday events are days ahead); Thursday's send and find and Saturday's unsubscribe
+    # are not in it.
+    assert lines[1] == ("Yesterday: 1 sent · 0 replies (0 positive) · 0 unsubscribes · 1 company, 1 contact found"
+                        " · 0 ready to send")
+    assert "*Found* · Yesterday, Fri 23 Oct" in lines and "*Sent and outcomes* · Yesterday, Fri 23 Oct (UK)" in lines
+    assert (nums["sent"], nums["unsubscribed"], nums["found_companies"], nums["found_contacts"]) == (1, 0, 1, 1)
+
+
+# -- To improve ------------------------------------------------------------------------------------------
+
+
+def learning(opener=52, holdout=50, clay=10, subjects=False):
+    """world() plus 90 days of step-1 sends by opener arm and email source, replies and bounces.
+
+    The last two opener contacts bounced, so `opener` - 2 were emailed. subjects: the opener contacts had email 1's
+    personal subject and the holdout the Copy row's (contacts.subject_arm; Harry, 5 Oct 2026); else none recorded."""
+    ctx, t = world()
+    sent_at = TUE_9 - timedelta(days=20)
+    contacts, events = [], []
+    n = 100
+    groups = [("o", opener, {"opener_arm": "opener", "angle": "Hiring"}),
+              ("h", holdout, {"opener_arm": "holdout", "angle": "General"}),
+              ("c", clay, {"opener_arm": "none", "email_source": "clay"})]
+    arms = {"o": "personal", "h": "copy"} if subjects else {}
+    for prefix, count, fields in groups:
+        for i in range(count):
+            cid = f"{prefix}{i}"
+            contacts.append(person(cid, f"a{cid}", copy_version="G-1", subject_arm=arms.get(prefix), **fields))
+            events.append(ev(n, "sent", mailbox=HANNAH, step=1, account_id=f"a{cid}", contact_id=cid, at=sent_at))
+            n += 1
+    for cid in (f"o{opener - 1}", f"o{opener - 2}", "c0"):
+        events.append(ev(n, "bounced", contact_id=cid, step=1, at=sent_at + timedelta(minutes=5)))
+        n += 1
+    for cid, cls in (("o0", "positive"), ("o1", "referral"), ("o2", "objection"), ("o3", "objection"),
+                     ("h0", "negative"), ("h1", "out_of_office")):
+        events.append(ev(n, "replied", contact_id=cid, account_id=f"a{cid}", reply_class=cls,
+                         at=sent_at + timedelta(days=1)))
+        n += 1
+    ctx.store.insert("contacts", contacts)
+    ctx.store.insert("events", events)
+    return ctx, t
+
+
+def test_to_improve_past_its_thresholds():
+    ctx, _ = learning()
+    lines, nums = daily_post.build(ctx)
+    # The ❌ and edit lines went with the send approvals (W2-1): the opener split, bounces by source (52 + 50
+    # emailed from Apollo, 2 bounced; Clay's 10 old contacts too few), the angles and what is too early.
+    assert section(lines, "*To improve*") == [
+        "*To improve* · last 90 days",
+        "  Replies, personal opening line vs none (the holdout): 4 of 50 (8.0%) vs 1 of 50 (2.0%); interested 2 vs 0. "
+        "Early counts, not proof.",
+        "  Bounces by where the address came from: Apollo 2 of 102 (2.0%), Clay 10 emailed, too few to judge; "
+        "a source over 3% is paused automatically.",
+        "  Replies by angle: General 1 of 50, Hiring 4 of 50.",
+        "  Too early to compare: personal subject vs the Copy tab's, 0 and 0 of 50 emailed each.",
+    ]
+    assert nums["improve_lines"] == 4
+
+
+def test_to_improve_compares_email_1_s_personal_subject_with_the_copy_row_s():
+    """Harry, 5 Oct 2026: the subject split read the way the opener holdout is, next to it."""
+    ctx, _ = learning(subjects=True)
+    lines, _ = daily_post.build(ctx)
+    body = section(lines, "*To improve*")
+    opener = body.index("  Replies, personal opening line vs none (the holdout): 4 of 50 (8.0%) vs 1 of 50 (2.0%); "
+                        "interested 2 vs 0. Early counts, not proof.")
+    assert body[opener + 1] == ("  Replies, personal subject vs the Copy tab's: 4 of 50 (8.0%) vs 1 of 50 (2.0%); "
+                                "interested 2 vs 0. Early counts, not proof.")
+    assert not any("Too early" in line for line in body)
+
+
+def test_to_improve_below_its_thresholds_says_what_it_needs_once():
+    ctx, _ = learning(opener=12, holdout=5, clay=0)
+    lines, _ = daily_post.build(ctx)
+    assert section(lines, "*To improve*") == [
+        "*To improve* · last 90 days",
+        "  Too early to compare: personal opening line vs none (the holdout), 10 and 5 "
+        "of 50 emailed each; personal subject vs the Copy tab's, 0 and 0 of 50 emailed each; "
+        "angles and Copy tab versions, 50 emailed each, two at least; bounces by where the address came from, 17 of 50 "
+        "emailed.",
+    ]
+
+
+def test_to_improve_before_any_send():
+    ctx, _ = funnel()
+    ctx.store.delete("events", {"type": "sent"})
+    lines, _ = daily_post.build(ctx)
+    body = section(lines, "*To improve*")
+    assert body[-1] == "  Too early to compare: no email sent in the last 90 days."
+    assert body[1].startswith("  No company size from Apollo: 1 of 6 companies ready to email and 2 still being "
+                              "checked.")
+    assert body[2] == ("  1 company ready to email has nobody we can write to, so it is skipped (most often: company "
+                       "size unknown, 1). Nothing to do unless this grows: to widen the search, add job titles on the "
+                       "Roles tab.")
+
+
+def test_to_improve_keeps_to_six_lines_with_the_data_gaps_and_no_tier_mix():
+    """Six lines are due: the opener and subject splits, bounces by source, two data gaps (no size at v0, and nobody
+    found at v0), then the angles, which MAX_IMPROVE (6) now has room for. The tier mix line went with the tiers
+    (W2-2, Harry's D7): 21 companies all in one tier, which used to read as "unbalanced", say nothing."""
+    ctx, _ = learning(subjects=True)
+    month = TUE_9 - timedelta(days=2)
+    ctx.store.insert("accounts", [acct(f"q{i}", tier="Queue", status="queued", size_band="20-49", first_seen=month)
+                                  for i in range(20)] + [acct("v0", tier="Queue", status="verified")])
+    ctx.store.insert("signal_events", [{"event_id": "nc", "account_id": "v0", "source": "pick_contacts",
+                                        "fact": "contact_pick", "observed_at": MON,
+                                        "value": {"outcome": "none", "reason": "company size unknown"}}])
+    lines, _ = daily_post.build(ctx)
+    body = section(lines, "*To improve*")[1:]
+    assert len(body) == daily_post.MAX_IMPROVE
+    assert body[3].startswith("  No company size from Apollo: 1 of 1 companies ready to email and 0 still being checked.")
+    assert body[4].startswith("  1 company ready to email has nobody we can write to")
+    assert body[5].startswith("  Replies by angle")
+    assert not any("unbalanced" in line or "threshold" in line for line in lines)
+
+
+def test_the_reason_drops_per_account_detail():
+    assert daily_post.reason("no sendable email among the top 2 (email status unverified (2))") == (
+        "no sendable email among the top candidates")
+    assert daily_post.reason("company size unknown") == "company size unknown"
+    assert daily_post.reason("") == "no reason recorded"

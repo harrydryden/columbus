@@ -30,14 +30,14 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import psycopg
 import pytest
 
 import us_outbound.clients
 from tests.fakes import FakeTransport
 from us_outbound.clients.apollo import Apollo
-from us_outbound.clients.db import MemoryStore, PostgresStore
+from us_outbound.clients.db import MemoryStore, PostgresStore, SessionLock
 from us_outbound.clients.claude import Claude
-from us_outbound.clients.clay import Clay
 from us_outbound.clients.guard import Boundaries, CallRecord, Guard, GuardViolation, Op
 from us_outbound.clients.hubspot import HubSpot
 from us_outbound.clients.http import HttpClient
@@ -57,20 +57,18 @@ ROOT = Path(__file__).resolve().parents[1]
 ADDRESSES = ("hannah@meetspill.org", "sam@meetspill.org", "harry@meetspill.org", "harry@tryspill.org")
 OWNERS = ("Hannah Spalding", "Sam Jackson", "Harry Dryden")
 PIPELINE, FIRST_STAGE = "pipe-spill3", "stage-first"
-CLAY_FUNCTIONS = ("fn-us-accounts", "fn-us-contacts")
 SHEET = "sheet-test"
 ALERT, DEV = "#us-outbound", "#us-outbound-dev"
 ESCALATION = "harry@spill.chat"  # SPEC 11: reply items are forwarded only here
 APPROVER = "U_HARRY"  # approver_slack_ids (SPEC 1.3): the only reply approver, and the only Slack DM recipient
 HANNAH_SLACK = "U_HANNAH"  # D11: Hannah approves replies to her own mailbox only
-WATCHDOG = "https://hc-ping.com/0f1e2d3c-test"  # US_OUTBOUND_WATCHDOG_URL (ops/watchdog.py; Harry, 7 Oct 2026)
+WATCHDOG = "https://hc-ping.com/0f1e2d3c-test"  # US_OUTBOUND_WATCHDOG_URL (ops/health.py; Harry, 7 Oct 2026)
 
 BOUNDS = Boundaries(
     registry_addresses=frozenset(ADDRESSES),
     registry_owners=frozenset(OWNERS),
     hubspot_pipeline_id=PIPELINE,
     hubspot_deal_stage_id=FIRST_STAGE,
-    clay_function_ids=frozenset(CLAY_FUNCTIONS),
     settings_sheet_id=SHEET,
     alert_channel=ALERT,
     dev_channel=DEV,
@@ -83,11 +81,9 @@ BOUNDS = Boundaries(
 # -- SPEC 1.2 restated as data (deliberately not imported from guard.py) ----------------------
 
 PREFIX = "US Outbound – "  # "US Outbound – ", en dash (SPEC 9)
-HS_COMPANY_PROPS = {"us_outbound_account_id", "us_outbound_tier", "us_outbound_industry_group", "us_outbound_top_signals"}
-HS_CONTACT_PROPS = {"us_outbound_angle", "us_outbound_reply_class"}
+# W1-2 (19 Oct 2026; Harry's D9): no custom property is written. SPEC 11's six us_outbound_* were never created.
 HS_EMPTY_ONLY = {"hubspot_owner_id", "lifecyclestage", "hs_lead_status"}
 HS_IDENTITY_ON_CREATE = {"company": {"name", "domain"}, "contact": {"email", "firstname", "lastname", "jobtitle"}}
-HS_SIX = {"company": HS_COMPANY_PROPS, "contact": HS_CONTACT_PROPS}
 HS_DEAL_PROPS = {"dealname", "pipeline", "dealstage", "hubspot_owner_id"}
 HS_WARM = {"positive", "referral"}
 HS_FREE_WRITES = {"note.create", "task.create", "association.create", "communication.unsubscribe"}
@@ -111,7 +107,6 @@ READS_OVER_POST = {
         ("people.bulk_match", "/people/bulk_match"),
         ("organizations.bulk_enrich", "/organizations/bulk_enrich"),
     },
-    "clay": {("function.run", "/run")},  # SPEC 8: only the two US Outbound functions (checked below)
 }
 HOSTS = {
     "api.hubapi.com": "hubspot",
@@ -119,7 +114,6 @@ HOSTS = {
     "sheets.googleapis.com": "sheets",
     "api.instantly.ai": "instantly",
     "api.apollo.io": "apollo",
-    "api.clay.com": "clay",
     "hc-ping.com": "watchdog",
 }
 
@@ -133,7 +127,8 @@ def spec_violation(rec: CallRecord) -> str | None:
         if not rec.write:
             if a in {"email.list", "email.get", "account.get", "account.list", "warmup.analytics", "account.analytics_daily"}:
                 return None if in_registry else f"Instantly {a} not filtered by registry accounts"
-            if a in {"lead.list", "lead.get", "campaign.get", "campaign.steps_analytics", "campaign.sending_status"}:
+            if a in {"lead.list", "lead.get", "campaign.get", "campaign.steps_analytics", "campaign.analytics",
+                     "campaign.sending_status"}:
                 return None if t.startswith(PREFIX) else f"Instantly {a} on {t!r}"
             if a == "campaign.list":
                 return None if str(d.get("search", "")).startswith(PREFIX.strip()) else "unfiltered campaign list"
@@ -182,10 +177,10 @@ def spec_violation(rec: CallRecord) -> str | None:
         if a in {"company.create", "contact.create"}:
             if d.get("reply_class") not in HS_WARM:
                 return f"HubSpot {a} without a positive or referral reply"
-            extra = props - HS_SIX[obj] - HS_EMPTY_ONLY - HS_IDENTITY_ON_CREATE[obj]
+            extra = props - HS_EMPTY_ONLY - HS_IDENTITY_ON_CREATE[obj]
             return f"HubSpot {a} sets {sorted(extra)}" if extra else None
         if a in {"company.update", "contact.update"}:
-            extra = props - HS_SIX[obj] - HS_EMPTY_ONLY
+            extra = props - HS_EMPTY_ONLY
             current = dict(d.get("current") or {})
             filled = [p for p in props & HS_EMPTY_ONLY if p not in current or current[p] not in (None, "")]
             if extra or filled:
@@ -199,10 +194,6 @@ def spec_violation(rec: CallRecord) -> str | None:
                 and props <= HS_DEAL_PROPS
             )
             return None if ok else "HubSpot deal outside Spill 3.0's first stage"
-        if a == "property_group.create":
-            return None if t == "us_outbound" else f"property group {t!r}"
-        if a == "property.create":
-            return None if t in HS_COMPANY_PROPS | HS_CONTACT_PROPS else f"property {t!r}"
         if a == "contact.gdpr_delete":
             return None if d.get("erasure_request") is True else "GDPR delete outside an erasure request"
         return None if a in HS_FREE_WRITES else f"HubSpot write {a} is not allowed"
@@ -273,6 +264,9 @@ class FakePostgres:
         self.autocommit = False
         self.row_factory = None
         self.rowcount = 0
+        # Idle in autocommit, and inside a transaction within transaction() (W2-2: advisory_lock is taken only in
+        # one, and query never is).
+        self.info = SimpleNamespace(transaction_status=psycopg.pq.TransactionStatus.IDLE)
 
     def connect(self) -> FakePostgres:
         self.connects += 1
@@ -298,14 +292,20 @@ class FakePostgres:
     def cursor(self):
         return contextlib.nullcontext(self)
 
+    @contextlib.contextmanager
     def transaction(self):
-        return contextlib.nullcontext()
+        before = self.info.transaction_status
+        self.info.transaction_status = psycopg.pq.TransactionStatus.INTRANS
+        try:
+            yield
+        finally:
+            self.info.transaction_status = before
 
     def fetchall(self):
         return []
 
     def fetchone(self):
-        return {"n": 0}
+        return {"n": 0, "t": "0"}  # a count; current_setting's lock_timeout
 
     def close(self):
         self.closed = True
@@ -371,7 +371,8 @@ def install_routes(t: FakeTransport) -> None:
     t.route("GET", "chat.getPermalink", {"ok": True, "permalink": "https://spill.slack.com/archives/C_ALERT/p11"})
     t.route("POST", "reactions.add", {"ok": True})
     t.route("GET", "auth.test", {"ok": True, "user_id": "U_BOT"})
-    # Sheets.
+    # Sheets. The tab ids first: every later Sheets route (values, batchGet) is matched before it.
+    t.route("GET", f"spreadsheets/{SHEET}", {"sheets": [{"properties": {"sheetId": 7, "title": "Mailboxes"}}]})
     t.route("POST", "sheets.googleapis.com/v4/spreadsheets", {"spreadsheetId": "new-sheet"})
     t.route("POST", ":append", {})
     t.route("POST", "values:batchUpdate", {})
@@ -397,15 +398,8 @@ def install_routes(t: FakeTransport) -> None:
             fn=lambda r: {"items": [{"id": "E1", "eaccount": r.params["eaccount"], "subject": "Re: hi"}]})
     t.route("GET", "/emails/E1", {"id": "E1", "eaccount": "hannah@meetspill.org", "subject": "Re: hi", "campaign_id": "cmp-h"})
     t.route("POST", "/leads/update-interest-status", {"status": "ok"})
-    # Clay.
-    t.route("POST", "api.clay.com/public/v0/routines/", {"routine_run_id": "R1"})
-    t.route("GET", "/routines/run/R1/results", {"status": "complete", "results": [
-        {"id": "1", "status": "complete", "output": {"clean_name": "Acme Creative"}},
-        {"id": "2", "status": "complete", "output": {"email": JANE, "status": "valid"}},
-    ]})
     # Public.
     t.route("GET", "boards-api.greenhouse.io", {"jobs": []})
-    t.route("HEAD", "acmecreative.com", status=301, headers={"Location": "https://www.acmecreative.com/"})
 
 
 @dataclass
@@ -441,12 +435,12 @@ def make_world(live: bool, tmp: Path) -> World:
         "Sheets": Sheets(guard, t),
         "Instantly": Instantly(guard, t, "tok"),
         "Apollo": Apollo(guard, t, "tok"),
-        "Clay": Clay(guard, t, "tok", sleep=lambda s: None),
         "Public": Public(guard, t),
         "Watchdog": Watchdog(guard, t, WATCHDOG),
         "Claude": Claude(guard, memory, api_key=None, model="claude-haiku-4-5", monthly_cap_usd=10.0, sdk=sdk),
         "MemoryStore": memory,
         "PostgresStore": PostgresStore(guard, "postgresql://fake", connect=pg.connect),
+        "SessionLock": SessionLock(guard, "postgresql://fake", 0x75736F7574626F, connect=pg.connect),
     }
     return World(guard, t, pg, sdk, tmp, clients)
 
@@ -471,8 +465,21 @@ def _store_exercises() -> dict[str, Ex]:
         "update": lambda s, w: s.update("accounts", {"account_id": "acc-1"}, {"score": 55}),
         "delete": lambda s, w: s.delete("signal_events", {"account_id": "acc-1", "source": "scoring"}),
         "query": lambda s, w: s.query("SELECT * FROM us_outbound.v_queue"),
+        "transaction": lambda s, w: _locked(s),
+        "advisory_lock": lambda s, w: _locked(s),
         "close": lambda s, w: s.close(),
+        "claim": lambda s, w: s.claim("heartbeats", {"run_id": "enrol:2026-10-20T11:00", "job": "enrol",
+                                                     "status": "running", "started_at": NOW}),
+        # The front door's insert (W3-3): a row for a domain no account holds.
+        "insert_new": lambda s, w: s.insert_new("accounts", {"account_id": "acc-new", "domain": "new-domain.com"}),
     }
+
+
+def _locked(store: Any) -> None:
+    """The rescore's pattern (scoring/score.py): a transaction, the advisory lock taken in it, a write."""
+    with store.transaction():
+        store.advisory_lock(20261020, wait_seconds=1)
+        store.update("accounts", {"account_id": "acc-1"}, {"score": 56})
 
 
 EXERCISES: dict[str, dict[str, Ex]] = {
@@ -487,9 +494,9 @@ EXERCISES: dict[str, dict[str, Ex]] = {
         "get_record": lambda c, w: c.get_record("meetings", "m1", ["hs_meeting_outcome"], associations=["contacts"]),
         "search_meetings": lambda c, w: c.search_meetings("owner-harry", NOW),
         "search_pipeline_deals": lambda c, w: c.search_pipeline_deals(PIPELINE, NOW),
+        # crm/readback.created (Harry, 20 Oct 2026): a createdate search, a read like the others.
+        "search_created": lambda c, w: c.search_created("contacts", NOW, ["email", "createdate"]),
         "pipeline_stages": lambda c, w: c.pipeline_stages(PIPELINE),
-        "properties": lambda c, w: c.properties("companies"),
-        "property_groups": lambda c, w: c.property_groups("companies"),
         "iter_opted_out_or_bounced_emails": lambda c, w: list(c.iter_opted_out_or_bounced_emails()),
         # The lookalikes job's reads (sources/lookalikes.py): company and deal fields only.
         "iter_companies": lambda c, w: list(c.iter_companies(
@@ -499,26 +506,19 @@ EXERCISES: dict[str, dict[str, Ex]] = {
         "companies_by_id": lambda c, w: c.companies_by_id(["c1"], ["domain"]),
         "deal_company_ids": lambda c, w: c.deal_company_ids("d1"),
         "create_company": lambda c, w: c.create_company(
-            {"name": "Acme Creative", "domain": "acmecreative.com", "us_outbound_account_id": "acc-1",
-             "us_outbound_tier": "Priority", "us_outbound_industry_group": "Marketing & Creative Agencies"},
-            reply_class="positive"),
+            {"name": "Acme Creative", "domain": "acmecreative.com", "lifecyclestage": "lead"}, reply_class="positive"),
         "update_company": lambda c, w: c.update_company(
-            "c1", {"us_outbound_top_signals": "EAP named (ComPsych)", "lifecyclestage": "lead",
-                   "hubspot_owner_id": "owner-harry"}, current={"lifecyclestage": "", "hubspot_owner_id": None}),
+            "c1", {"lifecyclestage": "lead", "hubspot_owner_id": "owner-harry"},
+            current={"lifecyclestage": "", "hubspot_owner_id": None}),
         "create_contact": lambda c, w: c.create_contact(
-            {"email": JANE, "firstname": "Jane", "lastname": "Doe", "jobtitle": "Head of People",
-             "us_outbound_angle": "Upgrade the EAP (eap-v1)"}, reply_class="referral"),
-        "update_contact": lambda c, w: c.update_contact(
-            "k1", {"us_outbound_reply_class": "positive", "hs_lead_status": "CONNECTED"}, current=None),
+            {"email": JANE, "firstname": "Jane", "lastname": "Doe", "jobtitle": "Head of People"},
+            reply_class="referral"),
+        "update_contact": lambda c, w: c.update_contact("k1", {"hs_lead_status": "CONNECTED"}, current=None),
         "associate": lambda c, w: c.associate("contacts", "k1", "companies", "c1"),
         "create_note": lambda c, w: c.create_note("Reply: sounds good", [("companies", "c1"), ("contacts", "k1")], at=NOW),
         "create_task": lambda c, w: c.create_task("Reply from Jane", "Approve in Slack", "owner-harry", NOW,
                                                   [("companies", "c1")]),
         "create_deal": lambda c, w: c.create_deal(PREFIX + "Acme Creative", PIPELINE, FIRST_STAGE, "owner-harry", "c1"),
-        "ensure_property_group": lambda c, w: c.ensure_property_group("companies"),
-        "create_property": lambda c, w: c.create_property(
-            "companies", {"name": "us_outbound_tier", "label": "US Outbound tier", "type": "string",
-                          "fieldType": "text", "groupName": "us_outbound"}),
         "unsubscribe": lambda c, w: c.unsubscribe(JANE),
         "gdpr_delete_contact": lambda c, w: w.as_job("erase", lambda: c.gdpr_delete_contact(JANE)),
     },
@@ -543,11 +543,13 @@ EXERCISES: dict[str, dict[str, Ex]] = {
         "update_rows": lambda c, w: c.update_rows(SHEET, "Mailboxes", "address", {"hannah@meetspill.org": {"status": "Active"}}),
         "replace_tab": lambda c, w: c.replace_tab(SHEET, "Mailboxes", ["address", "status"], [{"address": "a@meetspill.org"}]),
         "add_tab": lambda c, w: c.add_tab(SHEET, "Focus"),
+        # W1-5 (19 Oct 2026): the Hand-check tab's dropdowns, set again after its header moved.
+        "set_validation": lambda c, w: c.set_validation(SHEET, "Mailboxes", ["address", "status"],
+                                                        {"status": ["Active", "Warming"]}),
         "create_settings_sheet": lambda c, w: c.create_settings_sheet(
             {"General": [{"key": "live_sending", "value": "no"}]}, {"General": ["key", "value"]}),
     },
     "Instantly": {
-        "list_accounts": lambda c, w: c.list_accounts(ADDRESSES),
         "warmup_status": lambda c, w: c.warmup_status(ADDRESSES),
         "enable_warmup": lambda c, w: c.enable_warmup(ADDRESSES),
         "list_campaigns": lambda c, w: c.list_campaigns(),
@@ -563,6 +565,7 @@ EXERCISES: dict[str, dict[str, Ex]] = {
              "custom_variables": {"s1_subject": "Hi", "s1_body": "Hello Jane"}}]),
         "list_leads": lambda c, w: c.list_leads(HANNAH_CAMPAIGN),
         "delete_lead": lambda c, w: c.delete_lead(HANNAH_CAMPAIGN, "L1"),
+        "get_lead": lambda c, w: c.get_lead(HANNAH_CAMPAIGN, "L1"),  # the read-back after a booking (W2-4)
         "list_emails": lambda c, w: c.list_emails(["hannah@meetspill.org"], since=NOW),
         "get_email": lambda c, w: c.get_email("hannah@meetspill.org", "E1"),
         "set_lead_paused": lambda c, w: c.set_lead_paused(HANNAH_CAMPAIGN, "L1", True),
@@ -575,6 +578,7 @@ EXERCISES: dict[str, dict[str, Ex]] = {
         "forward": lambda c, w: c.forward("hannah@meetspill.org", "E1", "harry@spill.chat", "Waiting 24 hours."),
         "blocklist_add": lambda c, w: c.blocklist_add([JANE]),
         "step_analytics": lambda c, w: c.step_analytics(HANNAH_CAMPAIGN),
+        "campaign_analytics": lambda c, w: c.campaign_analytics(HANNAH_CAMPAIGN, start_date=NOW, end_date=NOW),
         "daily_sends": lambda c, w: c.daily_sends(["hannah@meetspill.org"], start_date="2026-10-20"),
         "set_daily_limit": lambda c, w: c.set_daily_limit("hannah@meetspill.org", 30),
         "set_sender_name": lambda c, w: c.set_sender_name("hannah@meetspill.org", "Hannah", "Spalding"),
@@ -590,22 +594,13 @@ EXERCISES: dict[str, dict[str, Ex]] = {
         "job_postings": lambda c, w: c.job_postings("org-1"),
         "search_people": lambda c, w: c.search_people({"person_titles[]": ["Head of People"]}),
         "bulk_match": lambda c, w: c.bulk_match([{"first_name": "Jane", "last_name": "Doe", "domain": "acmecreative.com"}]),
-        "website_visitor_aggregates": lambda c, w: c.website_visitor_aggregates("spill.chat", ["org-1"]),
         "search_website_visitors": lambda c, w: c.search_website_visitors(["spill.chat"], days=30, pages=["/us"]),
         # Pages a caller's own read (9 Oct 2026): every request is still one of the methods above.
         "iter_pages": lambda c, w: list(c.iter_pages(
             lambda page: c.search_organizations({"organization_locations[]": ["Ohio, US"]}, page=page), max_pages=2)),
     },
-    "Clay": {
-        "run_function": lambda c, w: c.run_function(CLAY_FUNCTIONS[0], {"domain": "acmecreative.com"}),
-        "run_function_batch": lambda c, w: c.run_function_batch(
-            CLAY_FUNCTIONS[1], {"1": {"full_name": "Jane Doe"}, "2": {"full_name": "John Roe"}}),
-        "write_import_csv": lambda c, w: c.write_import_csv([{"domain": "acmecreative.com"}], w.tmp / "import.csv"),
-        "read_export_csv": lambda c, w: c.read_export_csv(w.tmp / "import.csv"),
-    },
     "Public": {
         "get": lambda c, w: c.get("https://boards-api.greenhouse.io/v1/boards/acme/jobs", params={"content": "true"}),
-        "resolve_redirect": lambda c, w: c.resolve_redirect("https://acmecreative.com"),
         "site_get": lambda c, w: c.site_get("https://www.acmecreative.com/careers", "acmecreative.com"),
     },
     "Claude": {
@@ -618,10 +613,16 @@ EXERCISES: dict[str, dict[str, Ex]] = {
     },
     "MemoryStore": _store_exercises(),
     "PostgresStore": _store_exercises(),
+    # The scheduler's lock (W2-4): a read of the database, authorized as one, on its own connection.
+    "SessionLock": {
+        "try_acquire": lambda c, w: c.try_acquire(),
+        "held": lambda c, w: c.held(),
+        "close": lambda c, w: c.close(),
+    },
 }
 
-CLIENT_CLASSES = {cls.__name__: cls for cls in (HubSpot, Slack, Sheets, Instantly, Apollo, Clay, Public, Watchdog,
-                                                Claude, MemoryStore, PostgresStore)}
+CLIENT_CLASSES = {cls.__name__: cls for cls in (HubSpot, Slack, Sheets, Instantly, Apollo, Public, Watchdog,
+                                                Claude, MemoryStore, PostgresStore, SessionLock)}
 # HttpClient's own plumbing: request() is the guarded path every method above goes through
 # (the negative cases call it directly), and headers() builds auth headers.
 PLUMBING = frozenset({"request", "headers"})
@@ -701,11 +702,13 @@ def test_live_writes_stay_inside_the_allowed_containers(live_world):
     assert sent["apollo"] == 0 and sent["public"] == 0 and sent["claude"] == 0
 
 
-def test_clay_runs_only_the_two_us_outbound_functions(live_world):
-    runs = [c for c in live_world.guard.calls if c.system == "clay" and c.action == "function.run"]
-    assert runs and {c.target for c in runs} <= set(CLAY_FUNCTIONS)
-    assert all(re.search(r"/routines/function:fn-us-(accounts|contacts)/run$", r.url)
-               for r in live_world.transport.requests if r.url.endswith("/run"))
+def test_clay_is_no_system_the_guard_knows(live_world):
+    """Clay was removed (Harry's D18; W2-1, 20 Oct 2026): no client calls it, and a call naming it is refused as an
+    unknown system, live or dry, read or write."""
+    assert not [c for c in live_world.guard.calls if c.system == "clay"]
+    for op in (Op("function.run", target="fn-us-accounts"), Op("function.get"), Op("table.write", write=True)):
+        with pytest.raises(GuardViolation, match="unknown system 'clay'"):
+            live_world.guard.authorize("clay", op)
 
 
 def test_every_request_pairs_with_an_authorized_call(live_world):
@@ -758,8 +761,12 @@ def test_db_writes_only_to_us_outbound(live_world):
 def test_db_upsert_sets_only_each_rows_columns(live_world):
     """One statement per column set: a row sets only the columns it carries (MemoryStore keeps the rest)."""
     upserts = [(text, params) for text, params in live_world.pg.calls
-               if text.startswith('INSERT INTO "us_outbound"."accounts"') and "ON CONFLICT" in text]
+               if text.startswith('INSERT INTO "us_outbound"."accounts"') and 'ON CONFLICT ("account_id")' in text]
     assert [len(params) for _, params in upserts] == [len(r) for r in ACCOUNT_ROWS]
+    # The front door's insert (W3-3): no conflict target, so the unique domain index refuses a second row too.
+    [new] = [text for text, _ in live_world.pg.calls
+             if text.startswith('INSERT INTO "us_outbound"."accounts"') and "ON CONFLICT DO NOTHING" in text]
+    assert new.endswith("ON CONFLICT DO NOTHING")
     for (text, _), row in zip(upserts, ACCOUNT_ROWS):
         cols = re.search(r"\(([^)]*)\) VALUES", text).group(1)
         assert {c.strip().strip('"') for c in cols.split(",")} == set(row)
@@ -803,8 +810,12 @@ NEGATIVE: dict[str, Callable[[World], Any]] = {
         PREFIX + "Acme", PIPELINE, "stage-won", "owner-harry", "c1"),
     "hubspot deal not named US Outbound": lambda w: w.clients["HubSpot"].create_deal(
         "Acme renewal", PIPELINE, FIRST_STAGE, "owner-harry", "c1"),
-    "hubspot property of another team": lambda w: w.clients["HubSpot"].create_property(
-        "companies", {"name": "annualrevenue", "groupName": "companyinformation"}),
+    "hubspot property of another team": lambda w: w.clients["HubSpot"].request(
+        "POST", "/crm/v3/properties/companies", Op("property.create", target="annualrevenue", write=True)),
+    "hubspot us_outbound property group (retired with the six, W1-2)": lambda w: w.clients["HubSpot"].request(
+        "POST", "/crm/v3/properties/companies/groups", Op("property_group.create", target="us_outbound", write=True)),
+    "hubspot us_outbound_* custom property (retired, W1-2)": lambda w: w.clients["HubSpot"].create_company(
+        {"name": "Acme", "domain": "acmecreative.com", "us_outbound_account_id": "acc-1"}, reply_class="positive"),
     "hubspot gdpr delete outside erase": lambda w: w.as_job("enrol", lambda: w.clients["HubSpot"].gdpr_delete_contact(JANE)),
     "hubspot workflow edit": lambda w: w.clients["HubSpot"].request(
         "PATCH", "/automation/v4/flows/1", Op("workflow.update", target="flows", write=True)),
@@ -827,7 +838,7 @@ NEGATIVE: dict[str, Callable[[World], Any]] = {
     "instantly EU leads list": lambda w: w.clients["Instantly"].list_leads(EU_CAMPAIGN),
     "instantly emails of a non-registry account": lambda w: w.clients["Instantly"].list_emails(["anna@spill.eu"]),
     "instantly emails unfiltered": lambda w: w.clients["Instantly"].list_emails([]),
-    "instantly accounts outside the registry": lambda w: w.clients["Instantly"].list_accounts(["anna@spill.eu"]),
+    "instantly accounts outside the registry": lambda w: w.clients["Instantly"].warmup_status(["anna@spill.eu"]),
     "instantly warmup outside the registry": lambda w: w.clients["Instantly"].enable_warmup(["anna@spill.eu"]),
     # The sender name (Harry, 5 Oct 2026): a registry mailbox only, and only a mailbox owner's full name.
     "instantly sender name outside the registry": lambda w: w.clients["Instantly"].set_sender_name(
@@ -868,10 +879,9 @@ NEGATIVE: dict[str, Callable[[World], Any]] = {
     # Apollo: read only.
     "apollo contact save": lambda w: w.clients["Apollo"].request("POST", "/contacts", Op("contacts.create", write=True)),
     "apollo label (not an allowed read)": lambda w: w.clients["Apollo"].request("GET", "/labels", Op("labels.list")),
-    # Clay: only the two US Outbound functions.
-    "clay Work Email function": lambda w: w.clients["Clay"].run_function("t_0tk0v4lhJ895hhhhTHJ", {"domain": "a.com"}),
-    "clay Company Latest Funding function": lambda w: w.clients["Clay"].run_function("t_0tk0v4ehpQ6WaeuCoQf", {}),
-    "clay table write": lambda w: w.clients["Clay"].request("POST", "/tables/t1/rows", Op("table.write", write=True)),
+    # Public sources: a HEAD to follow a redirect went with resolve_redirect (W2-1); one is refused now.
+    "public HEAD on a prospect's domain": lambda w: w.clients["Public"].request(
+        "HEAD", "https://acmecreative.com", Op("resolve_redirect", target="acmecreative.com"), raw=True),
     # The outside watchdog (Harry, 7 Oct 2026): a GET of the configured ping URL or its /fail form only.
     "watchdog ping to another URL": lambda w: Watchdog(w.guard, w.transport, "https://hc-ping.com/someone-else").ping(),
     "watchdog ping to a look-alike of the URL": lambda w: Watchdog(w.guard, w.transport, WATCHDOG + "/start").ping(),
@@ -924,6 +934,97 @@ def test_refuse_unless_allowed_judges_early_and_records_only_a_refusal():
                                                                   ("instantly", ADDRESSES[0], False)]
     guard.configure(live=True)
     assert guard.refuse_unless_allowed("slack", Op("chat.postMessage", target=ALERT, write=True)) is True
+
+
+def test_a_protective_only_guard_pauses_and_stops_but_never_starts_adds_or_sends():
+    """W1-1 (RS P0-1): a safety job on the last-good settings runs live with Guard.protective_only. What starts sending
+    or reaches a prospect is refused before any request; what slows or stops it goes through as in any live run."""
+    guard = Guard(live=True, bounds=BOUNDS, protective_only=True)
+    campaign, box = PREFIX + "Hannah Spalding", ADDRESSES[0]
+    refused = [
+        ("instantly", Op("lead.add", target=campaign, write=True)),
+        ("instantly", Op("campaign.activate", target=campaign, write=True)),
+        ("instantly", Op("account.resume", target=box, write=True, detail={"accounts": [box]})),
+        ("instantly", Op("email.reply", target=box, write=True, detail={
+            "accounts": [box], "campaign": campaign, "approved_by": APPROVER})),
+        ("instantly", Op("email.forward", target=box, write=True, detail={"accounts": [box], "to": [ESCALATION]})),
+        # A daily limit raised, or set with no limit to compare: refused. 30 -> 40 is up.
+        ("instantly", Op("account.update_limit", target=box, write=True, detail={"accounts": [box], "daily_limit": 40,
+                                                                                 "previous_limit": 30})),
+        ("instantly", Op("account.update_limit", target=box, write=True, detail={"accounts": [box], "daily_limit": 10})),
+    ]
+    for system, op in refused:
+        with pytest.raises(GuardViolation, match="protective-only mode"):
+            guard.authorize(system, op)
+    allowed = [
+        ("instantly", Op("campaign.pause", target=campaign, write=True)),
+        ("instantly", Op("lead.stop", target=campaign, write=True)),
+        ("instantly", Op("lead.delete", target=campaign, write=True)),
+        ("instantly", Op("blocklist.add", target="blocklist", write=True, detail={"entries": ["x@acme.com"]})),
+        ("instantly", Op("account.update_limit", target=box, write=True, detail={"accounts": [box], "daily_limit": 10,
+                                                                                 "previous_limit": 30})),  # down
+        ("hubspot", Op("communication.unsubscribe", target="x@acme.com", write=True)),
+        ("sheets", Op("values.update", target=SHEET, write=True)),
+        ("slack", Op("chat.postMessage", target=ALERT, write=True)),
+    ]
+    assert all(guard.authorize(system, op) is True for system, op in allowed)
+    # The same calls without the flag are as before: an activation is allowed live.
+    assert Guard(live=True, bounds=BOUNDS).authorize("instantly", Op("campaign.activate", target=campaign, write=True))
+    # Through the client: lead.add is refused before any request goes, campaign.pause goes.
+    t = FakeTransport()
+    t.route("GET", "/campaigns", {"items": [{"id": "c1", "name": campaign, "status": 1}]})
+    inst = Instantly(guard, t, "test-key")
+    with pytest.raises(GuardViolation, match="protective-only mode"):
+        inst.add_leads(campaign, [{"email": "dana@harbor.com"}])
+    assert [r for r in t.requests if r.method == "POST"] == []
+    inst.pause_campaign(campaign)
+    assert [r.url.rsplit("/v2", 1)[1] for r in t.requests if r.method == "POST"] == ["/campaigns/c1/pause"]
+
+
+def test_a_protective_only_campaign_update_may_only_shrink_the_campaign():
+    """The W1-1 review's second lock: on the last-good settings a campaign.update may take addresses off the sending
+    list and lower the daily limit, nothing else. The campaign has [harry@meetspill.org, harry@tryspill.org] at 60."""
+    guard = Guard(live=True, bounds=BOUNDS, protective_only=True)
+    campaign, a, b, hannah = PREFIX + "Harry Dryden", ADDRESSES[2], ADDRESSES[3], ADDRESSES[0]
+    before = {"previous_accounts": [a, b], "previous_daily_limit": 60}
+
+    def update(**detail):
+        return Op("campaign.update", target=campaign, write=True, detail=detail)
+
+    refused = {
+        "an address added": update(fields=["daily_limit"], accounts=[a, hannah], daily_limit=30, **before),
+        "a list with nothing to compare": update(fields=["daily_limit"], accounts=[a], daily_limit=30),
+        "the limit raised, 60 -> 61": update(fields=["daily_limit"], accounts=[a], daily_limit=61, **before),
+        "a limit with nothing to compare": update(fields=["daily_limit"], daily_limit=30, previous_accounts=[a, b]),
+        "another field": update(fields=["campaign_schedule"], **before),
+        "a campaign created": Op("campaign.create", target=campaign, write=True, detail={"accounts": [a],
+                                                                                           "daily_limit": 30}),
+    }
+    for why, op in refused.items():
+        with pytest.raises(GuardViolation, match="protective-only mode"):
+            guard.authorize("instantly", op)
+    allowed = {
+        "an address off, the limit down": update(fields=["daily_limit"], accounts=[a], daily_limit=30, **before),
+        "the same list, the same limit": update(fields=["daily_limit"], accounts=[b, a], daily_limit=60, **before),
+        "the list alone, shorter": update(fields=[], accounts=[b], **before),
+    }
+    assert all(guard.authorize("instantly", op) is True for op in allowed.values())
+    # Without the flag the same widening update goes through as before (the registry and the prefix are all it checks).
+    assert Guard(live=True, bounds=BOUNDS).authorize("instantly", refused["an address added"])
+    # Through the client: update_campaign carries the campaign it was given as previous_*, so a shrink goes and a
+    # widening is refused before any request.
+    t = FakeTransport()
+    t.route("GET", "/campaigns", {"items": [{"id": "c1", "name": campaign, "status": 1}]})
+    t.route("PATCH", "/campaigns/c1", {"id": "c1"})
+    inst = Instantly(guard, t, "test-key")
+    current = {"email_list": [a, b], "daily_limit": 60}
+    with pytest.raises(GuardViolation, match="adds 1 account"):
+        inst.update_campaign(campaign, {"daily_limit": 30}, accounts=[a, hannah], previous=current)
+    with pytest.raises(GuardViolation, match="no previous list"):
+        inst.update_campaign(campaign, {"daily_limit": 30}, accounts=[a])
+    assert [r for r in t.requests if r.method == "PATCH"] == []
+    inst.update_campaign(campaign, {"daily_limit": 30}, accounts=[a], previous=current)
+    assert [r.json for r in t.requests if r.method == "PATCH"] == [{"daily_limit": 30, "email_list": [a]}]
 
 
 # -- (c) static: who may import what ----------------------------------------------------------------

@@ -15,11 +15,12 @@ from us_outbound.settings.conditions import Condition, ContextRules
 
 TABS = (
     "General", "Signals", "Angles", "Industries", "States", "Roles", "Copy", "Mailboxes", "Overrides", "Tests",
-    "Focus", "Named accounts",
+    "Focus",
 )
 # Tabs added after the sheet was first made (Harry, 30 Sep 2026): a sheet without them reads as
-# if they were empty, so settings_sync keeps working until they are added.
-OPTIONAL_TABS = frozenset({"Focus", "Named accounts"})
+# if they were empty, so settings_sync keeps working until they are added. The Named accounts tab went with
+# sources/named.py (W2-1, 20 Oct 2026; the live sheet never had it): a sheet that still has one is not read.
+OPTIONAL_TABS = frozenset({"Focus"})
 
 # Source keys (SPEC 7). A signal row names one or more of these.
 SOURCE_KEYS = (
@@ -56,11 +57,11 @@ SOURCE_FIELDS: dict[str, frozenset[str]] = {
          # Apollo's search by growth range (sources/lookalikes.py; Harry, 5 Oct 2026).
          "headcount_growth_band"}
     ),
-    # people_search_coverage (the people Apollo holds over the employees) and people_found: sources/apollo_people.py
+    # people_search_coverage (the people Apollo holds over the employees) and people_found: contacts/precheck.py
     # (Harry, 5 Oct 2026), so a People leader count of 0 is read only where Apollo's data is deep enough.
     "apollo_people": frozenset(
         {"people_leader_count", "people_leader_days_in_title", "people_search_coverage", "people_found",
-         "us_headcount", "ca_wa_share", "fl_share", "states_with_staff"}
+         "states_with_staff"}
     ),
     "apollo_jobs": frozenset({"open_people_roles", "open_roles", "posting_titles"}),  # sources/apollo_jobs.py
     "site_visits": frozenset({"us_visits_30d", "pricing_or_demo_visits_30d", "top_paths", "days_since_first_visit"}),
@@ -73,7 +74,7 @@ SOURCE_FIELDS: dict[str, frozenset[str]] = {
     ),
     "layoffs": frozenset({"days_since_layoff"}),
     "calendar": frozenset({"month", "days_to_fiscal_year_start"}),
-    "named": frozenset({"named"}),  # the Named accounts tab (sources/named.py)
+    "named": frozenset({"named"}),  # the Named accounts tab had it; no producer since W2-1 (20 Oct 2026)
     # sources/lookalikes.py (Harry, 1 Oct 2026). lookalike_fit (0 to 100) and its three parts (0 to 1; size and
     # growth null when unknown): Harry, 5 Oct 2026.
     "lookalike": frozenset({"lookalike_active", "lookalike_strength", "lookalike_fit", "lookalike_industry_fit",
@@ -87,7 +88,9 @@ SOURCE_FIELDS: dict[str, frozenset[str]] = {
 AGED_FACTS = frozenset({"days_since_funding", "people_leader_days_in_title", "days_since_layoff", "days_since_first_visit"})
 
 ACTIONS = ("Score", "Hold", "Exclude", "Suppress")
-TIERS = ("Priority", "Standard", "Control", "Held", "Excluded")
+# accounts.tier (scoring/tiers.py; W2-2, 20 Oct 2026, Harry's D7): Queue, Held or Excluded. The tiers before it,
+# Priority, Standard and Control, are read as Queue until a rescore writes it; contacts.tier_at_enrol keeps them.
+TIERS = ("Queue", "Held", "Excluded")
 MAILBOX_STATUSES = ("Warming", "Active", "Paused", "Retired")
 # USPS codes: the 50 states and DC (the States tab's rows).
 US_STATES = (
@@ -117,7 +120,6 @@ OPENER_TOKENS = ("company", "open_roles", "posting_title", "people_title", "grow
 # Tokens retired from the lines (Harry, 2 Oct 2026: funding is a signal, never a line). A sheet line that still
 # has one validates, so the settings in force stay usable, but it never fills, and `copy check` names it.
 RETIRED_OPENER_TOKENS = ("funding_stage",)
-FOCUS_LINE_TOKENS = ("company", "focus", "city")  # General opener_focus_line
 # The generic opener (Harry, 2 Oct 2026): General keys holding the line for an account with no signal line (the
 # General angle, Control among it, or a signal whose lines all fall through), by copy role, then the plain one.
 GENERIC_OPENER_KEYS = {"People leader": "opener_generic_people", "Founder or executive": "opener_generic_founder",
@@ -148,6 +150,27 @@ VARIANT_ARMS = ("a", "b")  # contacts.test_arm: version_a's accounts and version
 # (enrol/openers.py: opener or holdout) and email 1's subject split (render.subject_arm: personal or copy).
 HOLDOUT_ARMS: dict[str, str] = {"opener": "opener_arm", "holdout": "opener_arm",
                                 "personal": "subject_arm", "copy": "subject_arm"}
+# The Tests tab's pre-registration (W3-4, 21 Oct 2026; design-final §5 L10, RT §3): before a test runs, the row names
+# the metric it is decided on (O3 positive or O4 human reply within 28 days of email 1: design-final §4.1), the outcomes
+# definition_version it reads (learn/metrics.DEFINITION_VERSION), the test (Fisher's exact, or P(b > a) from Beta
+# posteriors), its total two-sided alpha, and its per-look thresholds (one look at the read date, or O'Brien-Fleming
+# over the looks and the read date). A test started before the registry existed (start_date before REGISTRY_FROM:
+# warm-intro-70, 12 Oct 2026) is read with the defaults it was read with until then (looks.py): O4, Fisher, 0.10,
+# O'Brien-Fleming; nothing it decides changes.
+METRIC_IDS = ("O3", "O4")
+FISHER_EXACT, BETA_POSTERIOR = TEST_METHODS = ("fisher_exact", "beta_posterior")
+ONE_LOOK, OBRIEN_FLEMING = LOOK_RULES = ("one_look", "obrien_fleming")
+PRE_REGISTRATION = ("metric_id", "definition_version", "test", "alpha", "look_thresholds")
+REGISTRY_FROM = date(2026, 10, 21)
+DEFAULT_METRIC, DEFAULT_TEST, DEFAULT_ALPHA, DEFAULT_LOOK_RULE = "O4", FISHER_EXACT, 0.10, OBRIEN_FLEMING
+# General live_split (W3-4; design-final §5 L10, D8): which randomised split draws arms for new contacts, so exactly
+# one does once Harry names it. both, the default, is today's draws until D8: the opener holdout, email 1's subject
+# split and the running copy test, side by side. opener: the opener holdout alone (subject_arm n/a, the Copy row's
+# subject; no copy test arm). subject: the subject split alone (every account its opener). test: the Tests tab's
+# running test alone (every account its opener and the Copy row's subject). none: no split. Contacts in flight keep
+# the arms they were given (content is fixed per lead at enrolment).
+SPLIT_BOTH, SPLIT_OPENER, SPLIT_SUBJECT, SPLIT_TEST, SPLIT_NONE = LIVE_SPLITS = (
+    "both", "opener", "subject", "test", "none")
 # Company size bands: SPEC 2's four (10-19 to 100-249) inside a ladder that runs further each way, so the
 # General min_employees and max_employees can move (Harry, 6 Oct 2026: "update that to say 5-500 easily").
 # A band's label never changes; Apollo is searched with the band clipped to the General range.
@@ -161,15 +184,15 @@ def band_bounds(band: str) -> tuple[int, int]:
     return int(lo), int(hi)
 
 
-# General clay_verification (Harry, 1 Oct 2026): required is SPEC 2 (every account through Clay before it
-# can be emailed); skip lets verify_accounts verify on Apollo data and HubSpot until the Clay functions exist.
-CLAY_REQUIRED, CLAY_SKIP = "required", "skip"
-CLAY_VERIFICATION_MODES = (CLAY_REQUIRED, CLAY_SKIP)
 # General label_check (Harry, 7 Oct 2026: "industry categorisation is critical"; us_outbound/labels.py): required, a
 # new account is verified only once the task model has checked its industry label; skip, on the rules alone (the
 # group's copy), for a Claude outage.
 LABEL_CHECK_REQUIRED, LABEL_CHECK_SKIP = "required", "skip"
 LABEL_CHECK_MODES = (LABEL_CHECK_REQUIRED, LABEL_CHECK_SKIP)
+# General explore_share's ceiling (the W1-C contracts commit, 19 Oct 2026): above a quarter the random arm would be
+# most of a send day's picks outside the score order; and hand_check_sample's range, in rows a week.
+MAX_EXPLORE_SHARE = 0.25
+HAND_CHECK_SAMPLE_MIN, HAND_CHECK_SAMPLE_MAX = 1, 50
 
 
 @dataclass(frozen=True)
@@ -189,25 +212,56 @@ class DateRange:
         return self.start <= d <= self.end
 
 
+
+# Constants Harry never edits, moved from the General tab to code (W2-4, 20 Oct 2026; design §8 W2-4), each at the value
+# the live sheet had (its default: data-crm-settings, 19 Oct 2026). Their sheet rows are retired
+# (settings/validate.RETIRED_GENERAL): a row left on the sheet is a warning and is not read. apollo_floor stays on the
+# sheet: the Apollo alerts name it as Harry's lever (learn/spend.apollo_floor_ask), and so do the four generic opener
+# lines, which are copy.
+SCORE_CAP = 100  # an account's total score is capped here (scoring/score.py)
+ESCALATION_HOURS = 24  # an item open this long goes to escalation_email (replies/escalation.py; SPEC 11)
+# The industry groups whose verified accounts apollo_enrich enriches for funding and an exact headcount, where
+# funding is common (sources/apollo_enrich.py; Harry, 2 Oct 2026).
+APOLLO_ENRICH_GROUPS: tuple[str, ...] = ("Technology & Startups",)
+# The website-visit signals (sources/site_visits.py; Harry, 5 Oct 2026): the site Apollo's visitor tracker is on, and
+# the pages that count as a US-site visit and as a pricing or demo visit (a page whose path contains any of them).
+SITE_VISIT_DOMAIN = "spill.chat"
+SITE_VISIT_US_PATHS: tuple[str, ...] = ("/us",)
+SITE_VISIT_INTENT_PATHS: tuple[str, ...] = ("/us/pricing", "/us/demo", "/us/book")
+
+
 @dataclass(frozen=True)
 class General:
     """The General tab. Defaults are SPEC 5's; keys marked (build) were added by the build."""
 
     live_sending: bool = False
-    # (build) Harry, 2 Oct 2026: no, every email waits for an approver's ✅ in Slack before its lead is added
-    # to Instantly (enrol/approvals/); yes, enrol adds leads straight away, as before.
-    auto_send: bool = False
     weekly_enrol_cap: int = 150  # (build) Harry, 30 Sep 2026: targets are weekly (Mon–Sun, UK); SPEC's 30 a day × 5
-    control_share: float = 0.15
-    priority_threshold: int = 50
-    standard_threshold: int = 20
-    score_cap: int = 100
-    clay_monthly_credits: float = 2000.0  # Harry, 30 Sep 2026: 2,000 a month (about 500 a week); 0 = no Clay calls
+    # (build) The W1-C contracts commit (19 Oct 2026): keys later Wave 1 packages read, defined once.
+    # The share of each day's picks and sends drawn at random from the eligible queue, within the Focus shares, in
+    # place of the Control tier (Harry's D7: "Rank + 15% random arm"). 0.15 from W2-2 (20 Oct 2026), which retired
+    # the tiers and with them the Control tier's control_share (also 0.15), so the comparison goes on with no sheet
+    # row; 0 on the sheet: none, every company in score order. At most MAX_EXPLORE_SHARE.
+    explore_share: float = 0.15
+    # The weekly hand-check's sample size; 10, the default, is the draw's constant today (enrol/hand_check.py).
+    hand_check_sample: int = 10
+    # (build) W1-5 (19 Oct 2026): whether the weekly hand-check gates the whole day's enrolment. yes, the default, is
+    # today's behaviour (SPEC 11 as built: enrol waits until the week's check is done); no is the
+    # measure Harry chose under D5: only the sampled companies wait, until judged or for 7 days (enrol/hand_check.py).
+    hand_check_gate: bool = True
+    # Whether the early warning (no human reply in 100 matured companies) pauses new enrolment as well as alerting.
+    # no, the default: it only alerts (Harry's D13 decides).
+    early_warning_pause: bool = False
+    # (build) W3-4 (21 Oct 2026): which randomised split draws arms (LIVE_SPLITS). both, the default, is today's draws
+    # (the opener holdout, the subject split and the running copy test) until Harry's D8 names the one experiment.
+    live_split: str = SPLIT_BOTH
+    # (build) W3-2 (20 Oct 2026): whether the label policy (labels.policy, from the label sample) decides which label
+    # sources earn a label's own copy. no, the default, changes nothing (Harry's D20 is not decided): the policy is
+    # computed and reported monthly, and applied only with yes.
+    copy_level_policy: bool = False
     apollo_monthly_credits: int = 2000  # Harry, 30 Sep 2026: 2,000 a month (about 500 a week)
     apollo_floor: int = 5000
     approver_slack_ids: tuple[str, ...] = ()
     escalation_email: str = "harry@spill.chat"
-    escalation_hours: int = 24
     alert_channel: str = "#us-outbound"
     dev_channel: str = "#us-outbound-dev"  # (build)
     booking_link: str = "https://meetings.hubspot.com/harry336/us-demo-link"
@@ -220,42 +274,14 @@ class General:
         DateRange(date(2026, 11, 23), date(2026, 11, 27)),
         DateRange(date(2026, 12, 18), date(2027, 1, 4)),
     )
-    recontact_person_months: int = 12
-    recontact_account_months: int = 6
     stop_rule_accounts: int = 1500
     stop_rule_meetings: int = 5
     stop_rule_bounce_rate: float = 0.03  # (build) the stop rule's account-level bounce share (learn/kill_rules.py)
-    stop_rule_complaint_rate: float = 0.003  # (build) and spam-complaint share: Google's 0.3% line
     optout_tested: bool = False  # (build) Harry: yes once a seed-inbox test shows the unsubscribe link works (golive)
     hubspot_pipeline: str = "Spill 3.0"
     hubspot_pipeline_id: str = ""  # (build) looked up through the API in phase 0
-    hubspot_deal_stage: str = ""
     hubspot_deal_stage_id: str = ""  # (build)
     hubspot_owner_id: str = ""  # (build) Harry's HubSpot owner id
-    clay_accounts_function_id: str = ""  # (build) "US Outbound – Accounts"
-    clay_contacts_function_id: str = ""  # (build) "US Outbound – Contacts"
-    clay_credits_per_account: float = 0.0  # (build) estimate until measured on the first 100
-    clay_verification: str = CLAY_SKIP  # (build) Harry, 1 Oct 2026: skip until the Clay functions exist, then required
-    clay_email_fallback: bool = False  # (build) Harry, 2 Oct 2026: Clay's Work Email for Apollo's misses (contacts/pick.py)
-    # (build) Harry, 6 Oct 2026: Clay's cross-check of the HQ state and size Apollo leaves in doubt, before the weekly
-    # hand-check (us_outbound/clay_cross_check.py), through clay_accounts_function_id; no until that function is built.
-    clay_cross_check: bool = False
-    # (build) Harry, 6 Oct 2026: a second contact, of another role, at accounts of second_contact_min_employees or
-    # more staff (company_size), second_contact_delay_days after the first contact's email 1, from the same sender
-    # (enrol/second.py). Off by default: sending capacity is the binding limit today.
-    second_contact: bool = False
-    second_contact_min_employees: int = 50
-    second_contact_delay_days: int = 3
-    apollo_credits_per_account: float = 1.0  # (build) estimate until measured
-    # (build) Harry, 2 Oct 2026: the industry groups whose queue accounts apollo_enrich enriches for funding and
-    # an exact headcount (sources/apollo_enrich.py), where funding is common; blank enriches none.
-    apollo_enrich_groups: tuple[str, ...] = ("Technology & Startups",)
-    # (build) Harry, 5 Oct 2026: the website-visit signals (sources/site_visits.py). The site Apollo's visitor tracker
-    # is on (blank: the job reads nothing), and the pages that count as a US-site visit and as a pricing or demo
-    # visit: Apollo matches a page whose path contains any of them.
-    site_visit_domain: str = "spill.chat"
-    site_visit_us_paths: tuple[str, ...] = ("/us",)
-    site_visit_intent_paths: tuple[str, ...] = ("/us/pricing", "/us/demo", "/us/book")
     # (build) Harry, 6 Oct 2026: the company size range, in employees, both ends included (SPEC 2: 10 to 249).
     # Every source searches it, verify_accounts holds accounts to it, and the hand-check's size edges follow it.
     min_employees: int = 10
@@ -283,8 +309,6 @@ class General:
         "Work and life both seem to ask more of people every year, and even the strongest teams feel it.")
     opener_generic_ops: str = (
         "Pressure in work and life seems to keep rising, and it hardly ever waits for a convenient week.")
-    opener_focus: bool = False
-    opener_focus_line: str = "I came across {company} and its work on {focus}."
     # (build) Harry, 5 Oct 2026: a personal subject for email 1, as a measured split. Mail filters (Superhuman,
     # Gmail) and people read a short, lower-case subject about the recipient as personal mail; the Copy rows'
     # subjects read like headlines. email1_subject_share of accounts, by a hash of the account id (its own salt,
@@ -562,6 +586,46 @@ class Test:
     text_b: str = ""
     find: str = ""
     share_a: float = 0.5
+    # The pre-registration (PRE_REGISTRATION; W3-4): blank on a row written before the columns existed.
+    metric_id: str = ""
+    definition_version: str = ""
+    test: str = ""
+    alpha: float | None = None
+    look_thresholds: str = ""
+
+    @property
+    def registered(self) -> bool:
+        """Started on or after REGISTRY_FROM, so its pre-registration fields are required to run (validate.py)."""
+        return self.start_date is None or self.start_date >= REGISTRY_FROM
+
+    @property
+    def pre_registered(self) -> bool:
+        """Every pre-registration field is on the row (a test started before REGISTRY_FROM may have none)."""
+        return bool(self.metric_id and self.definition_version and self.test and self.alpha is not None
+                    and self.look_thresholds)
+
+    @property
+    def metric(self) -> str:
+        return self.metric_id or DEFAULT_METRIC
+
+    @property
+    def method(self) -> str:
+        return self.test or DEFAULT_TEST
+
+    @property
+    def total_alpha(self) -> float:
+        return self.alpha if self.alpha is not None else DEFAULT_ALPHA
+
+    @property
+    def look_rule(self) -> str:
+        return self.look_thresholds or DEFAULT_LOOK_RULE
+
+    def split(self) -> str:
+        """The live_split this test needs to draw its arms alone: test for a copy test; opener or subject for a
+        holdout, by the column its arms are in."""
+        if self.kind in COPY_TEST_KINDS:
+            return SPLIT_TEST
+        return SPLIT_OPENER if HOLDOUT_ARMS.get(self.version_a.casefold()) == "opener_arm" else SPLIT_SUBJECT
 
     def arm_name(self, arm: str) -> str:
         """The name of arm "a" or "b": version_a or version_b ("warm intro", "no intro")."""
@@ -597,15 +661,6 @@ class Focus:
 
 
 @dataclass(frozen=True)
-class NamedAccount:
-    """A row of the Named accounts tab: a company Harry wants approached."""
-
-    domain: str
-    name: str = ""
-    note: str = ""
-
-
-@dataclass(frozen=True)
 class Settings:
     general: General
     signals: tuple[Signal, ...] = ()
@@ -618,9 +673,13 @@ class Settings:
     overrides: tuple[Override, ...] = ()
     tests: tuple[Test, ...] = ()
     focus: tuple[Focus, ...] = ()
-    named_accounts: tuple[NamedAccount, ...] = ()
     synced_at: datetime | None = None
     versions: dict[str, Any] = field(default_factory=dict)  # tab -> effective_from of the version in force
+    # The last-good fallback (ops/bootstrap.py SAFETY_JOBS; W1-1, 19 Oct 2026): the tabs whose version in force failed
+    # validation, and what stands in for them: "earlier versions" of those tabs, or "defaults" (General's code
+    # defaults with the Mailboxes and States tabs in force). Empty for the settings in force.
+    fallback_tabs: frozenset[str] = frozenset()
+    fallback_mode: str = ""
 
     # -- lookups used across jobs --
 
@@ -716,6 +775,52 @@ class Settings:
         """The copy test enrol assigns arms for: the running test of kind ab or variant, one at a time (a holdout
         assigns nothing)."""
         return next((t for t in self.tests if t.status == "running" and t.kind in COPY_TEST_KINDS), None)
+
+    def drawn_test(self) -> Test | None:
+        """The running copy test, when General live_split lets it draw arms; else None, and enrol gives no new contact
+        a test arm (W3-4). A test started from REGISTRY_FROM draws only under live_split = test, as the one split; one
+        started before (warm-intro-70) under both or test, as it did before live_split. Decided here, where arms are
+        drawn, and not in validation, so a Tests row never keeps General back (W3-4 r1, 21 Oct 2026). A test started from
+        REGISTRY_FROM without its pre-registration (a row the code before W3-4 stored, read leniently: validate._tests)
+        draws nothing either (W3-4 r2; registration_gaps)."""
+        t = self.running_test()
+        if t is None or (t.registered and not t.pre_registered):
+            return None
+        allowed = (SPLIT_TEST,) if t.registered else (SPLIT_BOTH, SPLIT_TEST)
+        return t if self.general.live_split in allowed else None
+
+    def split_mismatches(self) -> list[Test]:
+        """The running tests started from REGISTRY_FROM whose split is not General live_split: a copy test's arms are
+        not drawn (drawn_test is None), and a holdout's split, if it draws, is not the one split (settings_sync posts
+        once a day; the readout's registry shows it)."""
+        split = self.general.live_split
+        return [t for t in self.tests if t.status == "running" and t.registered and t.split() != split]
+
+    def registration_gaps(self) -> list[tuple[Test, str]]:
+        """The running tests started from REGISTRY_FROM that the sheet's check would refuse, and why: a row without
+        every pre-registration field, or one of two or more running (W3-4 r2). Only the version in force, stored by
+        the code before W3-4 and read leniently (validate._tests, strict=False), can hold one; such a copy test draws
+        no arms (drawn_test), and settings_sync posts it once a day."""
+        running = [t for t in self.tests if t.status == "running"]
+        out = []
+        for t in running:
+            if not t.registered:
+                continue
+            if not t.pre_registered:
+                missing = [f for f in PRE_REGISTRATION if getattr(t, f) in ("", None)]
+                out.append((t, f"needs its pre-registration fields ({', '.join(missing)})"))
+            elif len(running) > 1:
+                others = ", ".join(o.test_id for o in running if o is not t)
+                out.append((t, f"is not the only test running ({others} also says running)"))
+        return out
+
+    def draws_opener_holdout(self) -> bool:
+        """Whether the opener holdout draws (General live_split both or opener; W3-4)."""
+        return self.general.live_split in (SPLIT_BOTH, SPLIT_OPENER)
+
+    def draws_subject_split(self) -> bool:
+        """Whether email 1's subject split draws (General live_split both or subject; W3-4)."""
+        return self.general.live_split in (SPLIT_BOTH, SPLIT_SUBJECT)
 
     def copy_row(self, copy_version: str) -> CopyRow | None:
         return next((c for c in self.copy if c.copy_version == copy_version), None)

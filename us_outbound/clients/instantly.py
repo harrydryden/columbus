@@ -36,6 +36,10 @@ CAMPAIGN_SEARCH = US_CAMPAIGN_PREFIX.strip()  # "US Outbound –": the guard req
 # created, "ok" rather than missing).
 
 PAGE = 100  # list page size (leads/list documents a maximum of 100)
+EMAIL_MODE = "emode_all"  # GET /emails mode: the whole inbox, not only "Focused" (list_emails; OpenAPI email.yml :758)
+# A 400 that names the mode parameter itself ("querystring/mode must be ..."), as a word: not "emode_all" in a message
+# about another parameter, nor "model" or "email_mode" (W1-2 review, round 2), which are raised as before.
+MODE_REFUSED = re.compile(r"(?<![a-z0-9_])mode(?![a-z0-9_])")
 LEADS_PER_ADD = 1000  # POST /leads/add accepts up to 1000 leads
 ACCOUNTS_PER_CALL = 100  # warmup enable / analytics accept up to 100 emails
 BLOCKLIST_PER_CALL = 1000  # bulk-create accepts up to 1000 values
@@ -59,7 +63,7 @@ CAMPAIGN_SETTINGS: dict[str, Any] = {
 TRACKING_FIELDS = frozenset({"open_tracking", "link_tracking"})
 # Instantly's GET /campaigns/{id} (read 2 Oct 2026) leaves out a setting that is at its default, so a
 # setting we want false and that is missing is false. is_evergreen is never returned, so it cannot be
-# checked (confirmed live 2 Oct 2026 by `campaigns show`; what it does is still to confirm, above).
+# checked (confirmed live 2 Oct 2026 by reading the campaign back; what it does is still to confirm, above).
 NOT_RETURNED = frozenset({"is_evergreen"})
 # The opt-out every email carries (Harry, 1 Oct 2026): Instantly's own unsubscribe link, not a page
 # of ours. It goes in the campaign's step template after the lead's rendered body, since Instantly
@@ -159,8 +163,10 @@ CAMPAIGN_STATUS = {
 # PHASE0-CONFIRM: 2 (`phase0 check --seed`), 3, -1 and -3, and that the List-Unsubscribe header sets -2 too.
 LEAD_ACTIVE, LEAD_PAUSED, LEAD_BOUNCED, LEAD_UNSUBSCRIBED = 1, 2, -1, -2
 # PHASE0-CONFIRM: that PATCH /leads/{id} takes status 2 (paused) and 1 (active), and that a lead set
-# back to active goes on with its next step. Until phase 0 says so, nothing calls set_lead_paused:
-# an out-of-office reply only records the return date (replies/poll.py).
+# back to active goes on with its next step. Until phase 0 says so, nothing calls set_lead_paused. Switching it on
+# pauses a human reply Instantly flagged as automatic (replies/poll._pause_if_needed) and the account stop's
+# colleagues (replies/account_stop.py), and nothing sets a paused lead going again: the out-of-office re-timing that
+# did was removed with W2-1 (20 Oct 2026, never switched on), so an out-of-office reply only records its return date.
 LEAD_PAUSE_CONFIRMED = False
 
 # POST /leads/update-interest-status values. PHASE0-CONFIRM: that 2 is "Meeting booked" and that a
@@ -390,6 +396,7 @@ class Instantly(HttpClient):
         super().__init__(guard, transport, token)
         self._ids: dict[str, str] = {}  # campaign name -> id, US Outbound campaigns only
         self._dupes: set[str] = set()
+        self._mode_ok = True  # list_emails sends mode=emode_all until Instantly refuses it
 
     # -- paging ----------------------------------------------------------------
 
@@ -454,17 +461,15 @@ class Instantly(HttpClient):
             return None
         return body
 
-    def list_accounts(self, emails: Iterable[str]) -> list[dict]:
-        """The registry accounts that exist in Instantly, read one by one (never an unfiltered list)."""
-        accs = self._registry("account.get", emails)
-        return [a for a in (self._get_account(e) for e in accs) if a is not None]
+    def warmup_status(self, emails: Iterable[str], *, analytics: bool = True) -> dict[str, dict]:
+        """Per email: warmup_enabled, warmup_status, warmup_score, health_score(_label), status.
 
-    def warmup_status(self, emails: Iterable[str]) -> dict[str, dict]:
-        """Per email: warmup_enabled, warmup_status, warmup_score, health_score(_label), status."""
+        analytics=False reads the account GET alone (no /accounts/warmup-analytics POST), so health_score and
+        health_score_label are None: what the hourly kill rules' vitals read (W2-3; code-learn-reporting B17)."""
         accs = self._registry("account.get", emails)
         found = {e: self._get_account(e) for e in accs}
         # Analytics only for accounts Instantly has: an unknown email could fail the whole call.
-        present = [e for e, a in found.items() if a is not None]
+        present = [e for e, a in found.items() if a is not None] if analytics else []
         health: dict[str, dict] = {}
         for chunk in _chunks(present, ACCOUNTS_PER_CALL):
             chunk = list(chunk)
@@ -550,13 +555,16 @@ class Instantly(HttpClient):
                 out[email][str(r.get("date") or "")[:10]] = r
         return out
 
-    def set_daily_limit(self, email: str, daily_limit: int) -> None:
-        """Set a registry account's own daily sending limit (the Mailboxes tab's daily_cap)."""
+    def set_daily_limit(self, email: str, daily_limit: int, *, previous: int | None = None) -> None:
+        """Set a registry account's own daily sending limit (the Mailboxes tab's daily_cap). previous: the limit it
+        replaces, when known; a protective-only guard allows only a lower one (clients/guard.py)."""
         limit = int(daily_limit)
-        [acc] = self._registry("account.update_limit", [email], write=True, daily_limit=limit)
+        extra = {"previous_limit": int(previous)} if previous is not None else {}
+        [acc] = self._registry("account.update_limit", [email], write=True, daily_limit=limit, **extra)
         self.request(
             "PATCH", f"/accounts/{_segment(acc)}",
-            Op("account.update_limit", target=acc, write=True, detail={"accounts": [acc], "daily_limit": limit}),
+            Op("account.update_limit", target=acc, write=True,
+               detail={"accounts": [acc], "daily_limit": limit, **extra}),
             json={"daily_limit": limit},
         )
 
@@ -649,11 +657,22 @@ class Instantly(HttpClient):
             self._ids[name] = str(body["id"])
         return body
 
-    def update_campaign(self, name: str, fields: Mapping[str, Any], *, accounts: Iterable[str] | None = None) -> None:
-        """PATCH campaign fields; accounts replaces the sending list (registry accounts only)."""
+    def update_campaign(self, name: str, fields: Mapping[str, Any], *, accounts: Iterable[str] | None = None,
+                        previous: Mapping[str, Any] | None = None) -> None:
+        """PATCH campaign fields; accounts replaces the sending list (registry accounts only).
+
+        previous: the campaign as the caller has just read it (get_campaign). Its sending list and daily limit go in
+        the guard's detail, so a protective-only guard can see that the change only shrinks the campaign
+        (clients/guard.py); without it a protective-only guard refuses a new list or limit."""
         fields = dict(fields)
         _check_campaign_fields(fields)
         detail: dict[str, Any] = {"fields": sorted(fields)}
+        if "daily_limit" in fields:
+            detail["daily_limit"] = fields["daily_limit"]
+        if previous is not None:
+            detail["previous_accounts"] = _lower_all(previous.get("email_list") or ())
+            if isinstance(previous.get("daily_limit"), int):
+                detail["previous_daily_limit"] = previous["daily_limit"]
         if accounts is not None:
             accs = _lower_all(accounts)
             if not accs:
@@ -703,6 +722,23 @@ class Instantly(HttpClient):
         if isinstance(body, list):
             return body
         return list((body or {}).get("items") or [])
+
+    def campaign_analytics(self, name: str, *, start_date: datetime | date | str | None = None,
+                           end_date: datetime | date | str | None = None) -> dict:
+        """This campaign's totals over the range (GET /campaigns/analytics, id always set): emails_sent_count (emails),
+        reply_count_unique (leads, automatic replies left out), bounced_count and unsubscribed_count (leads), among
+        others. {} when Instantly returns no row for it. Read by the weekly capture check (replies/capture.py)."""
+        cid = self._campaign_id(name, "campaign.analytics", False)
+        params: dict[str, Any] = {"id": cid, "exclude_total_leads_count": "true"}
+        if start_date:
+            params["start_date"] = _timestamp(start_date)
+        if end_date:
+            params["end_date"] = _timestamp(end_date)
+        body = self.request(
+            "GET", "/campaigns/analytics", Op("campaign.analytics", target=name, detail={"id": cid}), params=params
+        )
+        rows = body if isinstance(body, list) else list((body or {}).get("items") or [])
+        return next((dict(r) for r in rows if isinstance(r, Mapping) and str(r.get("campaign_id") or cid) == cid), {})
 
     # -- leads -----------------------------------------------------------------
 
@@ -767,6 +803,23 @@ class Instantly(HttpClient):
         if dropped:
             log("instantly_dropped", action="lead.list", dropped=dropped, reason="lead of another campaign")
         return out
+
+    def get_lead(self, name: str, lead_id: str) -> dict | None:
+        """One lead of this campaign (GET /leads/{id}), as Instantly holds it now (its status: 1 active, 2 paused,
+        3 completed); None when Instantly has no such lead, or it is in another campaign (logged). Read only: the
+        read-back after a booking's stop_lead (crm/readback.py; code-replies-crm M7)."""
+        cid = self._campaign_id(name, "lead.get", False)
+        try:
+            lead = self.request("GET", f"/leads/{_segment(lead_id)}",
+                                Op("lead.get", target=name, detail={"lead_id": lead_id}))
+        except ApiError as exc:
+            if exc.status == 404:
+                return None
+            raise
+        if str((lead or {}).get("campaign") or "") != cid:
+            log("instantly_dropped", action="lead.get", dropped=1, reason="lead of another campaign")
+            return None
+        return dict(lead)
 
     def delete_lead(self, name: str, lead_id: str) -> None:
         """Delete one lead, after checking it belongs to this campaign. A lead already gone is fine."""
@@ -845,6 +898,11 @@ class Instantly(HttpClient):
         long gap a week at a time. PHASE0-CONFIRM: that Instantly applies it; if it does not, the
         run reads up to now, as before, and the events stay idempotent.
         Results whose eaccount is not the account asked for are dropped.
+        mode: emode_all (EMAIL_MODE), every email in the inbox, not only Instantly's "Focused" ones (W1-2, 19 Oct 2026;
+        code-replies-crm M4: the parameter's default is unstated, and out-of-office and some human replies land in
+        "Others"). PHASE0-CONFIRM (D10 b): that Instantly takes it beside email_type. If a request is refused with a
+        400 that names mode, the account is read again without it and the client sends it no more
+        (instantly_mode_unsupported in the log), so both reply readers keep working as before.
         """
         accs = self._registry("email.list", accounts)
         out: list[dict] = []
@@ -859,7 +917,15 @@ class Instantly(HttpClient):
             if email_type:
                 params["email_type"] = email_type
             op = Op("email.list", target=acct, detail={"accounts": [acct]})
-            for e in self._every_item("GET", "/emails", op, params=params):
+            try:
+                found = list(self._every_item("GET", "/emails", op, params=self._with_mode(params)))
+            except ApiError as exc:
+                if not (self._mode_ok and exc.status == 400 and MODE_REFUSED.search(str(exc.body).lower())):
+                    raise
+                self._mode_ok = False
+                log("instantly_mode_unsupported", action="email.list", status=exc.status, body=str(exc.body)[:200])
+                found = list(self._every_item("GET", "/emails", op, params=params))
+            for e in found:
                 if str(e.get("eaccount", "")).strip().lower() != acct:
                     dropped += 1
                 elif str(e.get("id")) not in seen:
@@ -868,6 +934,10 @@ class Instantly(HttpClient):
         if dropped:
             log("instantly_dropped", action="email.list", dropped=dropped, reason="email of a non-registry account")
         return out
+
+    def _with_mode(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        """The /emails query with mode=emode_all, unless Instantly has refused the parameter (list_emails)."""
+        return {**params, "mode": EMAIL_MODE} if self._mode_ok else dict(params)
 
     def _owned_email(self, eaccount: str, email_id: str) -> dict:
         """The email, checked to belong to eaccount (replies go from the mailbox the prospect wrote to)."""

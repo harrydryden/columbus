@@ -3,9 +3,9 @@
 The General email1_subject_share of accounts get General email1_subject ("support for the {{company}} team") as
 email 1's subject, the rest the Copy row's s1_subject. The tests: the keys are validated as a subject; the split
 is stable per account, about half, and independent of the opener holdout; only email 1's subject changes; enrol
-sends the arm's subject on both paths (auto_send, and the Slack send card) and records contacts.subject_arm;
+sends the arm's subject and records contacts.subject_arm;
 `copy preview` shows it. `signals review` (tests/test_signal_review.py), the daily post
-(tests/test_daily_report.py) and `seed send --subject` (tests/test_seed.py) are tested with their own worlds.
+(tests/test_daily_post_funnel.py) and `seed send --subject` (tests/test_seed.py) are tested with their own worlds.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ import pytest
 
 from tests.fakes import make_context
 from tests.test_render import HANNAH, account, make_settings, values_for
-from us_outbound.enrol import approvals, copy_desk, enrol, openers, render
+from us_outbound.enrol import copy_desk, enrol, openers, render
 from us_outbound.settings.defaults import default_tabs
 from us_outbound.settings.model import General
 from us_outbound.settings.validate import validate_all, validate_tab
@@ -147,24 +147,31 @@ def test_enrol_sends_each_account_its_arm_s_subject_and_records_the_arm():
     assert got == {"con-1": PERSONAL, "con-2": PERSONAL, "con-3": COPY}
 
 
-def test_the_send_card_shows_the_personal_subject_and_its_tick_records_the_arm():
-    from tests.test_send_approvals import HARRY_ID, blocks_text, item_for, poll, world
+@pytest.mark.parametrize("live_split, held, subjects", [
+    # both (the default, today's draws): the holdout (share 1.0: every account) and the subject split, as above.
+    ("both", {"holdout"}, {PERSONAL: 2, COPY: 1}),
+    ("opener", {"holdout"}, {render.NO_SUBJECT_ARM: 3}),  # the holdout alone; no subject arm, the Copy row's subject
+    # The holdout not drawn: every account its opener, and opener_arm n/a, in no arm (W3-4 r2, as subject_arm n/a).
+    ("subject", {openers.NO_ARM}, {PERSONAL: 2, COPY: 1}),  # the subject split alone; every opener
+    ("test", {openers.NO_ARM}, {render.NO_SUBJECT_ARM: 3}),  # neither: the Tests tab's test alone
+    ("none", {openers.NO_ARM}, {render.NO_SUBJECT_ARM: 3}),  # no split at all
+])
+def test_live_split_decides_which_split_draws_arms(live_split, held, subjects):
+    """W3-4 (21 Oct 2026; design-final §5 L10, D8): General live_split names the one split that draws arms. With the
+    opener holdout at a share of 1.0, a drawn holdout holds every account out; the subject split's arms by hash are
+    acc-1 and acc-2 personal, acc-3 copy (the test above)."""
+    from tests.test_enrol import instantly_posts, make
 
-    ctx, t, sl = world(email1_subject_share=1.0)
-    enrol.run(ctx)
-    row = item_for(ctx, "acc-1")
-    p = row["payload"]
-    assert p["subject_arm"] == PERSONAL
-    assert p["lead"]["custom_variables"]["s1_subject"] == "support for the Acme Creative team"
-    [card] = [x for x in sl.posts if x["ts"] == row["slack_ts"]]
-    assert "*Subject:* support for the Acme Creative team" in blocks_text(card)
-    sl.react("white_check_mark", HARRY_ID, ts=row["slack_ts"])
-    assert poll(ctx)["outcomes"] == {"approved": 1}
-    assert ctx.store.get("contacts", contact_id="con-1")["subject_arm"] == PERSONAL
-    # A card posted before the split has no arm in its payload: it was rendered with the Copy row's subject.
-    old = dict(item_for(ctx, "acc-2"))
-    old["payload"] = {k: v for k, v in old["payload"].items() if k != "subject_arm"}
-    assert approvals._prepared(ctx, approvals.Item(old)).subject_arm == COPY
+    s = split(subject=NAMED, live_sending=True, opener_holdout_share=1.0, live_split=live_split)
+    ctx, t = make(live=True, settings=s)
+    out = enrol.run(ctx)
+    assert out["enrolled"] == 3 and out["subjects"] == {"arms": subjects}
+    contacts = ctx.store.select("contacts")
+    assert {c["opener_arm"] for c in contacts} == held
+    sent = {lead["email"]: lead["custom_variables"] for p in instantly_posts(t) for lead in p.json["leads"]}
+    if render.NO_SUBJECT_ARM in subjects:  # every email 1 has the Copy row's own subject
+        assert sent["jane@acmecreative.com"]["s1_subject"] == "Support for the Acme Creative team"
+        assert {c["subject_arm"] for c in contacts} == {render.NO_SUBJECT_ARM}
 
 
 # -- copy preview ----------------------------------------------------------------------------------------------------

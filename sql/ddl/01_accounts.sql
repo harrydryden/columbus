@@ -36,6 +36,9 @@ CREATE TABLE IF NOT EXISTS us_outbound.accounts (
   hubspot_company_id text,
   first_seen timestamptz,
   last_scored timestamptz,
+  status_reason text,
+  arm text,
+  recheck_after date,
   PRIMARY KEY (account_id)
 );
 CREATE INDEX IF NOT EXISTS accounts_domain_idx ON us_outbound.accounts (domain);
@@ -51,10 +54,10 @@ COMMENT ON COLUMN us_outbound.accounts.industry_group IS 'Website industry group
 COMMENT ON COLUMN us_outbound.accounts.size_band IS 'One of: 1-4, 5-9, 10-19, 20-49, 50-99, 100-249, 250-499, 500-999, 1000-2499, 2500-4999, 5000-9999. SPEC 2''s four bands inside a ladder, so General min_employees and max_employees can move (6 Oct 2026).';
 COMMENT ON COLUMN us_outbound.accounts.source IS 'One of: apollo, irs, site_visit, named, lookalike. named: from the Named accounts tab; lookalike: found by Apollo as like a Spill customer, sources/lookalike_leads.py (build additions).';
 COMMENT ON COLUMN us_outbound.accounts.score IS 'Sum of fresh Score signal weights, each capped at max_weight, total capped at score_cap (SPEC 9).';
-COMMENT ON COLUMN us_outbound.accounts.tier IS 'One of: Priority, Standard, Control, Held, Excluded (SPEC 9).';
-COMMENT ON COLUMN us_outbound.accounts.angle IS 'Angle name from the Angles tab. Control accounts always get General (SPEC 9).';
+COMMENT ON COLUMN us_outbound.accounts.tier IS 'One of: Queue, Held, Excluded (SPEC 9; W2-2, 20 Oct 2026, Harry''s D7: the queue is taken by score). NULL: not scored yet, so not in the queue. Priority, Standard and Control, the tiers before W2-2, read as Queue until the next rescore writes it.';
+COMMENT ON COLUMN us_outbound.accounts.angle IS 'Angle name from the Angles tab: the first active angle a matched signal suggests, else General (SPEC 9; the Control tier''s always-General rule went with the tiers, W2-2).';
 COMMENT ON COLUMN us_outbound.accounts.sender IS 'Mailbox owner name; set at first enrollment, never changed (SPEC 9, sender continuity).';
-COMMENT ON COLUMN us_outbound.accounts.status IS 'One of: new, queued, verified, enrolled, engaged, demo_requested, demo_booked, disqualified.';
+COMMENT ON COLUMN us_outbound.accounts.status IS 'One of: new, queued, verified, disqualified, parked, enrolled, engaged, demo_requested, demo_booked. new: admitted, not checked yet; queued: waiting to be checked again; verified: passed verify_accounts, enrol may take it; disqualified: left out, for good or (an open HubSpot deal, another owner) until recheck_after, status_reason says which; parked: out while a setting keeps it out (its industry switched off, or the label check failing under one label list), back to new when it changes (verify.redecide_parked, W1-4); enrolled: its contact is in a campaign; engaged: someone there replied. demo_requested and demo_booked: in SPEC 6, written by nothing, counted as emailed.';
 
 -- Build addition (Harry, 6 Oct 2026): Apollo's HQ country, so a website visitor with no HQ state is known to be in
 -- the US (accounts.any_us_state: a visitor is never excluded on its state).
@@ -70,3 +73,12 @@ ALTER TABLE us_outbound.accounts ADD COLUMN IF NOT EXISTS label_checked_at times
 COMMENT ON COLUMN us_outbound.accounts.label_source IS 'One of: override, approver, rules+model, model, umbrella, disputed, rules. Blank: not checked yet (the group''s copy). override: an Overrides row; approver: set at a send approval or by labels set; rules+model: the rules and the model agree; model: the model, sure, overruled the rules; umbrella: they disagree within a group, so the group''s label and copy; disputed: they disagree across groups, so the rules'' label with General copy; rules: not checked (label_check skip, or nothing to check against). The copy level follows: the label''s own copy for override, approver, rules+model and model; the group''s for umbrella, rules and blank; General for disputed (labels.copy_level).';
 COMMENT ON COLUMN us_outbound.accounts.label_confidence IS 'One of: high, medium, low. The model''s confidence in its label (high for an approver''s); blank when not checked.';
 COMMENT ON COLUMN us_outbound.accounts.label_checked_at IS 'When the label was last decided by the label check, an Overrides row or an approver.';
+
+-- The W1-C contracts commit (19 Oct 2026): columns that several Wave 1 packages write or read, added once before
+-- those packages are built side by side, so none of them edits this file's table for another. Nothing reads them yet.
+ALTER TABLE us_outbound.accounts ADD COLUMN IF NOT EXISTS status_reason text;
+ALTER TABLE us_outbound.accounts ADD COLUMN IF NOT EXISTS arm text;
+ALTER TABLE us_outbound.accounts ADD COLUMN IF NOT EXISTS recheck_after date;
+COMMENT ON COLUMN us_outbound.accounts.status_reason IS 'Why the account has its status, as a code (verify.REASON_CODES: size, industry_off, hubspot_open_deal and the rest), written by the job that set the status: verify_accounts, apollo_enrich, the hand-check. unenrolled: an enrolled account whose lead `us-outbound unenrol` took out of Instantly; it stays enrolled, so nothing enrols it again without a hand decision (ops/campaigns.py, W2-4). NULL: no code recorded (every account before the code that writes it).';
+COMMENT ON COLUMN us_outbound.accounts.arm IS 'One of: random, ranked. Which arm pick_contacts took the account in: random, drawn at random from the eligible queue within the Focus shares (General explore_share); ranked, in score order. NULL: picked before the explore arm existed, read as ranked.';
+COMMENT ON COLUMN us_outbound.accounts.recheck_after IS 'The UTC date from which verify_accounts checks a re-checkable exclusion again (an open HubSpot deal, another owner): 30 days after it was found. NULL: nothing to re-check.';

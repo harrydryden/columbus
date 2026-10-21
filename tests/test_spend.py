@@ -131,19 +131,16 @@ def test_the_monthly_budgets_at_80_and_100_percent_once_a_month_each():
     spend.check(ctx)
     assert len(posts(t)) == 1
     spent(ctx, "apollo", 400)
-    spent(ctx, "clay", 1_900)
+    spent(ctx, "clay", 1_900)  # an old Clay row: Clay's budget went with W2-1, so it asks nothing
     spend.check(ctx)
     text = posts(t)[-1]
-    assert text.startswith("<@U_HARRY> :rotating_light: *Credits and settings: 2 things need a decision*\n")
+    assert text.startswith("<@U_HARRY> :rotating_light: *Credits and settings: 1 thing needs a decision*\n")
     assert (f":rotating_light: *Apollo's monthly budget is used up, so we have stopped {STOPS_APOLLO} until 1 Nov.*\n"
             "2,050 of the 2,000 credits we allow a month are spent.\n"
             "*What to do:* to carry on this month, raise `apollo_monthly_credits` (now 2,000) to about 2,374, what this "
             f"month needs at its pace so far, on the {GENERAL}; it applies at the next settings sync, or now with "
             "`railway ssh -- us-outbound sync`. Otherwise it starts again on 1 Nov.") in text
-    assert (":warning: *Clay's monthly budget is 95% used; at 100% we stop checking companies in Clay and looking up "
-            "emails there until 1 Nov.*\n1,900 of the 2,000 credits we allow a month are spent.\n"
-            "*What to do:* this month needs about 2,200 at its pace so far: raise `clay_monthly_credits` (now 2,000) on "
-            f"the {GENERAL}, or let it stop.") in text
+    assert "Clay" not in text
     november, t2 = world(now=datetime(2026, 11, 2, 9, 0, tzinfo=UTC))
     november.store = ctx.store
     november.store.guard = november.guard
@@ -199,7 +196,7 @@ def test_each_claude_step_is_asked_once_in_its_month():
 # -- Apollo's website-visitor credits --------------------------------------------------------------------------------
 
 
-def test_the_website_visitor_credits_under_15_percent_while_site_visits_are_on():
+def test_the_website_visitor_credits_under_15_percent_while_site_visits_are_on(monkeypatch):
     ctx, _ = world(visitors=150)
     assert asked(ctx) == [":warning: *Apollo's website-visitor credits are running low; when they run out, we stop "
                           "learning which companies visit the US site.*\n150 of 1,200 left (12%).\n"
@@ -207,7 +204,8 @@ def test_the_website_visitor_credits_under_15_percent_while_site_visits_are_on()
                           "allowance)."]
     ctx, _ = world(visitors=300)
     assert asked(ctx) == []
-    ctx, _ = world(visitors=10, site_visit_domain="")  # site visits off: not asked about
+    monkeypatch.setattr(spend, "SITE_VISIT_DOMAIN", "")  # site visits off: not asked about
+    ctx, _ = world(visitors=10)
     assert asked(ctx) == [] and spend.read(ctx).visitors is None
 
 
@@ -235,7 +233,24 @@ def test_the_daily_post_asks_first_and_carries_the_spend_line():
     assert ("\nSpend: Apollo 4,000 credits left, below the 5,000 reserve: finding companies and emails has stopped · "
             "Claude $2.50 of $10 this month (25%) · website-visitor credits 1,150 of 1,200 left\n") in post
     assert out["spend_alert"]["keys"] == ["apollo_floor:2026-10-27"] and out["spend"]["apollo_left"] == 4_000
-    assert out["mailboxes_ahead"] == {"checked": False}  # a Tuesday
+    assert "mailboxes_ahead" not in out  # a Monday ask, made by the Monday readout
+
+
+def test_the_monday_readout_makes_monday_s_asks_first():
+    """There is no Monday daily post from 19 Oct 2026 (it runs Tuesday to Saturday), so the Monday readout makes
+    Monday's asks before its own post: the credit and spend asks, keyed by Monday's date, and the mailboxes ahead."""
+    from us_outbound.learn import readout
+
+    ctx, t = post_world(now=datetime(2026, 10, 26, 7, 30, tzinfo=UTC))  # Mon 26 Oct 07:30 UK (GMT)
+    t.route("POST", "/usage_stats/credit_usage_stats", body=usage(4_000, 1_150))
+    out = readout.run(ctx)
+    ask, post = posts(t)
+    assert ask.startswith("<@U_HARRY> :rotating_light: *Credits and settings") and UNDER_FLOOR in ask
+    assert post.startswith(":warning: *Monday readout, 19–25 Oct")
+    assert out["spend_alert"]["keys"] == ["apollo_floor:2026-10-26"]
+    assert out["mailboxes_ahead"]["checked"] is True and out["mailboxes_ahead"]["add"] == 0
+    readout.run(ctx)  # a rerun asks nothing twice (base/notify.post_once)
+    assert len(posts(t)) == 3 and posts(t)[2].startswith(":warning: *Monday readout")
 
 
 def test_the_spend_line_with_the_balance_unknown_or_far_from_the_floor():
@@ -246,3 +261,71 @@ def test_the_spend_line_with_the_balance_unknown_or_far_from_the_floor():
     t.route("POST", "/usage_stats/credit_usage_stats", body={"credit_usage_stats": {}})
     assert spend.summary_line(spend.read(ctx)).startswith(
         "Spend: Apollo balance unknown (Apollo's answer had no lead-credit balance) · Claude")
+
+
+# -- the balance's pace and the ledger's drift (W2-3; code-learn-reporting B10) ---------------------------------------
+
+
+def readings(ctx, balances: dict[int, float]) -> None:
+    """Kept daily balances (events type apollo_balance): days ago -> the balance that day."""
+    ctx.store.insert("events", [{"event_id": f"apollo_balance:{d}", "type": spend.BALANCE, "source": "apollo",
+                                 "occurred_at": ctx.now - timedelta(days=d), "amount": float(v)}
+                                for d, v in balances.items()])
+
+
+def test_the_pace_is_the_balance_s_fall_once_seven_readings_are_kept():
+    """13–19 Oct: the balance fell from 29,677 to 29,435, 242 credits in 7 days, while the ledger recorded 132.
+    Pace = 242 ÷ 7 = 34.57 a day (the ledger's would be 132 ÷ 14 = 9.4); drift = (242 − 132) ÷ 242 = 45.5%, over
+    the 10% limit, so it is asked about once that week and the spend line names both."""
+    ctx, t = world(balance=29_435)
+    readings(ctx, {7: 29_677, 6: 29_640, 5: 29_600, 4: 29_560, 3: 29_520, 2: 29_490, 1: 29_460})  # 7 kept
+    spent(ctx, "apollo", 132, days_ago=3)
+    sp = spend.read(ctx)
+    assert sp.pace_basis == "balance" and round(sp.apollo_pace, 1) == 34.6
+    assert (sp.balance_fell, sp.ledger_spent, round(sp.drift, 3)) == (242.0, 132.0, 0.455)
+    assert sp.as_dict()["ledger_drift"] == 0.455
+    line = spend.summary_line(sp)
+    assert "at 35 a day" in line and "the balance fell 242 in 7 days, our records 132" in line
+    [ask] = [text for key, text in spend.asks(ctx, sp) if key.startswith("apollo_ledger_drift:")]
+    assert "the jobs recorded 132 (45% not recorded)" in ask
+
+
+def test_a_balance_fall_within_ten_percent_of_the_ledger_is_no_drift_ask():
+    """W3-3's case (S3): the balance fell 140 in 7 days and the ledger recorded 132: (140 − 132) ÷ 140 = 5.7%, under
+    the 10% limit, so no ask; 242 against 132 (45.5%) is one, keyed once an ISO week (post_once)."""
+    ctx, _ = world(balance=29_537)
+    readings(ctx, {7: 29_677, 6: 29_660, 5: 29_640, 4: 29_620, 3: 29_600, 2: 29_580, 1: 29_560})
+    spent(ctx, "apollo", 132, days_ago=3)
+    sp = spend.read(ctx)
+    assert (sp.balance_fell, sp.ledger_spent, round(sp.drift, 3)) == (140.0, 132.0, 0.057)
+    assert not [k for k, _ in spend.asks(ctx, sp) if k.startswith("apollo_ledger_drift")]
+    ctx, _ = world(balance=29_435)
+    readings(ctx, {7: 29_677, 6: 29_640, 5: 29_600, 4: 29_560, 3: 29_520, 2: 29_490, 1: 29_460})
+    spent(ctx, "apollo", 132, days_ago=3)
+    [key] = [k for k, _ in spend.asks(ctx, spend.read(ctx)) if k.startswith("apollo_ledger_drift")]
+    year, week, _ = ctx.today_uk().isocalendar()
+    assert key == f"apollo_ledger_drift:{year}-W{week:02d}"
+
+
+def test_before_seven_readings_or_across_a_purchase_the_pace_is_the_ledger_s():
+    """6 readings: the ledger's 14-day pace, 140 ÷ 14 = 10 a day. A balance that rose (29,000 to 31,000: a purchase)
+    has no fall to read, so the ledger's pace stands in too. No drift either way."""
+    ctx, _ = world(balance=29_435)
+    readings(ctx, {d: 29_700 - 10 * d for d in range(7, 1, -1)})  # days 7 to 2: six readings
+    spent(ctx, "apollo", 140, days_ago=5)
+    sp = spend.read(ctx)
+    assert (sp.pace_basis, sp.apollo_pace, sp.drift) == ("ledger", 10.0, None)
+    ctx, _ = world(balance=31_000)
+    readings(ctx, {d: 29_000 for d in range(8, 1, -1)})
+    sp = spend.read(ctx)
+    assert sp.pace_basis == "ledger" and not [k for k, _ in spend.asks(ctx, sp) if k.startswith("apollo_ledger_drift")]
+
+
+def test_check_keeps_one_balance_a_uk_day_and_a_read_only_report_keeps_none():
+    ctx, _ = world(balance=29_435)
+    spend.read(ctx)  # `report daily` reads; it keeps nothing
+    assert ctx.store.select("events", {"type": spend.BALANCE}) == []
+    spend.check(ctx)
+    spend.check(ctx)  # a rerun the same day replaces the reading
+    [row] = ctx.store.select("events", {"type": spend.BALANCE})
+    assert (row["event_id"], row["amount"]) == ("apollo_balance:2026-10-27", 29_435.0)

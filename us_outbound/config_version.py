@@ -12,27 +12,35 @@ was enrolled under, so the cohort report (learn/cohorts.py) can compare like wit
   settings_versions  the effective_from of the version in force of each content tab (CONTENT_TABS): the tabs
                      render and the openers read at enrolment. General and Copy are in by value instead (below),
                      so an edit to live_sending, the Claude cap or a draft Copy row starts no new version.
-                     Mailboxes, States, Focus and Named accounts change who is enrolled and by whom, which
+                     Mailboxes, States and Focus change who is enrolled and by whom, which
                      each contact records already (sender, copy_version, test_id) and the weekly cuts show; of the
                      Tests tab, only the running copy test changes what is sent, and it is in by value (copy_test);
   copy_hashes        copy_version -> CopyRow.content_hash for every sendable Copy row (approved, QA passed);
-  general            the General content keys (CONTENT_KEYS) as text, so a report can say "0.5 → 0.3";
+  general            the General content keys (CONTENT_KEYS) as text, so a report can say "0.5 → 0.3"; and live_split
+                     once it is not both (W3-4 r1: it decides which splits a new contact is drawn into);
   signature_hash     templates/copy/signature.txt;
   labels_hash        the industry label check's prompt version, label list and definitions (labels.labels_hash;
                      Harry, 7 Oct 2026): they decide which label, and so which copy, a new company earns;
-  copy_test          the running copy test (copy_test; Harry, 7 Oct 2026: A/B tests of email copy), ab or variant:
+  copy_test          the copy test drawing arms (copy_test, Settings.drawn_test; Harry, 7 Oct 2026), ab or variant:
                      its id, kind, arms, start and size, and a variant's email, change, texts and find. It decides
                      what part of a new contact's emails say, so a test starting, stopping or changing starts a new
                      version and `cohorts changes` says so; null while none runs;
   campaign_fingerprint, step_days   the campaign constants: STEP_DAYS, CAMPAIGN_SETTINGS and the step templates
                      (tests/test_cohorts.py pins the fingerprint, so changing one fails a test by name);
-  code_sha           the deploy's git commit, RAILWAY_GIT_COMMIT_SHA (Railway sets it on every deploy from GitHub;
-                     the image holds no .git), else "dev".
-
 The id is the first 12 hex characters of the sha256 of that snapshot as canonical JSON. enrol computes it once a
 run and records it in config_versions (record; dry-run too, SPEC 0.3), and each contact carries it
-(contacts.config_version, code_sha, copy_hash; enrol._record_enrolled). log_change writes a config_log row for
-each change to what in-flight leads share.
+(contacts.config_version, code_sha, copy_hash; enrol._record_enrolled).
+
+The deploy's git commit (code_sha: RAILWAY_GIT_COMMIT_SHA, set by Railway on every deploy from GitHub, as the image
+holds no .git; else "dev") is kept beside the version, on each contact and in the config_versions row that first saw
+it, but is not hashed into the id (W1-6, 19 Oct 2026; code-contacts-enrol M7): with it in, every deploy started a
+new version, so cohorts split on code changes that change nothing a contact is sent (50 deploys in 12 days), and a
+copy test's arms could not be pooled across a deploy. weekly_enrol_cap and control_share left CONTENT_KEYS for the
+same reason: the first changes how many are enrolled, not what any of them gets, and the second is retired. The ids
+changed once, discontinuously, from the deploy that made these changes; `cohorts changes` reads the old rows as
+they are. The ids changed once more from W2-1 (20 Oct 2026), when opener_focus, opener_focus_line and the three
+second_contact keys left General and CONTENT_KEYS with the code that read them (opener_focus was off and no second
+contact was ever enrolled, so what a contact is sent did not change). log_change writes a config_log row for each change to what in-flight leads share.
 """
 
 from __future__ import annotations
@@ -49,7 +57,7 @@ from us_outbound.clients.db import new_id
 from us_outbound.clients.instantly import CAMPAIGN_SETTINGS, STEP_DAYS
 from us_outbound.context import Context
 from us_outbound.logs import log
-from us_outbound.settings.model import VARIANT_TEST, General, SendWindow, Settings
+from us_outbound.settings.model import SPLIT_BOTH, VARIANT_TEST, General, SendWindow, Settings
 
 TABLE, LOG_TABLE = "config_versions", "config_log"
 CODE_SHA_ENV = "RAILWAY_GIT_COMMIT_SHA"  # set by Railway on a deploy from GitHub; not a secret
@@ -60,13 +68,13 @@ CAMPAIGN_CHANGE, SENDER_NAME = "campaign_change", "sender_name"  # config_log.ki
 BLACKOUT_PAUSE, BLACKOUT_RESUME = "blackout_pause", "blackout_resume"
 # The tabs render and the openers read at enrolment (besides General and Copy, which are in by value).
 CONTENT_TABS = ("Signals", "Angles", "Industries", "Roles", "Overrides")
-# The General keys that shape what a contact gets, or how and when it is sent.
+# The General keys that shape what a contact gets, or how and when it is sent. Not weekly_enrol_cap (how many, not
+# what), not control_share (retired), and not explore_share: the arm a contact is in is stamped on the contact
+# (contacts.arm), and its emails are made as any other's (W1-6).
 CONTENT_KEYS = (
     "email_format", "email1_subject", "email1_subject_share", "opener_holdout_share", "opener_generic",
-    "opener_generic_people", "opener_generic_founder", "opener_generic_ops", "opener_focus", "opener_focus_line",
+    "opener_generic_people", "opener_generic_founder", "opener_generic_ops",
     "price_from", "booking_link", "booking_page", "site_url", "demo_host", "utm_links", "send_window",
-    "second_contact", "second_contact_min_employees", "second_contact_delay_days", "control_share",
-    "weekly_enrol_cap",
     "label_check",  # Harry, 7 Oct 2026: required or skip decides which copy a new company's label earns (labels.py)
 )
 DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
@@ -132,8 +140,9 @@ def _iso(v: Any) -> str:
 
 def copy_test(settings: Settings) -> dict[str, Any] | None:
     """The running copy test as the snapshot keeps it (module docstring), or None while none runs. A contact records
-    its own arm (contacts.test_id, test_arm); this says which test, and what it changed, was in force."""
-    t = settings.running_test()
+    its own arm (contacts.test_id, test_arm); this says which test, and what it changed, was in force. The test that
+    draws arms (Settings.drawn_test; W3-4 r1): a running test General live_split leaves out changes nothing sent."""
+    t = settings.drawn_test()
     if t is None:
         return None
     out: dict[str, Any] = {"test_id": t.test_id, "kind": t.kind, "version_a": t.version_a, "version_b": t.version_b,
@@ -149,40 +158,50 @@ def copy_test(settings: Settings) -> dict[str, Any] | None:
 @dataclass(frozen=True)
 class ConfigVersion:
     id: str
-    snapshot: Mapping[str, Any]
-
-    @property
-    def code_sha(self) -> str:
-        return str(self.snapshot.get("code_sha") or DEV)
+    snapshot: Mapping[str, Any]  # what the id hashes
+    code_sha: str = DEV  # the deploy the version was computed in: kept beside it, never hashed (module docstring)
 
 
-def snapshot(settings: Settings) -> dict[str, Any]:
-    """Everything a contact enrolled now is rendered and sent under (the module docstring)."""
+def snapshot(settings: Settings, label_policy: Mapping[str, str] | None = None) -> dict[str, Any]:
+    """Everything a contact enrolled now is rendered and sent under (the module docstring). label_policy: the label
+    policy in force (labels.active_policy; W3-2, 20 Oct 2026): it decides which copy level a new company's label
+    earns, so while General copy_level_policy is yes it is content, in `general` as copy_level_policy (each label
+    source and its level). None (the switch no, the default) adds nothing, so no id changes until it applies."""
     from us_outbound import labels  # it builds on the sources, which build on enrol: imported when used
 
+    general = general_values(settings.general)
+    if label_policy:
+        general["copy_level_policy"] = ", ".join(f"{s}: {label_policy[s]}" for s in sorted(label_policy))
+    # General live_split (W3-4 r1) decides which splits a new contact is drawn into, so its opener and subject: content.
+    # In only when it is not both, the default and today's draws, so no id changes until Harry names a split.
+    if settings.general.live_split != SPLIT_BOTH:
+        general["live_split"] = settings.general.live_split
     return {
         "settings_versions": {t: _iso(settings.versions[t]) for t in CONTENT_TABS if settings.versions.get(t)},
         "copy_hashes": sendable_hashes(settings),
-        "general": general_values(settings.general),
+        "general": general,
         "signature_hash": signature_hash(),
         "labels_hash": labels.labels_hash(settings),
         "copy_test": copy_test(settings),
         "campaign_fingerprint": campaign_fingerprint(),
         "step_days": list(STEP_DAYS),
-        "code_sha": code_sha(),
     }
 
 
 def current(ctx: Context) -> ConfigVersion:
-    snap = snapshot(ctx.settings)
-    return ConfigVersion(_hash(snap), snap)
+    from us_outbound import labels
+
+    snap = snapshot(ctx.settings, labels.active_policy(ctx))
+    return ConfigVersion(_hash(snap), snap, code_sha())
 
 
 def record(ctx: Context, cv: ConfigVersion) -> bool:
-    """Keep the version's snapshot, the first time it is seen; True when it is new. A database write, so dry-run too."""
+    """Keep the version's snapshot, the first time it is seen; True when it is new. A database write, so dry-run too.
+    The row's code_sha is the deploy that first saw the version; each contact carries its own."""
     if ctx.store.get(TABLE, config_version=cv.id) is not None:
         return False
-    ctx.store.upsert(TABLE, [{"config_version": cv.id, "first_seen": ctx.now, "run_id": ctx.run_id, **cv.snapshot}])
+    ctx.store.upsert(TABLE, [{"config_version": cv.id, "first_seen": ctx.now, "run_id": ctx.run_id, **cv.snapshot,
+                              "code_sha": cv.code_sha}])
     log("config_version_new", run_id=ctx.run_id, config_version=cv.id, code_sha=cv.code_sha)
     return True
 

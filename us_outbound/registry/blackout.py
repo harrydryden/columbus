@@ -28,7 +28,7 @@ blackout_pause, config_version.log_change), with the leads then in flight, so th
 
 What it starts again once the hold is over: only the campaigns whose latest blackout row is a pause (paused), each
 once, and only while Instantly shows it paused (or a draft `start` deferred, below). It leaves paused, and says why:
-  * one an operator stop holds (base/heartbeats.enrolment_paused): `us-outbound start --live` starts it;
+  * one an operator stop holds (ops/health.enrolment_paused): `us-outbound start --live` starts it;
   * one a kill rule paused since (its mailbox hold left the owner no Active mailbox; registry/mailboxes
     ._kill_rule_pauses): mailbox_health starts it once that mailbox is Active again;
   * one whose owner has no Active mailbox now (a kill rule's hold counts), as _sync_campaign leaves it.
@@ -36,6 +36,9 @@ A campaign Instantly shows active (someone started it), completed (nothing left 
 starts it) or gone needs nothing. Each is a blackout_resume row, which settles the pause; a failed activation
 leaves it open, and the next run tries again. A pause made by hand in Instantly's own pages during the blackout
 cannot be told from the blackout's: `us-outbound stop --live` can, and that is the way to pause sending.
+
+On the last-good settings (a sheet that fails a check; ops/bootstrap.py SAFETY_JOBS, W1-1) it still pauses, but
+starts nothing again: resume_deferred says so, and the first run on settings in force starts them.
 
 Live only for Instantly (SPEC 0.3): a dry run, or live_sending = no as for every job, says what it would pause or
 start, changes nothing and records nothing. Slack: one line when it pauses and one when it starts them again
@@ -62,7 +65,7 @@ from zoneinfo import ZoneInfo
 
 from us_outbound import budget, config_version
 from us_outbound.base import holds, notify, say
-from us_outbound.base.heartbeats import enrolment_paused
+from us_outbound.ops.health import enrolment_paused
 from us_outbound.clients.http import ApiError
 from us_outbound.clients.instantly import CAMPAIGN_STATUS
 from us_outbound.context import UK, Context
@@ -374,6 +377,9 @@ def run(ctx: Context) -> dict:
                            "until": _iso(h.until) if h else None, "paused_by_blackout": sorted(open_)}
     if h is not None:
         out.update(_pause(ctx, h, open_))
+    elif open_ and ctx.protective_only:  # on the last-good settings it only pauses (ops/bootstrap.py SAFETY_JOBS)
+        out["resume_deferred"] = ("the settings in force fail a check, so this runs on their last-good fallback and "
+                                  "starts nothing; the first run after the sheet is fixed starts them")
     elif open_:
         out.update(_resume(ctx, open_))
     log(JOB, run_id=ctx.run_id, **out)

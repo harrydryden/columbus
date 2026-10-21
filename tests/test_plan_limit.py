@@ -1,5 +1,5 @@
 """Instantly's plan limit (enrol/plan.py; Harry, 7 Oct 2026): a lead left out because the plan is full is not refused,
-so its contact is kept, the run adds no more, a send approval is held, and the approvers are asked to make room."""
+so its contact is kept, the run adds no more, and the approvers are asked to make room."""
 
 from __future__ import annotations
 
@@ -11,18 +11,18 @@ from tests.fakes import FakeTransport
 from tests.test_enrol import added, instantly_posts, make
 from tests.test_registry import slack_routes
 from tests.test_render import make_settings
-from tests.test_send_approvals import HARRY_ID, item_for, poll, proposed
 from us_outbound.clients import instantly
 from us_outbound.clients.http import ApiError
 from us_outbound.enrol import enrol, plan
+
+HARRY_ID = "U_HARRY"  # approver_slack_ids: the alert mentions the approvers
 
 FULL_ALERT = ("<@U_HARRY> :rotating_light: *Instantly's plan is full: nobody new is being emailed*\n"
               "Instantly's plan holds only so many people (leads) at once, and it has no room left.\n"
               "People already in the campaign still get their follow-ups. The new ones are kept, not dropped, and wait "
               "for room.\n"
               "*What to do:* Make room: upgrade the plan in Instantly, or delete leads there that have finished all "
-              "their emails. Nothing else is needed: adding people to the email campaign and the approved send cards "
-              "try again by themselves.")
+              "their emails. Nothing else is needed: adding people to the email campaign tries again by itself.")
 
 
 # -- what Instantly's answer says -------------------------------------------------------------------------------
@@ -124,54 +124,3 @@ def test_little_room_left_warns_once_a_week():
     ctx.now += timedelta(days=7)
     enrol.plan.after_add(ctx, {"remaining_in_plan": 150})
     assert len(posts(t)) == 2
-
-
-# -- a send approval's ✅ ---------------------------------------------------------------------------------------------
-
-
-def full_then_room(t, state):
-    def answer(req):
-        if state["full"]:
-            return {"status": "success", "total_sent": 1, "leads_uploaded": 0, "remaining_in_plan": 0,
-                    "created_leads": []}
-        return {**added(req), "remaining_in_plan": 5_000}
-
-    t.route("POST", "/leads/add", fn=answer)
-    t.route("POST", "/leads/list", {"items": []})
-
-
-def test_an_approval_the_full_plan_stops_is_held_and_goes_through_once_there_is_room():
-    ctx, t, sl, _ = proposed()
-    state = {"full": True}
-    full_then_room(t, state)
-    for aid in ("acc-1", "acc-2"):
-        sl.react("white_check_mark", HARRY_ID, ts=item_for(ctx, aid)["slack_ts"])
-    out = poll(ctx)
-    assert out["instantly_plan_full"] is True and len(adds(t)) == 1  # the second card is held without an add
-    assert [h["why"] for h in out["held"]] == [[plan.HOLD], [plan.HOLD]] and out["outcomes"] == {}
-    for aid in ("acc-1", "acc-2"):
-        row = item_for(ctx, aid)
-        assert (row["status"], row["payload"]["state"], row["payload"]["outcome"]) == ("open", "waiting", "")
-        assert row["payload"]["held"]["reasons"] == {"instantly_plan": plan.HOLD}
-    assert not any(c.get("suppressed") for c in ctx.store.select("contacts"))  # kept, never _refused
-    assert sum(x.startswith("⏸ Approved") and "Instantly's plan has no room for new leads" in x for x in sl.texts()) == 2
-    assert [x for x in sl.texts() if x.startswith("<@U_HARRY> :rotating_light: *Instantly's plan")] == [FULL_ALERT]
-    poll(ctx)  # still full: tried again, no new thread note, no second alert today
-    assert sum(x.startswith("⏸ Approved") for x in sl.texts()) == 2 and len(adds(t)) == 2
-    state["full"] = False  # Harry upgraded the plan
-    out = poll(ctx)
-    assert out["outcomes"] == {"approved": 2} and len(adds(t)) == 4
-
-
-def test_an_add_left_sending_after_a_full_plan_is_held_not_refused():
-    ctx, t, sl, _ = proposed()
-    row = item_for(ctx, "acc-1")
-    payload = {**row["payload"], "state": "sending", "held": {}, "sending": {
-        "at": (ctx.now - timedelta(minutes=20)).isoformat(), "by": HARRY_ID, "via": "✅", "answered": True,
-        "plan_full": True}}
-    ctx.store.update("hitl_items", {"item_id": row["item_id"]}, {"status": "sending", "payload": payload})
-    t.route("POST", "/leads/list", {"items": []})
-    out = poll(ctx)
-    row = item_for(ctx, "acc-1")
-    assert (row["status"], row["payload"]["outcome"]) == ("open", "") and out["held"][0]["why"] == [plan.HOLD]
-    assert not any(c.get("suppressed") for c in ctx.store.select("contacts"))

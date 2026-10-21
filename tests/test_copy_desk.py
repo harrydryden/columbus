@@ -54,6 +54,30 @@ class MemorySheet:
             self.writes.append(f"append {tab}")
 
 
+class Sheet(MemorySheet):
+    """MemorySheet that answers a missing tab as the Sheets API does, and adds tabs (the label sample's and the
+    definition suggestions' tabs; it was tests/test_crosswalk.py's, removed with ops/crosswalk.py in W2-1)."""
+
+    def read_tabs(self, sheet_id, tabs):
+        """As the Sheets API answers: a tab the sheet does not have is a 400 (9 Oct 2026: the first `crosswalk --live`
+        stopped on it, as the tab was read before it was added)."""
+        from us_outbound.clients.http import ApiError
+
+        if missing := [t for t in tabs if t not in self.tabs]:
+            raise ApiError("sheets", 400, f"Unable to parse range: {missing[0]}")
+        return super().read_tabs(sheet_id, tabs)
+
+    gids: dict = {}
+
+    def tab_ids(self, sheet_id):
+        return dict(self.gids)
+
+    def add_tab(self, sheet_id, tab):
+        if self._ok("spreadsheet.addSheet", sheet_id, tab):
+            self.tabs.setdefault(tab, [])
+            self.writes.append(f"add {tab}")
+
+
 def ctx_with(settings=None, *, text=PASS, live=False, tabs=None):
     sdk = FakeSDK(text=text)
     ctx = make_context(settings or make_settings(), live=live, claude_sdk=sdk)
@@ -322,13 +346,13 @@ def test_the_build_s_tabs_are_complete_and_valid():
 
 
 def live_general() -> list[dict]:
-    """The General tab as Harry's sheet has it on 1 Oct: the old daily cap, no new keys, Clay off."""
+    """The General tab as Harry's sheet has it on 1 Oct: the old daily cap, no new keys, no Apollo budget yet."""
     rows = [dict(r) for r in default_tabs()["General"]
             if r["key"] not in {"claude_task_model", "email_format", "site_url", "price_from"}]
     for r in rows:
         if r["key"] == "weekly_enrol_cap":
             r.update(key="daily_enrol_cap", value="30")
-        if r["key"] == "clay_monthly_credits":
+        if r["key"] == "apollo_monthly_credits":
             r["value"] = "0"
     # The two keys retired on 1 Oct (no postal address, no privacy link) are still on the sheet.
     rows += [{"key": "postal_address", "value": "", "note": ""}, {"key": "privacy_url", "value": "", "note": ""}]
@@ -336,15 +360,15 @@ def live_general() -> list[dict]:
 
 
 def test_general_load_renames_adds_and_sets():
-    sets = {"clay_monthly_credits": "2000", "claude_model": "claude-opus-5-5"}
+    sets = {"apollo_monthly_credits": "2000", "claude_model": "claude-opus-5-5"}
     plan = loader.plan_tab("General", live_general(), default_tabs()["General"], sets)
     by = {r["key"]: r["value"] for r in plan.rows if r["key"]}
     assert "daily_enrol_cap" not in by and by["weekly_enrol_cap"] == "150"  # renamed, with the weekly value
     assert by["price_from"] == "195" and by["site_url"] == "https://www.spill.chat/us"
     assert by["claude_task_model"] == "claude-sonnet-5-5" and by["email_format"] == "html"
-    assert by["clay_monthly_credits"] == "2000"
+    assert by["apollo_monthly_credits"] == "2000"
     assert "daily_enrol_cap renamed weekly_enrol_cap = 150" in plan.updated
-    assert "clay_monthly_credits: 0 -> 2000" in plan.updated and len(plan.added) == 4
+    assert "apollo_monthly_credits: 0 -> 2000" in plan.updated and len(plan.added) == 4
     assert "postal_address" not in by and "privacy_url" not in by  # retired keys are removed
     assert "postal_address removed (no longer used)" in plan.updated
     with pytest.raises(ValueError, match="not General keys"):
@@ -356,11 +380,11 @@ def test_load_all_three_tabs_validates_and_writes_live():
     sheet["General"] = live_general()
     ctx, _ = ctx_with(live=True, tabs=sheet)
     ctx.guard.configure(live=True)
-    loader.load(ctx, ["General", "Industries", "Copy"], {"clay_monthly_credits": "2000"})
+    loader.load(ctx, ["General", "Industries", "Copy"], {"apollo_monthly_credits": "2000"})
     assert ctx.clients.sheets.writes == ["replace General", "replace Industries", "replace Copy"]
     settings, errors = validate_all(sheet)
     assert not any(errors.values()) and settings.general.weekly_enrol_cap == 150
-    assert settings.general.clay_monthly_credits == 2000 and settings.general.price_from == 195
+    assert settings.general.apollo_monthly_credits == 2000 and settings.general.price_from == 195
 
 
 def test_copy_load_replace_drafts_keeps_approved_rows_and_replaces_the_rest():

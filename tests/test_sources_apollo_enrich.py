@@ -1,5 +1,5 @@
 """apollo_enrich (sources/apollo_enrich.py; Harry, 2 Oct 2026): funding and an exact headcount from Apollo's
-organization enrich, for the General apollo_enrich_groups, against a fake Apollo. Which accounts and in what
+organization enrich, for settings/model.APOLLO_ENRICH_GROUPS (the General key until W2-4), against a fake Apollo. Which accounts and in what
 order, the facts and their ages, not found against no funding, the 180-day refresh, the account's size, the
 credits, and the funding signals firing in the rescore that follows."""
 
@@ -15,7 +15,7 @@ from tests.fakes import FakeTransport, make_context
 from us_outbound import verify
 from us_outbound.clients.guard import APOLLO_READ_ACTIONS
 from us_outbound.ops import cli, schedule
-from us_outbound.ops import heartbeat as hb
+from us_outbound.ops import health as hb
 from us_outbound.scoring import score
 from us_outbound.settings import load as loader
 from us_outbound.settings.defaults import default_tabs
@@ -24,7 +24,7 @@ from us_outbound.settings.validate import validate_all
 from us_outbound.sources import apollo_enrich as enrich
 from us_outbound.sources import apollo_jobs, apollo_universe as uni
 
-NOW = datetime(2026, 10, 5, 3, 10, tzinfo=UTC)  # Monday 5 Oct, 04:10 UK: the pilot's first run
+NOW = datetime(2026, 10, 5, 4, 0, tzinfo=UTC)  # Monday 5 Oct, 05:00 UK, the weekday start since W1-3a
 BASE, _ = validate_all(default_tabs())
 TECH, AGENCIES = "Technology & Startups", "Marketing & Creative Agencies"
 
@@ -80,7 +80,7 @@ class FakeApollo:
         return {"organization": org} if org else {}
 
 
-def acct(aid: str, domain: str | None = None, *, group=TECH, industry="Fintech", status="new", **kw) -> dict:
+def acct(aid: str, domain: str | None = None, *, group=TECH, industry="Fintech", status="verified", **kw) -> dict:
     return {"account_id": aid, "domain": f"{aid}.com" if domain is None else domain, "apollo_org_id": f"org-{aid}",
             "status": status, "industry": industry, "industry_group": group, "size_band": "20-49", "employees": None,
             "hq_state": "NY", "first_seen": NOW - timedelta(days=1), **kw}
@@ -111,34 +111,53 @@ def ledger(ctx) -> list[dict]:
 # -- which accounts, in what order ---------------------------------------------------------------------
 
 
-def test_targets_are_open_queue_accounts_in_the_named_groups_never_enriched_first_in_enrol_order():
+def test_targets_are_verified_accounts_in_the_named_groups_never_enriched_first_in_enrol_order(monkeypatch):
+    """W1-3a (code-sources B4): only accounts verify_accounts has passed are paid for. A new or queued account, which
+    the label check may still leave out (13 Oct: 62 of 103), is not enriched however high it scores."""
     ctx, _, fake = make([
         acct("standard", tier="Standard", score=30),
-        acct("priority", status="queued", tier="Priority", score=60),
-        acct("control", status="verified", tier="Control", score=0),
+        acct("priority", tier="Priority", score=60),
+        acct("control", tier="Control", score=0),
         acct("old", tier="Priority", score=90),  # enriched 200 days ago: due again, after the never-enriched
         acct("recent", tier="Priority", score=90),  # enriched 30 days ago: not due
         acct("excluded", tier="Excluded"), acct("held", tier="Held"), acct("enrolled", status="enrolled"),
         acct("agency", group=AGENCIES, industry="Advertising agencies"), acct("nodomain", domain=""),
+        acct("new", status="new", tier="Priority", score=99), acct("queued", status="queued", tier="Priority", score=99),
     ])
     ctx.store.insert("signal_events", [marker("old", 200), marker("recent", 30)])
     todo, _ = enrich.candidates(ctx)
     assert [a["account_id"] for a in todo] == ["priority", "standard", "control", "old"]
     enrich.run(ctx)
     assert fake.bulk_asked == [["priority.com", "standard.com", "control.com", "old.com"]]
+    assert facts_of(ctx, "new") == {} and facts_of(ctx, "queued") == {}
 
-    both = settings_with(apollo_enrich_groups=(TECH, AGENCIES), focus=(Focus(AGENCIES, 0.6), Focus(TECH, 0.4)))
-    ctx.settings = both
+    monkeypatch.setattr(enrich, "APOLLO_ENRICH_GROUPS", (TECH, AGENCIES))
+    ctx.settings = settings_with(focus=(Focus(AGENCIES, 0.6), Focus(TECH, 0.4)))
     ctx.store.delete("signal_events", {"fact": enrich.MARKER})
     # The Focus tab's largest share first, then enrol's order (tier, then score) within the group.
     assert [a["account_id"] for a in enrich.candidates(ctx)[0]] == ["agency", "old", "recent", "priority", "standard",
                                                                     "control"]
 
 
-def test_a_blank_apollo_enrich_groups_enriches_nothing():
-    ctx, t, _ = make([acct("a1")], settings=settings_with(apollo_enrich_groups=()))
+def test_no_enrich_group_enriches_nothing(monkeypatch):
+    monkeypatch.setattr(enrich, "APOLLO_ENRICH_GROUPS", ())
+    ctx, t, _ = make([acct("a1")], settings=settings_with())
     out = enrich.run(ctx)
-    assert out["skipped"] is True and "apollo_enrich_groups is blank" in out["reason"] and t.requests == []
+    assert out["skipped"] is True and "APOLLO_ENRICH_GROUPS is empty" in out["reason"] and t.requests == []
+
+
+def test_a_group_renamed_on_the_industries_tab_fails_the_run_before_any_apollo_call(monkeypatch):
+    """The sync-time check that the groups name Industries groups went with the General key (W2-4); in its place the
+    run itself refuses: "Tech & Startups" (a rename of TECH on the tab, say) matches no group on BASE's Industries
+    tab, so the run raises naming it and Apollo is never asked (the error heartbeat is what heartbeat_check reports).
+    The group's own name in another case still matches (the comparison is casefold, as candidates' is)."""
+    monkeypatch.setattr(enrich, "APOLLO_ENRICH_GROUPS", ("Tech & Startups",))
+    ctx, t, _ = make([acct("a1")], settings=settings_with())
+    with pytest.raises(ValueError, match="'Tech & Startups', not an industry_group on the Industries tab"):
+        enrich.run(ctx)
+    assert t.requests == []
+    monkeypatch.setattr(enrich, "APOLLO_ENRICH_GROUPS", (TECH.upper(),))
+    assert "groups" in enrich.run(ctx)
 
 
 def test_nothing_due_spends_nothing():
@@ -248,16 +267,27 @@ def test_an_account_is_enriched_again_only_after_180_days():
 # -- the account's size --------------------------------------------------------------------------------------
 
 
-def test_the_exact_count_supersedes_the_searched_band():
-    ctx, _, _ = make([acct("acme", "acme.com"), acct("big", "big.com", status="verified")],
-                     [company("acme.com", employees=64), company("big.com", employees=400)])
+def test_the_exact_count_supersedes_the_searched_band_and_one_outside_the_range_is_left_out():
+    """W1-3a (code-sources B3): the exact count is the last size check. The W43 hand-check drew a 5,100-staff company
+    marked fine: sent back to new, an account sized out stayed in the queue, failed by verify every morning with no
+    mark. Now it is disqualified and Excluded at once, with status_reason size, the code verify writes for it."""
+    ctx, _, _ = make([acct("acme", "acme.com"), acct("big", "big.com", tier="Standard"),
+                      acct("edge", "edge.com", employees=249, size_band="100-249")],
+                     [company("acme.com", employees=64), company("big.com", employees=5100),
+                      company("edge.com", employees=249)])
     out = enrich.run(ctx)
-    a, big = ctx.store.get("accounts", account_id="acme"), ctx.store.get("accounts", account_id="big")
-    assert (a["employees"], a["size_band"], a["status"]) == (64, "50-99", "new")
-    # Outside 10 to 249: verify_accounts checks it again, and fails it as it fails any such account.
-    assert (big["employees"], big["size_band"], big["status"]) == (400, "250-499", "new")  # outside 10 to 249
-    assert verify.check(big, {}, ctx.settings, set(), set()) == "outside 10 to 249 employees"
-    assert (out["size_written"], out["back_to_verify"]) == (2, 1)
+    a, big, edge = (ctx.store.get("accounts", account_id=x) for x in ("acme", "big", "edge"))
+    assert (a["employees"], a["size_band"], a["status"], a.get("status_reason")) == (64, "50-99", "verified", None)
+    assert (big["employees"], big["size_band"], big["status"], big["tier"], big["status_reason"]) == (
+        5100, "5000-9999", "disqualified", "Excluded", "size")
+    assert big["tier_reason"] == "size: 5100 outside 10–249 employees"
+    assert verify.REASON_CODES["size"] == verify.TERMINAL  # the code means: left out for good
+    # verify's own check names the same code (W1-4: check() returns the code and the text).
+    assert verify.check(big, {}, ctx.settings, set(), set()) == ("size", "outside 10 to 249 employees")
+    # 249 is inside 10 to 249 and the row already says so: nothing written, still verified.
+    assert (edge["status"], edge["employees"]) == ("verified", 249)
+    assert (out["size_written"], out["sized_out"]) == (2, 1)
+    assert [x["account_id"] for x in enrich.candidates(ctx)[0]] == []  # and it is never paid for again
 
 
 def test_overrides_and_clay_keep_the_account_s_size():
@@ -343,15 +373,42 @@ def test_a_refused_bulk_call_falls_back_to_single_calls_for_the_run():
     assert out["credits"] == 12.0 and len(out["errors"]) == 1
 
 
-def test_a_company_apollo_files_under_another_domain_is_asked_once_more():
+def test_a_company_apollo_files_under_another_domain_is_matched_by_its_id_and_paid_for_once():
+    """code-sources B5: the bulk record of acmehq.com comes back as acme.com. Matched by domain alone it was charged
+    in the bulk call and again by a single call (3 credits for 2 companies, a mismatch every run from 14 Oct). Its
+    organization id is the one Apollo's search gave the account (apollo_org_id org-acme), so it is acme's: 1 credit
+    each, 2 in all, no single call, and bulk calls stay on."""
     ctx, _, fake = make([acct("acme", "acmehq.com"), acct("beta", "beta.com")], [company("beta.com")],
                         filed_under={"acmehq.com": company("acme.com")})
     out = enrich.run(ctx)
+    assert fake.single_asked == [] and facts_of(ctx, "acme")[enrich.MARKER]["value"]["via"] == "bulk"
+    assert facts_of(ctx, "acme")["employees"]["value"] == 64 and out["bulk_unmatched"] == 0
+    assert out["credits"] == 2.0 and sum(r["credits"] for r in ledger(ctx)) == 2.0
+    assert out["errors"] == [] and out["bulk_off"] is None
+
+
+def test_a_record_that_matches_no_account_by_id_or_domain_is_asked_once_more():
+    """The case the id cannot settle: an account with no apollo_org_id (a site visitor, an Overrides row) whose
+    company Apollo files elsewhere. The record names nobody asked, so the domain is asked once more and bulk calls
+    stop for the run, so no further mismatch is paid for unseen."""
+    ctx, _, fake = make([acct("acme", "acmehq.com", apollo_org_id=None), acct("beta", "beta.com")],
+                        [company("beta.com")], filed_under={"acmehq.com": company("acme.com")})
+    out = enrich.run(ctx)
     assert fake.single_asked == ["acmehq.com"] and facts_of(ctx, "acme")[enrich.MARKER]["value"]["via"] == "single"
-    assert facts_of(ctx, "acme")["employees"]["value"] == 64 and out["bulk_unmatched"] == 1
-    assert out["credits"] == 3.0  # Apollo charged the bulk record it filed elsewhere, and the single call
+    assert out["bulk_unmatched"] == 1 and out["credits"] == 3.0  # the bulk record Apollo filed elsewhere, and the call
     # Handled, so no error for heartbeat_check to post (14 Oct 2026): the summary says why bulk calls stopped.
-    assert out["errors"] == [] and out["bulk_off"].startswith("bulk_enrich carried 2 records, 1 matching no domain")
+    assert out["errors"] == [] and out["bulk_off"].startswith("bulk_enrich carried 2 records, 1 matching no account")
+
+
+def test_neither_paid_enrichment_job_rescores(monkeypatch):
+    """RS P0-8: overlapping rescores could lose the scoring match rows, so apollo_enrich (05:00) and apollo_signals
+    (05:10) add facts and leave the scoring to pick_contacts' one rescore at 05:30 (tests/test_pick_contacts.py)."""
+    calls: list[str] = []
+    monkeypatch.setattr(score, "rescore", lambda c: calls.append(c.job) or {})
+    ctx, _, _ = make([acct("acme", "acme.com")], [company("acme.com")])
+    assert enrich.run(ctx)["found"] == 1
+    assert apollo_jobs.run(dataclasses.replace(ctx, job=apollo_jobs.JOB))["status"] == "ok"
+    assert calls == []
 
 
 def test_the_401_of_a_wrong_key_stops_the_job():
@@ -393,7 +450,7 @@ def test_the_funding_signals_fire_in_the_rescore_of_an_enriched_account():
 def test_the_daily_post_lines():
     ctx, _, _ = make([acct("a1", "one.com"), acct("a2", "two.com")], [company("one.com", funded="2026-08-01")])
     assert enrich.post_lines(ctx) == [
-        "Funding (Apollo enrich, Technology & Startups): no account enriched yet (apollo_enrich, weekdays 04:10)."]
+        "Funding (Apollo enrich, Technology & Startups): no account enriched yet (apollo_enrich, weekdays 05:00)."]
     enrich.run(ctx)
     assert enrich.post_lines(ctx) == [
         "Funding (Apollo enrich, Technology & Startups): last run 2 accounts (1 found, 1 not found): 1 with funding "
@@ -402,16 +459,18 @@ def test_the_daily_post_lines():
         "1 with an employee count."]
 
 
-def test_it_runs_weekdays_at_04_10_between_read_pages_and_verify_accounts():
+def test_it_runs_weekdays_at_05_00_between_verify_accounts_and_pick_contacts():
+    """W1-3a: after verify_accounts, for the accounts it passed, and before pick_contacts, whose rescore scores the
+    facts (it was 04:10, before verify, for every new account: code-sources B4)."""
     table = schedule.by_name()
     job = table["apollo_enrich"]
-    assert (job.cron, job.live, job.enabled) == ("10 4 * * 1-5", False, True) and job.timeout_minutes <= 30
+    assert (job.cron, job.live, job.enabled) == ("0 5 * * 1-5", False, True) and job.timeout_minutes <= 30
 
     def at(name):
         minute, hour = table[name].cron.split()[:2]
         return int(hour) * 60 + int(minute)
 
-    assert at("read_pages") < at("apollo_enrich") < at("verify_accounts") < at("pick_contacts")
+    assert at("verify_accounts") < at("apollo_enrich") < at("apollo_signals") < at("pick_contacts")
     assert cli.JOBS["apollo_enrich"] == "us_outbound.sources.apollo_enrich:run"
     assert cli.resolve_job("apollo_enrich") is enrich.run
     assert hb.EXPECTED["apollo_enrich"] == 26 * 60 and "apollo_enrich" in hb.WEEKDAY_JOBS
@@ -432,7 +491,7 @@ def test_harry_can_run_it_by_hand():
         contexts.append(ctx)
         return ctx
 
-    assert cli.main(["dry-run", "apollo_enrich"], context_factory=factory) == 0
+    assert cli.main(["run", "apollo_enrich"], context_factory=factory) == 0
     assert cli.main(["run", "apollo_enrich"], context_factory=factory) == 0
     assert contexts[-1].dry_run and contexts[-1].job == "apollo_enrich"
     first, second = (store.get("heartbeats", run_id=c.run_id) for c in contexts)
@@ -440,33 +499,24 @@ def test_harry_can_run_it_by_hand():
     assert first["detail"]["found"] == 1 and second["detail"]["candidates"] == 0  # enriched once, not again
 
 
-# -- the General key ----------------------------------------------------------------------------------------------
+# -- the groups: a constant in code since W2-4 ----------------------------------------------------------------------
 
 
-def _general_with(value: str) -> dict:
+def test_the_enrich_groups_are_a_constant_naming_an_industries_group_and_the_sheet_row_is_retired():
+    """W2-4 (20 Oct 2026): apollo_enrich_groups left the General tab for settings/model.APOLLO_ENRICH_GROUPS, at the
+    live sheet's value. It names a group on the build's Industries tab, so a rename there fails this test rather than
+    enriching nothing; a row left on the sheet only warns, and `settings load` no longer adds it."""
+    from us_outbound.settings.validate import RETIRED_GENERAL, general_warnings
+
+    assert enrich.APOLLO_ENRICH_GROUPS == (TECH,)
+    assert {i.industry_group for i in BASE.industries} >= set(enrich.APOLLO_ENRICH_GROUPS)
     tabs = default_tabs()
-    for r in tabs["General"]:
-        if r["key"] == "apollo_enrich_groups":
-            r["value"] = value
-    return tabs
-
-
-def test_apollo_enrich_groups_names_industry_groups_on_the_industries_tab():
-    assert BASE.general.apollo_enrich_groups == (TECH,)
-    s, _ = validate_all(_general_with("technology & startups, Legal Teams"))
-    assert s.general.apollo_enrich_groups == (TECH, "Legal Teams")  # as the Industries tab writes them
-    s, _ = validate_all(_general_with(""))
-    assert s.general.apollo_enrich_groups == ()
-    s, errors = validate_all(_general_with("Technology & Startup"))
-    assert s is None and [e.message for e in errors["General"]] == [
-        "apollo_enrich_groups: 'Technology & Startup' is not an industry_group on the Industries tab "
-        "(did you mean Technology & Startups?)"]
-
-
-def test_settings_load_brings_the_key_to_a_sheet_without_it_and_the_default_applies_until_then():
-    sheet = [r for r in default_tabs()["General"] if r["key"] != "apollo_enrich_groups"]
-    plan = loader.plan_tab("General", sheet, default_tabs()["General"])
-    assert "apollo_enrich_groups = Technology & Startups" in plan.added
-    tabs = default_tabs()
-    tabs["General"] = sheet
-    assert validate_all(tabs)[0].general.apollo_enrich_groups == (TECH,)
+    assert "apollo_enrich_groups" in RETIRED_GENERAL and not any(r["key"] == "apollo_enrich_groups"
+                                                                 for r in tabs["General"])
+    tabs["General"].append({"key": "apollo_enrich_groups", "value": "Legal Teams", "note": ""})
+    s, errors = validate_all(tabs)
+    assert s is not None and not any(errors.values()) and not hasattr(s.general, "apollo_enrich_groups")
+    assert [w.label for w in general_warnings(tabs["General"], strict=True)] == ["apollo_enrich_groups"]
+    plan = loader.plan_tab("General", [r for r in tabs["General"] if r["key"] != "apollo_enrich_groups"],
+                           default_tabs()["General"])
+    assert not [a for a in plan.added if a.startswith("apollo_enrich_groups")]

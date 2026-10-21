@@ -1,16 +1,15 @@
-"""The careers and benefits page reader (sources/pages.py, sources/job_posts.py, clean/pages.py; Harry, 2 Oct 2026).
+"""The careers and benefits page reader (sources/pages.py, clean/pages.py; Harry, 2 Oct 2026).
 
-Page text and snippets, robots.txt, job boards found by link or by a confirmed domain stem, the
-read outcomes (read, no pages found, blocked, error) and what each means for scoring, the facts
-and their shapes, the queue order and refresh, the run's caps, coverage and the decision rule,
-`us-outbound pages show`, the daily post, the schedule and the Signals tab. No network: every
-page and feed answers on a fake transport.
+Page text and snippets, robots.txt, the read outcomes (read, no pages found, blocked, error) and what each means for
+scoring, the facts and their shapes, the queue order and refresh, the run's caps, coverage and the decision rule,
+`us-outbound pages show`, the daily post, the schedule and the Signals tab. No network: every page answers on a fake
+transport. (The job-board feeds, sources/job_posts.py, found no candidate in any run and went with W2-1: a board
+linked from the site is never read now.)
 """
 
 from __future__ import annotations
 
 import dataclasses
-import html
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -23,11 +22,13 @@ from us_outbound.clients.public import USER_AGENT, Public
 from us_outbound.learn import daily_post
 from us_outbound.ops import cli
 from us_outbound.ops.schedule import by_name
+from us_outbound.enrol import openers
+from us_outbound.scoring.angle import angle_setter
 from us_outbound.scoring.score import match_signal, score_account
 from us_outbound.settings import load as loader
 from us_outbound.settings.defaults import default_tabs
 from us_outbound.settings.model import Focus
-from us_outbound.sources import job_posts, pages
+from us_outbound.sources import pages
 
 NOW = datetime(2026, 10, 5, 2, 45, tzinfo=UTC)  # Monday 5 Oct, 03:45 UK
 GH_FEED = "https://boards-api.greenhouse.io/v1/boards/acmecreative/jobs"
@@ -80,14 +81,6 @@ CAREERS = """<html><body><h1>Join us</h1><p>We help people. Mental health matter
 <a href="/careers/benefits">Full benefits</a></body></html>"""
 BENEFITS = """<html><body><h1>Benefits</h1><p>Therapy sessions through Spring Health, paid by us.</p>
 <p>Unlimited PTO and a sabbatical after five years.</p></body></html>"""
-
-
-def greenhouse(company="Acme Creative", url="https://boards.greenhouse.io/acmecreative/jobs/1", benefits=True) -> dict:
-    content = "<p>You will design things.</p>"
-    if benefits:
-        content += "<h3>What we offer</h3><ul><li>A $1,000 wellness stipend</li><li>Counseling through Lyra</li></ul>"
-    return {"jobs": [{"id": 1, "title": "Senior Designer", "absolute_url": url, "content": html.escape(content),
-                      "company_name": company}], "meta": {"total": 1}}
 
 
 def site(web: Web, domain="acmecreative.com", robots="User-agent: *\nAllow: /\n", home=HOME, careers=CAREERS,
@@ -186,76 +179,21 @@ def test_robots_rules(robots, path, allowed):
     assert text.parse_robots(robots, "spill-us-outbound").allows(path) is allowed
 
 
-# -- job boards --------------------------------------------------------------------------------------
-
-
-def test_boards_are_found_in_links_embeds_and_page_source():
-    found = job_posts.find_boards([
-        "https://boards.greenhouse.io/embed/job_board?for=acmecreative&b=https://acme.com",
-        "https://boards.greenhouse.io/acmecreative/jobs/123",
-        "https://jobs.lever.co/acme-co/abc-123",
-        '<script>var u = "https://jobs.ashbyhq.com/AcmeCo";</script>',
-        "https://acme.workable.com/", "https://apply.workable.com/acme/j/ABC123/",
-        "https://apply.workable.com/j/ABC123", "https://boards.greenhouse.io/embed/job_app?token=1",
-    ])
-    assert [(b.vendor, b.slug, b.found_by) for b in found] == [
-        ("greenhouse", "acmecreative", "link"), ("lever", "acme-co", "link"), ("ashby", "AcmeCo", "link"),
-        ("workable", "acme", "link"),
-    ]
-    assert [b.url for b in job_posts.stem_boards("acmecreative.com")] == [
-        "https://boards-api.greenhouse.io/v1/boards/acmecreative/jobs", "https://api.lever.co/v0/postings/acmecreative",
-        "https://api.ashbyhq.com/posting-api/job-board/acmecreative",
-        "https://apply.workable.com/api/v1/widget/accounts/acmecreative",
-    ]
-
-
-def test_a_stem_board_is_used_only_when_the_feed_confirms_the_company():
-    acct = account()
-    gh = job_posts.Board("greenhouse", "acmecreative", job_posts.STEM)
-    assert job_posts.confirms(gh, greenhouse(), acct) == "the feed's company name"
-    assert job_posts.confirms(gh, greenhouse(company="Acme Plumbing"), acct) is None
-    on_site = greenhouse(company="Acme Plumbing", url="https://www.acmecreative.com/careers/job?gh_jid=1")
-    assert job_posts.confirms(gh, on_site, acct) == "a posting on the company's domain"
-    lever = job_posts.Board("lever", "acmecreative", job_posts.STEM)
-    post = {"text": "Designer", "hostedUrl": "https://jobs.lever.co/acmecreative/1", "description": "<p>Join us.</p>"}
-    assert job_posts.confirms(lever, [post], acct) is None  # Lever names no company
-    assert job_posts.confirms(lever, [{**post, "additional": "<p>Acme Creative is an equal opportunity employer.</p>"}],
-                              acct) == "the postings name the company"
-    assert job_posts.confirms(lever, [{**post, "additional": "<p>See acmecreative.com/about.</p>"}],
-                              acct) == "the postings name the company's domain"
-    short = {**acct, "clean_name": "Acme"}  # one short common word confirms nothing alone
-    assert job_posts.confirms(lever, [{**post, "additional": "<p>Acme is hiring.</p>"}], short) is None
-    assert job_posts.confirms(job_posts.Board("lever", "x", job_posts.LINK), [], acct) == "linked from the company's site"
-
-
-def test_each_feed_s_postings_are_read_as_html():
-    lever = [{"text": "Designer", "hostedUrl": "https://jobs.lever.co/a/1", "description": "<p>Design.</p>",
-              "lists": [{"text": "Benefits", "content": "<li>Unlimited PTO</li>"}], "additional": ""}]
-    ashby = {"jobs": [{"title": "PM", "jobUrl": "https://jobs.ashbyhq.com/a/1", "descriptionHtml": "<h2>Perks</h2><p>Gym</p>"}]}
-    workable = {"name": "Acme", "jobs": [{"title": "Ops", "url": "https://apply.workable.com/a/j/1",
-                                          "description": "<p>We offer a sabbatical.</p>"}]}
-    for vendor, body, want in (("lever", lever, "Unlimited PTO"), ("ashby", ashby, "Gym"),
-                               ("workable", workable, "We offer a sabbatical."), ("greenhouse", greenhouse(), "Counseling through Lyra")):
-        posts = job_posts.postings(vendor, body)
-        assert [s.text for s, _ in job_posts.posting_snippets(posts, ("Lyra",))][-1] == want, vendor
-    assert job_posts.postings("greenhouse", {"jobs": "nope"}) == [] and job_posts.postings("lever", {}) == []
-
-
 # -- one account, end to end -----------------------------------------------------------------------
 
 
-def test_a_site_and_its_linked_board_are_read_into_facts_scoring_matches(world):
+def test_a_site_is_read_into_facts_scoring_matches_and_its_linked_board_is_not_read(world):
     ctx, web = world
-    site(web).page(GH_FEED, greenhouse(), ctype="application/json")
+    site(web).page(GH_FEED, {"jobs": []}, ctype="application/json")
     ctx.store.insert("accounts", [account()])
     out = pages.run(ctx)
     assert (out["status"], out["attempted"], out["candidates"]) == ("ok", 1, 1)
-    # Only the account's own hosts and the board's feed, with our User-Agent, short timeouts and robots.txt first.
+    # Only the account's own hosts, with our User-Agent, a short timeout and robots.txt first: the Greenhouse board the
+    # home page links is never read (W2-1).
     assert web.urls() == ["https://acmecreative.com/robots.txt", "https://acmecreative.com/",
-                          "https://acmecreative.com/careers", "https://acmecreative.com/careers/benefits", GH_FEED]
+                          "https://acmecreative.com/careers", "https://acmecreative.com/careers/benefits"]
     assert all(r.headers["User-Agent"] == USER_AGENT and "Authorization" not in r.headers for r in web.requests)
-    assert {r.timeout for r in web.requests} == {pages.PAGE_TIMEOUT, pages.FEED_TIMEOUT}
-    assert web.requests[-1].params == {"content": "true"}
+    assert {r.timeout for r in web.requests} == {pages.PAGE_TIMEOUT}
     assert {c.system for c in ctx.guard.calls if c.write} == {"db"}  # reads only, outside the database
     # The facts, in the shapes of the Clay Accounts function (SPEC 8).
     mh = {e["quote"]: e["value"] for e in events(ctx, source="careers_pages", fact="mental_health_provision")}
@@ -268,26 +206,21 @@ def test_a_site_and_its_linked_board_are_read_into_facts_scoring_matches(world):
     assert benefit["Unlimited PTO and a sabbatical after five years."]["source_url"] == "https://acmecreative.com/careers/benefits"
     [values] = events(ctx, source="careers_pages", fact="values_page")
     assert values["value"] is True
-    posting = {e["quote"]: e for e in events(ctx, source="job_posts", fact="posting_text")}
-    assert posting["A $1,000 wellness stipend"]["value"] == {"text": "A $1,000 wellness stipend", "posting": "Senior Designer"}
-    assert posting["Counseling through Lyra"]["source_url"] == "https://boards.greenhouse.io/acmecreative/jobs/1"
-    [feed] = events(ctx, source="job_posts", fact="ats_feed")
-    assert feed["value"] == {"vendor": "greenhouse", "slug": "acmecreative", "found_by": "link",
-                             "confirmed_by": "linked from the company's site", "postings": 1}
+    assert events(ctx, source="job_posts") == []
     statuses = {e["source"]: e["value"] for e in events(ctx, fact="read_status")}
-    assert statuses == {"careers_pages": "read", "job_posts": "read"}
+    assert statuses == {"careers_pages": "read"}
     s = summary_of(ctx)
-    assert (s["outcome"], s["site"], s["feed"], s["vendor"], s["run_id"]) == ("read", "read", "read", "greenhouse", ctx.run_id)
-    assert s["requests"] == 5 and s["snippets"] >= 7 and s["posting_snippets"] == 2
+    assert (s["outcome"], s["site"], s["run_id"]) == ("read", "read", ctx.run_id) and "feed" not in s
+    assert s["requests"] == 4 and s["snippets"] >= 7
     # The five page signals fire on these facts, from the Signals tab (no code knows their terms).
     r = score_account(account(), events(ctx), ctx.settings, NOW.date())
     matched = {m.signal.signal: m for m in r.matches}
     assert {"Mental health support listed", "EAP named", "Wellbeing app or perk named", "Progressive benefits",
             "Modern mental-health vendor named"} <= set(matched)
-    assert r.tier == "Held"  # Spring Health and Lyra are competitors: held for review
+    assert r.tier == "Held"  # Spring Health is a competitor: held for review
     assert matched["Progressive benefits"].weight_applied == 15  # three distinct benefits, capped
     # Coverage of the run.
-    assert out["run"]["outcomes"]["read"] == 1 and out["run"]["feed_share"] == 1.0
+    assert out["run"]["outcomes"]["read"] == 1 and "feed_share" not in out["run"]
     assert out["run"]["benefits_text_share"] == 1.0
     assert out["run"]["signals"]["EAP named"] == 1 and out["run"]["signals"]["Modern mental-health vendor named"] == 1
 
@@ -299,9 +232,13 @@ def test_the_opener_names_nothing_the_page_said(world):
     ctx.store.insert("accounts", [account()])
     pages.run(ctx)
     r = score_account(account(), events(ctx), ctx.settings, NOW.date())
-    assert (r.score, r.tier, r.angle) == (35, "Standard", "Progressive employer")  # 15 + 5, + Team of 10–49 (its band)
-    # Harry, 2 Oct 2026: the benefits-page lines are context too, never "your careers page mentions counseling".
-    assert r.opener == "Most teams know pressure from work and home adds up, and the hard part is making help easy to use."
+    assert (r.score, r.tier, r.angle) == (35, "Queue", "Progressive employer")  # 15 + 5, + Team of 10–49 (its band)
+    # Harry, 2 Oct 2026: the benefits-page lines are context too, never "your careers page mentions counseling". The
+    # angle setter's plain opener (enrol/openers.py's fallback) has no evidence placeholder, so it is used as written.
+    setter = angle_setter(r.angle, r.matches)
+    assert setter.signal.signal == "Mental health support listed" and not openers.has_placeholder(setter.signal.opener)
+    assert setter.signal.opener == ("Most teams know pressure from work and home adds up, and the hard part is making "
+                                    "help easy to use.")
 
 
 def test_robots_disallow_reads_nothing_and_a_failed_read_adds_no_points_and_keeps_a_hold(world):
@@ -342,7 +279,7 @@ def test_a_site_that_refuses_or_fails_is_not_read(world, setup, outcome):
     ctx.store.insert("accounts", [account()])
     pages.run(ctx)
     s = summary_of(ctx)
-    assert (s["outcome"], s["site"], s["feed"]) == (outcome, outcome, "no_pages_found")
+    assert (s["outcome"], s["site"]) == (outcome, outcome)
     assert [e for e in events(ctx) if e["fact"] in ("benefit", "mental_health_provision", "posting_text")] == []
 
 
@@ -369,59 +306,20 @@ def test_no_careers_link_tries_the_common_paths_then_says_no_pages_found(world):
         "https://acmecreative.com/", "https://acmecreative.com/careers", "https://acmecreative.com/jobs",
         "https://acmecreative.com/benefits"]
     s = summary_of(ctx)
-    assert (s["outcome"], s["site"], s["feed"]) == ("no_pages_found", "no_pages_found", "no_pages_found")
+    assert (s["outcome"], s["site"]) == ("no_pages_found", "no_pages_found")
     assert [e["value"] for e in events(ctx, source="careers_pages", fact="values_page")] == [False]
 
 
-def test_redirects_are_followed_on_the_domain_and_an_ats_redirect_names_the_board(world):
+def test_a_redirect_off_the_domain_to_a_job_board_is_not_followed(world):
     ctx, web = world
     site(web, home="<a href='/careers'>Careers</a>", careers=None, benefits=None)
     web.page("https://acmecreative.com/careers", "", status=302, headers={"Location": "https://jobs.lever.co/acmecreative"})
-    lever = [{"text": "Designer", "hostedUrl": "https://jobs.lever.co/acmecreative/1",
-              "lists": [{"text": "Benefits", "content": "<li>Mental health days</li>"}]}]
-    web.page("https://api.lever.co/v0/postings/acmecreative", lever, ctype="application/json")
     ctx.store.insert("accounts", [account()])
     pages.run(ctx)
-    assert "https://jobs.lever.co/acmecreative" not in web.urls()  # never fetched: only its feed
+    assert not [u for u in web.urls() if "lever.co" in u]  # neither the board nor its feed
     s = summary_of(ctx)
-    assert (s["site"], s["feed"], s["vendor"], s["found_by"]) == ("no_pages_found", "read", "lever", "link")
-    assert s["outcome"] == "read"
-    [p] = events(ctx, source="job_posts", fact="posting_text")
-    assert p["quote"] == "Mental health days"
-
-
-def test_a_stem_board_needs_the_feed_to_confirm_it(world):
-    ctx, web = world
-    site(web, home="<p>Hello</p>", careers=None, benefits=None)
-    web.page(GH_FEED, greenhouse(company="Acme Plumbing Supply"), ctype="application/json")
-    web.page("https://api.ashbyhq.com/posting-api/job-board/acmecreative",
-             {"jobs": [{"title": "PM", "jobUrl": "https://acmecreative.com/jobs/pm", "descriptionHtml": "<h2>Perks</h2><p>Gym</p>"}]},
-             ctype="application/json")
-    ctx.store.insert("accounts", [account()])
-    pages.run(ctx)
-    tried = [u for u in web.urls() if "acmecreative.com/" not in u]
-    assert tried == [GH_FEED, "https://api.lever.co/v0/postings/acmecreative",
-                     "https://api.ashbyhq.com/posting-api/job-board/acmecreative"]  # stops at the confirmed one
-    s = summary_of(ctx)
-    assert (s["vendor"], s["found_by"], s["feed"]) == ("ashby", "stem", "read")
-    [feed] = events(ctx, source="job_posts", fact="ats_feed")
-    assert feed["value"]["confirmed_by"] == "a posting on the company's domain"
-
-
-def test_a_linked_board_that_fails_is_not_read_but_a_stem_guess_that_fails_is_nothing(world):
-    ctx, web = world
-    site(web, careers=None, benefits=None)
-    web.page(GH_FEED, "Slow down", status=429)
-    ctx.store.insert("accounts", [account()])
-    pages.run(ctx)
-    assert summary_of(ctx)["feed"] == "blocked"
-    web2 = Web()
-    ctx2 = make_context(ctx.settings, transport=web2, now=NOW)
-    site(web2, home="<p>Hi</p>", careers=None, benefits=None)
-    web2.page(GH_FEED, "Oops", status=500)
-    ctx2.store.insert("accounts", [account()])
-    pages.run(ctx2)
-    assert summary_of(ctx2)["feed"] == "no_pages_found"
+    assert (s["outcome"], s["site"]) == ("no_pages_found", "no_pages_found")
+    assert events(ctx, source="job_posts") == []
 
 
 def test_the_guard_keeps_site_reads_on_the_account_s_domain():
@@ -520,15 +418,15 @@ def test_nothing_due_reads_nothing(world):
 # -- coverage, the decision, and where Harry sees them -------------------------------------------------
 
 
-def _read_fact(aid, outcome, *, feed="no_pages_found", vendor=None, snippets=0, run_id="r1", when=NOW) -> dict:
+def _read_fact(aid, outcome, *, snippets=0, posting_snippets=0, run_id="r1", when=NOW) -> dict:
     return {"event_id": f"pr-{aid}-{run_id}", "account_id": aid, "source": "careers_pages", "fact": "page_read",
-            "value": {"outcome": outcome, "site": outcome, "feed": feed, "vendor": vendor, "snippets": snippets,
-                      "posting_snippets": 0, "run_id": run_id}, "quote": "", "source_url": "", "observed_at": when}
+            "value": {"outcome": outcome, "site": outcome, "snippets": snippets, "posting_snippets": posting_snippets,
+                      "run_id": run_id}, "quote": "", "source_url": "", "observed_at": when}
 
 
-def test_coverage_counts_outcomes_feeds_text_and_each_page_signal(world):
+def test_coverage_counts_outcomes_text_and_each_page_signal(world):
     ctx, _ = world
-    rows = [_read_fact("a1", "read", feed="read", vendor="lever", snippets=2),
+    rows = [_read_fact("a1", "read", snippets=2),
             _read_fact("a2", "read", snippets=1), _read_fact("a3", "blocked"), _read_fact("a4", "error"),
             _read_fact("a5", "no_pages_found", run_id="r0", when=NOW - timedelta(days=1))]
     rows += [{"event_id": "b1", "account_id": "a1", "source": "careers_pages", "fact": "mental_health_provision",
@@ -539,7 +437,7 @@ def test_coverage_counts_outcomes_feeds_text_and_each_page_signal(world):
               "observed_at": NOW}]
     ctx.store.insert("signal_events", rows)
     total = pages.coverage(ctx.store, ctx.settings, NOW.date())
-    assert (total.accounts, total.with_feed, total.with_text) == (5, 1, 2)
+    assert (total.accounts, total.with_text) == (5, 2)
     assert dict(total.outcomes) == {"read": 2, "blocked": 1, "error": 1, "no_pages_found": 1}
     assert total.signals == {"Mental health support listed": 0, "EAP named": 1, "Modern mental-health vendor named": 0,
                              "Wellbeing app or perk named": 0, "Progressive benefits": 1}
@@ -557,17 +455,17 @@ def test_the_decision_rule_after_200_accounts():
 
 def test_pages_show_and_the_daily_post(world, capsys):
     ctx, _ = world
-    ctx.store.insert("signal_events", [_read_fact("a1", "read", feed="read", vendor="greenhouse", snippets=3)])
+    ctx.store.insert("signal_events", [_read_fact("a1", "read", snippets=3)])
     ctx.store.insert("accounts", [account("waiting", domain="w.com")])
-    assert cli.main(["pages", "show"], context_factory=lambda job, live, **kw: ctx) == 0
+    assert cli.main(["report", "pages"], context_factory=lambda job, live, **kw: ctx) == 0
     out = capsys.readouterr().out
     assert "So far:\n  1 accounts: read 1, no pages found 0, blocked 0, error 0" in out
-    assert "With a job-board feed: 1 (100%) · with benefits text: 1 (100%)" in out
+    assert "With benefits text: 1 (100%)" in out
     assert "Last run (" in out and "Decide after the first 200 accounts read: 1 so far" in out
     assert "Waiting to be read: 1 queue accounts" in out
     lines, nums = daily_post.build(ctx)
     post = "\n".join(lines)
-    assert "Careers pages: last run 1 accounts (read 1, no pages found 0, blocked 0, error 0); feed 100%, benefits text 100%." in post
+    assert "Careers pages: last run 1 accounts (read 1, no pages found 0, blocked 0, error 0); benefits text 100%." in post
     assert nums["pages_read"] == 1 and nums["pages_benefits_text_share"] == 1.0
 
 
@@ -580,12 +478,14 @@ def test_the_daily_post_before_any_read(world):
 # -- the schedule and the Signals tab -----------------------------------------------------------------
 
 
-def test_scheduled_on_weekdays_between_apollo_signals_and_verify_accounts():
+def test_scheduled_on_weekdays_between_source_universe_and_verify_accounts():
+    # apollo_signals moved after verify_accounts (W1-3a, 19 Oct 2026); read_pages still reads before verify, whose
+    # label check wants the home page.
     jobs = by_name()
     j = jobs["read_pages"]
     assert (j.cron, j.enabled, j.live, j.timeout_minutes) == ("45 3 * * 1-5", True, False, 40)
     assert pages.RUN_SECONDS < j.timeout_minutes * 60 - 5 * 60  # stops starting accounts well inside it
-    assert jobs["apollo_signals"].cron == "30 3 * * 1-5" and jobs["verify_accounts"].cron == "30 4 * * 1-5"
+    assert jobs["source_universe"].cron == "0 3 * * 1-5" and jobs["verify_accounts"].cron == "30 4 * * 1-5"
     assert cli.JOBS["read_pages"] == "us_outbound.sources.pages:run"
 
 

@@ -4,24 +4,21 @@ import dataclasses
 
 import pytest
 
-from tests.fakes import FakeTransport, make_context
+from tests.fakes import FakeTransport, make_context, sendable_general_copy
 
 # Ids that phase 0 looks up in the real systems; fixed values for tests.
 TEST_IDS = {
     "hubspot_pipeline_id": "pipe-spill3",
     "hubspot_deal_stage_id": "stage-first",
     "hubspot_owner_id": "owner-harry",
-    "clay_accounts_function_id": "fn-us-accounts",
-    "clay_contacts_function_id": "fn-us-contacts",
     "approver_slack_ids": ("U_HARRY",),
-    "clay_monthly_credits": 2000.0,
-    "clay_credits_per_account": 5.0,
 }
 
 
 @pytest.fixture
 def default_settings():
-    """The SPEC 5 default sheet, validated, with phase-0 ids filled in and mailboxes Active."""
+    """The SPEC 5 default sheet, validated, with phase-0 ids filled in, mailboxes Active and the General Copy rows
+    sendable (sendable_general_copy)."""
     from us_outbound.settings.defaults import default_tabs
     from us_outbound.settings.validate import validate_all
 
@@ -31,7 +28,7 @@ def default_settings():
     mailboxes = tuple(
         dataclasses.replace(m, status="Active", instantly_account_id=m.address) for m in settings.mailboxes
     )
-    return dataclasses.replace(settings, general=general, mailboxes=mailboxes)
+    return dataclasses.replace(settings, general=general, mailboxes=mailboxes, copy=sendable_general_copy(settings.copy))
 
 
 @pytest.fixture

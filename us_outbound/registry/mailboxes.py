@@ -76,7 +76,7 @@ from typing import Any
 
 from us_outbound import config_version, parse
 from us_outbound.base import holds, say
-from us_outbound.base.heartbeats import OPERATOR_START, OPERATOR_STOP
+from us_outbound.ops.health import OPERATOR_START, OPERATOR_STOP
 from us_outbound.clients.guard import US_CAMPAIGN_PREFIX
 from us_outbound.clients.http import ApiError
 from us_outbound.clients.instantly import (
@@ -111,6 +111,7 @@ AUTO_FIX = frozenset({"daily_limit", "email_list"})  # drift mailbox_health puts
 IN_FLIGHT_KEYS = frozenset({"text_only", "first_email_text_only", "steps.delays", "steps.variants",
                             *(f"steps.{i}" for i in range(1, len(STEP_DAYS) + 1))})
 CREATED = "created (paused)"  # _sync_campaign's outcomes
+PENDING_PROTECTIVE = "pending: no campaign is created on the last-good settings (protective-only)"
 PAUSED_EMPTY = "paused: no Active mailbox left"
 DRAFT, PAUSED_CAMPAIGN = 0, 2  # Instantly campaign status (clients/instantly.CAMPAIGN_STATUS)
 
@@ -120,7 +121,7 @@ def campaign_steps(text_only: bool = False) -> tuple[dict[str, str], ...]:
 
     In HTML the body variable sits in a <div>: Instantly drops text that is outside any tag when it saves a
     step, so a bare "{{s1_body}}<p>…</p>" was saved as the unsubscribe line alone (the first live create,
-    2 Oct 2026, read back with `us-outbound campaigns show`).
+    2 Oct 2026, read back with the `campaigns show` command of the time).
     """
     def body(i: int) -> str:
         var = f"{{{{s{i}_body}}}}"
@@ -239,12 +240,23 @@ def _opt_out_lost(drift: Mapping[str, Any]) -> bool:
 
 
 def _sync_campaign(ctx: Context, settings: Settings, owner: str) -> str:
-    """Make the owner's campaign carry their Active addresses; returns what was done."""
+    """Make the owner's campaign carry their Active addresses; returns what was done.
+
+    Protective-only (a safety job on the last-good settings, ops/bootstrap.py): the campaign may only shrink. Those
+    settings can hold an earlier Mailboxes version, in which a mailbox paused since (and taken off the campaign then)
+    is still Active, or has a higher daily_cap; rebuilding the list from it when a kill rule pauses another mailbox
+    would start the paused one sending again (W1-1 review, 19 Oct 2026). So the new list keeps only addresses the
+    campaign already has, the limit is never above the campaign's own, a list left empty pauses the campaign, and no
+    campaign is created. The guard refuses anything else (clients/guard.py), as a second lock.
+    """
     inst = ctx.clients.instantly
     name = campaign_name(owner)
     settings = holds.with_holds(ctx.store, settings)
-    accounts, limit = sending_list(settings, owner), daily_limit(settings, owner, _caps(ctx, settings))
+    caps = _caps(ctx, settings)
+    accounts, limit = sending_list(settings, owner), daily_limit(settings, owner, caps)
     campaign = inst.get_campaign(name)
+    if campaign is None and ctx.protective_only:
+        return PENDING_PROTECTIVE
     if campaign is None:
         if not accounts:
             return "pending: no Active mailbox yet"
@@ -257,13 +269,21 @@ def _sync_campaign(ctx: Context, settings: Settings, owner: str) -> str:
             text_only=text_only(settings),
         )
         return CREATED
+    have = sorted(str(a).strip().lower() for a in campaign.get("email_list") or [])
+    fields: dict[str, Any] = {"daily_limit": limit}
+    if ctx.protective_only:  # shrink only (the docstring)
+        accounts = [a for a in accounts if a in have]
+        current = campaign.get("daily_limit")
+        mine = sum(caps.get(m.address.lower(), m.daily_cap) for m in settings.mailboxes_for(owner, ACTIVE)
+                   if m.address.lower() in accounts)
+        limit = min(mine, current) if isinstance(current, int) else current
+        fields = {"daily_limit": limit} if isinstance(limit, int) else {}
     if not accounts:
         inst.pause_campaign(name)
         return PAUSED_EMPTY
-    have = sorted(str(a).strip().lower() for a in campaign.get("email_list") or [])
     if have == sorted(accounts) and campaign.get("daily_limit") == limit:
         return "unchanged"
-    inst.update_campaign(name, {"daily_limit": limit}, accounts=accounts)
+    inst.update_campaign(name, fields, accounts=accounts, previous=campaign)
     return "sending list updated"
 
 
@@ -337,7 +357,8 @@ def ensure_campaigns(
                 inst.pause_campaign(name)
             else:
                 inst.update_campaign(
-                    name, _fix_fields(todo, settings, owner, caps), accounts=accounts if "email_list" in todo else None
+                    name, _fix_fields(todo, settings, owner, caps), accounts=accounts if "email_list" in todo else None,
+                    previous=campaign,
                 )
                 if shared and ctx.live:
                     flying = leads_in_flight(ctx, settings) if flying is None else flying
@@ -506,7 +527,7 @@ def _lower_limit(row: Mapping[str, Any]) -> bool:
 def went_live(store: Any) -> datetime | None:
     """When sending went live and still is: the latest live `start` that finished ok, if no `stop` came after it.
 
-    The same rule as base/heartbeats.enrolment_paused: a stop counts in any mode and whatever its
+    The same rule as ops/health.enrolment_paused: a stop counts in any mode and whatever its
     outcome (the safe direction); a start only when it ran live and finished ok.
     """
     rows = store.select("heartbeats", {"job": [OPERATOR_STOP, OPERATOR_START]})
@@ -605,7 +626,8 @@ def _noteworthy(out: Mapping[str, Any]) -> list[str]:
     """Why the summary is worth a Slack post: what changed or is wrong today. Empty: only log it."""
     campaigns = out.get("campaigns") or {}
     starting = out.get("campaign_start") or {}
-    why = [k for k in ("promoted", "retired", "warmup_turned_on", "limit_set", "name_drift", "not_found", "no_sheet_row")
+    why = [k for k in ("promoted", "retired", "warmup_turned_on", "limit_set", "name_drift", "not_found", "no_sheet_row",
+                       "failing")
            if out.get(k)]
     if any(st.get("code") is not None for st in (out.get("campaign_status") or {}).values()):
         why.append("held_back")
@@ -692,6 +714,11 @@ def _todo(ctx: Context, out: Mapping[str, Any]) -> list[str]:
         if st.get("code") is not None and not st.get("at_limit"):
             lines.append(f"• Instantly is holding back {owner}'s campaign: {st['meaning']}. Look at the campaign in "
                          "Instantly.")
+    for address, why in (out.get("failing") or {}).items():
+        lines.append(f"• {address}: {why}, so it sends nothing and takes no new leads. Fix it in Instantly (reconnect "
+                     "it, for a lost connection), then run "
+                     f"{say.command('mailbox check --live')} so it counts again; the safety check pauses it within the "
+                     "hour meanwhile.")
     if out.get("not_found"):
         one = out["not_found"][0] if len(out["not_found"]) == 1 else "ADDRESS"
         lines.append(f"• Not found in Instantly: {_list(out['not_found'])}. Connect it in Instantly, or retire it with "
@@ -828,9 +855,15 @@ def mailbox_health(ctx: Context, *, fix_names: bool = False) -> dict:
     inst = ctx.clients.instantly
     today = ctx.today_uk()
     warmups = inst.warmup_status([m.address for m in registry])
+    from us_outbound.learn.kill_rules import failing
+
     out: dict[str, Any] = {
         "dry_run": ctx.dry_run, "mailboxes": len(registry), "promoted": [], "retired": [],
         "warmup_turned_on": [], "waiting_to_retire": [], "not_found": [], "no_sheet_row": [],
+        # Instantly reports these failing (disconnected, in error, warmup banned): enrol/capacity.py gives them no
+        # capacity from this summary, and the hourly kill rule pauses them (W2-3; code-learn-reporting B12).
+        "failing": {a: why for a, why in failing(warmups).items()
+                    if any(m.address.lower() == a and m.status == ACTIVE for m in registry)},
     }
     rows: list[dict] = []
     changes: list[tuple[Mailbox, str]] = []

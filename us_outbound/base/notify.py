@@ -7,10 +7,14 @@ live job that must still act (a kill rule pausing a mailbox) uses `alert`, which
 post instead, so the action never waits on Slack. The log gets the post line by line, so a
 long post is not clipped to one email body's 200 characters (logs.py); emails in it are
 hashed as in every log line. A Slack error is reported, not raised: the caller has done its
-work and says in its summary that the post failed.
+work and says in its summary that the post failed. That holds for a transport error too (a
+timeout or a dropped connection, an OSError the HTTP client re-raises for a POST that may have
+gone: clients/http.py): it comes back as {"posted": False, "ts": None, "error": "unknown outcome:
+ReadTimeout"} (W1-1, 19 Oct 2026: it reached the kill rules after their pause and lost the alert;
+learn/kill_rules.py now posts it again from its outbox).
 
 post_once (Harry, 7 Oct 2026) is for the alerts that ask for a decision or a purchase (learn/spend.py,
-learn/capacity_ahead.py, enrol/plan.py, ops/job_errors.py): one message with the approvers mentioned,
+learn/spend.mailboxes_check, enrol/plan.py, ops/health.py): one message with the approvers mentioned,
 holding only the lines not posted before. Each line has a key that carries its own period
 ("apollo_floor:2026-10-07" once a day, "claude_cap_80:2026-10" once a month), and each key posted is an
 events row of type alert (event_id "alert:{key}"), so a restart or a rerun never repeats it. A key is
@@ -30,6 +34,7 @@ from us_outbound.context import ConfigError, Context
 from us_outbound.logs import log
 
 NO_TOKEN = "no Slack token: posted to the log"
+UNKNOWN_OUTCOME = "unknown outcome"  # a transport error: the post may or may not have gone
 ALERT_EVENT = "alert"  # events.type of a posted alert key (post_once)
 
 
@@ -52,6 +57,10 @@ def alert(ctx: Context, text: str, *, channel: str | None = None) -> dict[str, A
     except (ApiError, LookupError) as exc:
         log("slack_post_failed", channel=channel, error=str(exc)[:300], lines=text.splitlines())
         return {"posted": False, "channel": channel, "ts": None, "error": str(exc)[:300]}
+    except OSError as exc:  # it may have been posted: the outcome is unknown, so it is never taken as a refusal
+        error = f"{UNKNOWN_OUTCOME}: {type(exc).__name__}"
+        log("slack_post_failed", channel=channel, error=error, detail=str(exc)[:200], lines=text.splitlines())
+        return {"posted": False, "channel": channel, "ts": None, "error": error}
     if not sent:
         return {"posted": False, "channel": channel, "ts": None, "error": None}
     return {"posted": True, "channel": sent.get("channel"), "ts": sent.get("ts"), "error": None}

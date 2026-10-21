@@ -1,6 +1,11 @@
 # Phase 0 runbook: Foundations (29 Sep – 9 Oct 2026)
 
+> A record of its day (W2-4, 20 Oct 2026): the commands it names are as they were then. `us-outbound --help`
+> lists today's; README.md "Commands" says which were folded or removed.
+
 > **Setup history (done); for day-to-day see [docs/daily.md](daily.md).**
+>
+> **Removed in W2-1 (20 Oct 2026; Harry's decisions of 19 Oct).** The commands `us-outbound golive`, `approvals list | send | reject`, `phase0 check` and `clay check-email` no longer exist and do not parse; send approvals and `auto_send`, Clay and second contacts went with them (git history keeps the code). `us-outbound status` prints golive's three live checks (Copy, Campaigns, Watchdog). §12's check and §8's Clay steps cannot be run any more. This page is the record of what was done then; for the system as it runs now see [daily.md](daily.md) and [roadmap.md](roadmap.md).
 
 The SPEC 14 phase-0 checklist, in the order to do it, with who does each step and the
 command to run. "Harry" means a step in a vendor's UI or a decision. "jobs" means a
@@ -75,7 +80,7 @@ console), and `US_OUTBOUND_GOOGLE_SERVICE_ACCOUNT_JSON` (the Sheets service acco
 | Step | Who | How | Done when |
 | :- | :- | :- | :- |
 | Service key (replaces the SPEC's private-app token; see phase0-facts.md) | Harry (Super Admin) | HubSpot → Development → Keys → Service keys → Create service key, named "US Outbound". Scopes (SPEC 13): `crm.objects.contacts.read`, `crm.objects.contacts.write`, `crm.objects.companies.read`, `crm.objects.companies.write`, `crm.objects.deals.read`, `crm.objects.deals.write` (deals read also covers deal pipelines), `crm.lists.read`, `crm.lists.write`, `crm.objects.owners.read`, `crm.schemas.contacts.read`, `crm.schemas.contacts.write`, `crm.schemas.companies.read`, `crm.schemas.companies.write`, `communication_preferences.read_write`. If the picker lists separate meetings, notes or tasks scopes, tick meetings read and notes and tasks write; otherwise the contacts scopes cover them. Nothing else: no settings, users, files, marketing or content scopes | Key in the sealed variable `US_OUTBOUND_HUBSPOT_TOKEN`, never in chat |
-| The group "US Outbound" and the six properties | jobs | `us-outbound hubspot setup`, then `us-outbound hubspot setup --live`. It creates only what is missing and stops, creating nothing, if one of the six names exists with another type. | Companies: `us_outbound_account_id` (unique), `us_outbound_tier`, `us_outbound_industry_group`, `us_outbound_top_signals`; contacts: `us_outbound_angle`, `us_outbound_reply_class` |
+| ~~The group "US Outbound" and the six properties~~ | — | Not needed (W1-2, 19 Oct 2026; Harry's D9): the six custom properties were never created, nothing read them, and the reply writes now send standard HubSpot properties only. `hubspot setup` is gone. | — |
 | Apollo–HubSpot native sync stays off | Harry | Check it in Apollo's integrations | |
 
 ## 6. Mailboxes and domains
@@ -124,13 +129,13 @@ Instantly first), `mailbox pause <address> --live`, `mailbox retire <address> --
 | :- | :- | :- | :- |
 | Review | Harry | Read the diff before merging to `main` (SPEC 13: Harry reviews before each deploy) | |
 | Deploy | Railway | Merging to `main` builds the Dockerfile and redeploys the worker. The old worker gets SIGTERM and 30 s to finish (`RAILWAY_DEPLOYMENT_DRAINING_SECONDS`) | The service's Deployments tab shows the new deploy as active |
-| Schedule | jobs | `us-outbound schedule` | settings_sync, mailbox_health, kill_rules, daily_post, heartbeat_check, suppression_load and hand_check_post show a next run; later-phase jobs show "disabled" |
+| Schedule | jobs | `us-outbound schedule` | settings_sync, mailbox_health, kill_rules, daily_post, heartbeat_check, suppression_load and hand_check_draw show a next run; later-phase jobs show "disabled" |
 | Heartbeats | jobs | After a day: `us-outbound status` | Every phase-0 job shows ok; `heartbeat_check` alerts `#us-outbound-dev` on a missed one |
 
 Scheduled in phase 0 (UK time): settings_sync 02:00 (and 11:30 on weekdays since 4 Oct, so morning
 sheet edits are in force for the 12:00 enrol), suppression_load 01:30, mailbox_health
 07:00, heartbeat_check hourly at :05; and, brought forward for the first sends (Harry, 1 Oct
-2026), kill_rules hourly at :00, daily_post 09:00 and hand_check_post Mondays 08:00. Later-phase
+2026), kill_rules hourly at :00, daily_post 09:00 (Tuesday to Saturday since 19 Oct 2026) and hand_check_draw Mondays 05:45 (hand_check_post at 08:00 until W1-5). Later-phase
 jobs have `enabled=False` in `us_outbound/ops/schedule.py` until their phase; turning one on is a
 reviewed code change.
 

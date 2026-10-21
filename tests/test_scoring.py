@@ -13,7 +13,6 @@ import pytest
 
 from tests.fakes import FakeTransport, make_context
 from us_outbound.clients.db import MemoryStore
-from us_outbound.clients.slack import dry_run_note
 from us_outbound.scoring import score as scoring
 from us_outbound.scoring.score import match_signal, rescore, score_account
 from us_outbound.settings.conditions import parse_condition, parse_context_rule, parse_terms, try_parse_condition
@@ -91,9 +90,11 @@ NP_FISCAL = sig("Nonprofit fiscal year ahead", "irs_bmf",
 Q4 = sig("Q4 plan-year window", "calendar", "month in [10, 11, 12]", 10, days=1)
 LAYOFFS = sig("Layoffs", "layoffs", "days_since_layoff <= 90", 0, "Suppress", days=90)
 
+# W2-2 (20 Oct 2026): the irs_bmf and calendar rows (NP_BUDGET, NP_FISCAL, Q4) are no longer in the defaults: no
+# source writes their facts and the calendar facts went (test_calendar_and_irs_bmf_rows_never_match).
 SPEC_SIGNALS = (
     MENTAL_HEALTH, EAP_NAMED, VENDOR, PROGRESSIVE, VALUES, LEADER, NEW_LEADER, FIRST_HIRE, FUNDING, GROWTH,
-    VISITED, PRICING, NP_BUDGET, NP_FISCAL, Q4, LAYOFFS,
+    VISITED, PRICING, LAYOFFS,
 )
 
 SPEC_ANGLES = (
@@ -204,7 +205,7 @@ def test_total_is_capped_at_score_cap_and_not_floored():
     assert "capped at 100" in capped.tier_reason
     below = score_account(account(), facts, make_settings((negative,)), TODAY)
     assert below.score == -30
-    assert below.tier == "Control"
+    assert below.tier == "Queue"  # no threshold: a negative score is the back of the queue
 
 
 def test_score_sums_only_score_signals_and_explains_itself():
@@ -214,13 +215,10 @@ def test_score_sums_only_score_signals_and_explains_itself():
         fact("apollo_people", "people_leader_days_in_title", 40, 5, quote="Jane Doe, Head of People since Sep 2026"),
     ]
     r = score_account(account(), facts, make_settings(), TODAY)
-    # Mental health support (+25), EAP named (+10), New People leader (+30), Q4 (+10)
-    assert r.score == 75
-    assert r.tier == "Priority"
-    assert r.tier_reason == (
-        "Priority: Mental health support listed (+25), EAP named (+10), New People leader (+30), "
-        "Q4 plan-year window (+10)"
-    )
+    # Mental health support (+25), EAP named (+10), New People leader (+30)
+    assert r.score == 65
+    assert r.tier == "Queue"
+    assert r.tier_reason == "Queue: Mental health support listed (+25), EAP named (+10), New People leader (+30)"
 
 
 # -- freshness --------------------------------------------------------------------------
@@ -314,7 +312,7 @@ def test_blocked_read_adds_nothing_and_does_not_clear_an_earlier_hold():
     assert after.tier == "Held"
     assert after.tier_reason.startswith("Held: Modern mental-health vendor named (Lyra)")
     assert not any(m.signal is MENTAL_HEALTH for m in after.matches)
-    assert after.score == 10  # only the Q4 calendar signal
+    assert after.score == 0  # the blocked read's Mental health support adds nothing
 
 
 def test_blocked_read_leaves_other_sources_of_a_signal_in_play():
@@ -336,28 +334,14 @@ def test_no_pages_found_is_a_read():
 # -- calendar ----------------------------------------------------------------------------------
 
 
-def test_q4_calendar_signal_on_27_october():
-    m = match_signal(Q4, [], TODAY)
-    assert m.weight_applied == 10
-    assert m.evidence[0].text == "month = 10"
-    assert match_signal(Q4, [], date(2026, 9, 29)) is None
-
-
-def test_days_to_fiscal_year_start():
-    assert scoring.days_to_fiscal_year_start(12, TODAY) == 66  # 1 Jan 2027
-    assert scoring.days_to_fiscal_year_start(6, TODAY) == 247  # 1 Jul 2027
-    assert scoring.days_to_fiscal_year_start(9, date(2026, 10, 1)) == 0  # starts today
-    assert scoring.days_to_fiscal_year_start(9, date(2026, 10, 2)) == 364
-
-
-def test_nonprofit_fiscal_year_ahead_is_computed_daily_from_an_old_irs_fact():
-    old = [fact("irs_bmf", "fiscal_year_end_month", "12", 200)]
-    m = match_signal(NP_FISCAL, old, TODAY)
-    assert m is not None and m.evidence[0].text == "days_to_fiscal_year_start = 66"
-    assert match_signal(NP_FISCAL, [fact("irs_bmf", "fiscal_year_end_month", 6, 200)], TODAY) is None
-    # a stale stored value does not count; the computed one wins
-    stale = [fact("irs_bmf", "days_to_fiscal_year_start", 90, 30), fact("irs_bmf", "fiscal_year_end_month", 6, 30)]
-    assert match_signal(NP_FISCAL, stale, TODAY) is None
+def test_calendar_and_irs_bmf_rows_never_match():
+    """W2-2 (code-scoring B5): the calendar and irs_bmf virtual facts went. Before, Q4 matched every account from
+    October to December ("month = 10" on 27 Oct) and Nonprofit fiscal year ahead matched an old irs_bmf
+    fiscal_year_end_month of 12 (66 days to 1 Jan 2027); now neither matches, as no source writes those facts."""
+    assert match_signal(Q4, [], TODAY) is None
+    assert match_signal(NP_FISCAL, [fact("irs_bmf", "fiscal_year_end_month", "12", 200)], TODAY) is None
+    assert match_signal(NP_BUDGET, [], TODAY) is None
+    assert not hasattr(scoring, "calendar_facts") and not hasattr(scoring, "days_to_fiscal_year_start")
 
 
 # -- suppress, overrides ------------------------------------------------------------------------
@@ -366,7 +350,7 @@ def test_nonprofit_fiscal_year_ahead_is_computed_daily_from_an_old_irs_fact():
 def test_suppress_signal_sets_suppress_days():
     r = score_account(account(), [fact("layoffs", "days_since_layoff", 20, 3)], make_settings(), TODAY)
     assert r.suppress_days == 90 and r.suppress_signal == "Layoffs"
-    assert r.tier == "Control"  # suppression is not a tier rule
+    assert r.tier == "Queue"  # suppression is not a tier rule
     none = score_account(account(), [fact("layoffs", "days_since_layoff", 200, 3)], make_settings(), TODAY)
     assert none.suppress_days is None
 
@@ -381,8 +365,10 @@ def test_override_wins_over_every_source():
 
 
 def test_inactive_signals_are_ignored():
-    off = dataclasses.replace(Q4, active=False)
-    assert score_account(account(), [], make_settings((off,)), TODAY).score == 0
+    facts = [fact("apollo_people", "people_leader_count", 2)]
+    assert score_account(account(), facts, make_settings((LEADER,)), TODAY).score == 10
+    off = dataclasses.replace(LEADER, active=False)
+    assert score_account(account(), facts, make_settings((off,)), TODAY).score == 0
 
 
 # -- the score job -------------------------------------------------------------------------------
@@ -399,7 +385,7 @@ def _slack_routes(transport: FakeTransport) -> FakeTransport:
 
 def _seed(store: MemoryStore) -> None:
     store.tables["accounts"] = [
-        account(account_id="a1", domain="acme.com", tier="Control", score=0, angle="General"),
+        account(account_id="a1", domain="acme.com", tier="Control", score=0, angle="General"),  # a tier before W2-2
         account(account_id="a2", domain="peo.com", clean_name="Peo Co", naics="561330"),
         account(account_id="a3", domain="laid.com", clean_name="Laid Off Inc"),
         account(account_id="a4", domain="enrolled.com", status="enrolled", angle="General", tier="Control",
@@ -427,21 +413,25 @@ def test_rescore_end_to_end_and_a_weight_change_moves_the_score():
     assert summary["accounts"] == 4  # the disqualified account is not scored
     acc = {a["account_id"]: a for a in store.tables["accounts"]}
     a1 = acc["a1"]
-    assert (a1["score"], a1["tier"], a1["angle"]) == (45, "Standard", "Upgrade the EAP")
-    assert a1["tier_reason"] == "Standard: Mental health support listed (+25), EAP named (+10), Q4 plan-year window (+10)"
+    # Mental health support (+25), EAP named (+10): 35, in the queue (it was Control, a tier W2-2 retired).
+    assert (a1["score"], a1["tier"], a1["angle"]) == (35, "Queue", "Upgrade the EAP")
+    assert a1["tier_reason"] == "Queue: Mental health support listed (+25), EAP named (+10)"
     assert a1["last_scored"] == NOW
     assert acc["a2"]["tier"] == "Excluded" and "PEO" in acc["a2"]["tier_reason"]
-    # enrolled: the tier is recorded, the angle and sender never change
-    assert acc["a4"]["tier"] == "Priority"
+    # enrolled: rescored for exclusions only (W2-2): the tier is recorded; the score, angle and sender never change,
+    # and its match rows are neither written nor replaced (signals_at_enrol keeps its snapshot)
+    assert acc["a4"]["tier"] == "Queue" and acc["a4"].get("score") is None
     assert acc["a4"]["angle"] == "General" and acc["a4"]["sender"] == "Hannah Spalding"
     assert acc["a5"]["tier"] == "Control" and "last_scored" not in acc["a5"]
 
     rows = [e for e in store.tables["signal_events"] if e["source"] == "scoring"]
     a1_rows = {r["value"]["signal"]: r for r in rows if r["account_id"] == "a1"}
-    assert set(a1_rows) == {"Mental health support listed", "EAP named", "Q4 plan-year window"}
+    assert set(a1_rows) == {"Mental health support listed", "EAP named"}
     assert a1_rows["EAP named"]["fact"] == "signal_matched"
-    assert a1_rows["EAP named"]["value"] == {"signal": "EAP named", "weight": 10, "evidence": ["EAP"]}
+    assert a1_rows["EAP named"]["value"] == {"signal": "EAP named", "weight": 10, "evidence": ["EAP"],
+                                             "run_id": ctx.run_id}
     assert a1_rows["EAP named"]["quote"] == "Mental health days and an EAP."
+    assert {r["observed_at"] for r in rows} == {NOW}  # the run's start
 
     [sup] = store.tables["suppression"]
     assert sup["domain"] == "laid.com" and sup["email_sha256"] is None
@@ -449,19 +439,27 @@ def test_rescore_end_to_end_and_a_weight_change_moves_the_score():
     assert sup["expires_at"] == NOW + timedelta(days=90)
     [partner] = store.tables["partners"]
     assert partner["domain"] == "peo.com" and partner["reason"] == "peo" and partner["naics"] == "561330"
-    assert summary["tiers"]["Standard"] == 1 and summary["tiers"]["Excluded"] == 1
+    # a1, a3 (Layoffs suppresses, it does not tier) and a4 in the queue; a2 Excluded.
+    assert summary["tiers"] == {"Queue": 3, "Held": 0, "Excluded": 1}
+    # The open accounts only: a1, MH + EAP; a3, Layoffs. (a4, enrolled, has an EAP by ComPsych and a new People
+    # leader, which are not counted: its order no longer matters.)
+    assert summary["fired"] == {"EAP named": 1, "Layoffs": 1, "Mental health support listed": 1}
+    assert (summary["signal_matches"], summary["replaced"]) == (3, 0)
+    assert not [r for r in rows if r["account_id"] == "a4"]
     assert summary["suppressed"] == 1 and summary["partners"] == 1
-    assert summary["tier_share"] is None and not slack.posts  # fewer than 20 accounts: no check
+    assert not slack.posts  # the tier-mix alerts went with the tiers
 
     # Harry raises the EAP named weight in the sheet; the next rescore picks it up.
     heavier = tuple(dataclasses.replace(s, weight=20) if s.signal == "EAP named" else s for s in settings.signals)
     ctx2 = make_context(make_settings(heavier), now=NOW + timedelta(days=1), store=store)
-    rescore(ctx2)
+    again = rescore(ctx2)
     a1 = next(a for a in store.tables["accounts"] if a["account_id"] == "a1")
-    assert a1["score"] == 55 and a1["tier"] == "Priority"
+    assert a1["score"] == 45 and a1["tier"] == "Queue"
     rows = [e for e in store.tables["signal_events"] if e["source"] == "scoring" and e["account_id"] == "a1"]
-    assert len(rows) == 3  # replaced, not added to
+    assert len(rows) == 2  # replaced, not added to
+    assert {r["value"]["run_id"] for r in rows} == {ctx2.run_id}
     assert next(r for r in rows if r["value"]["signal"] == "EAP named")["value"]["weight"] == 20
+    assert (again["signal_matches"], again["replaced"]) == (3, 3)  # the first run's three rows went
     # the Layoffs fact is still fresh: its suppression is extended from today, keeping when it was added
     [sup] = store.tables["suppression"]
     assert (sup["added_at"], sup["expires_at"]) == (NOW, NOW + timedelta(days=91))
@@ -469,14 +467,25 @@ def test_rescore_end_to_end_and_a_weight_change_moves_the_score():
 
 
 def test_rescore_writes_only_changed_fields():
-    ctx = make_context(make_settings((Q4,)), now=NOW)
-    ctx.store.tables["accounts"] = [account(score=10, tier="Control", tier_reason="Control: Q4 plan-year window (+10)",
+    points = sig("Points", "apollo_org", "open_roles >= 1", 10)
+    ctx = make_context(make_settings((points,)), now=NOW)
+    ctx.store.tables["accounts"] = [account(score=10, tier="Queue", tier_reason="Queue: Points (+10)",
                                             angle="General")]
+    ctx.store.tables["signal_events"] = [fact("apollo_org", "open_roles", 4)]
     upserts = []
     real = ctx.store.upsert
     ctx.store.upsert = lambda table, rows: (upserts.append((table, [dict(r) for r in rows])), real(table, rows))[1]
     assert rescore(ctx)["changed"] == 0
     assert upserts == [("accounts", [{"account_id": "a1", "last_scored": NOW}])]
+
+
+def test_a_retired_tier_becomes_queue_and_is_logged_as_no_change_for_an_enrolled_account(capsys):
+    ctx = make_context(make_settings(()), now=NOW)
+    ctx.store.tables["accounts"] = [account(status="enrolled", tier="Priority", score=0, angle="General",
+                                            tier_reason="Priority: old")]
+    assert rescore(ctx)["changed"] == 1
+    assert ctx.store.tables["accounts"][0]["tier"] == "Queue"
+    assert "score_enrolled_tier_change" not in capsys.readouterr().out
 
 
 def test_rescore_does_not_shorten_an_existing_suppression():
@@ -508,64 +517,27 @@ def _with_slack(ctx) -> RecordingSlack:
     return slack
 
 
-def test_tier_share_alert_posts_once_to_the_alert_channel():
-    ctx = make_context(make_settings((Q4,)), now=NOW)  # every account scores 10: Control
-    slack = _with_slack(ctx)
-    ctx.store.tables["accounts"] = [account(account_id=f"c{i}", domain=f"c{i}.com") for i in range(20)]
-    summary = rescore(ctx)
-    assert summary["tier_share_alert"] is True
-    assert summary["tier_share"] == {"Priority": 0.0, "Standard": 0.0, "Control": 1.0}
-    [(channel, text)] = slack.posts
-    assert channel == "#us-outbound"
-    print(text)
-    lines = text.splitlines()
-    assert lines[0].endswith(":warning: *October's list of companies to email is unbalanced*")
-    assert "20 companies were added to the queue this month. How they split by score:" in lines
-    assert "• Top fit (Priority): 0%  ← below 5%" in lines
-    assert "• Comparison group (Control): 100%  ← above 40%" in lines
-    assert "*What to do:*" in lines and "General tab" in lines[lines.index("*What to do:*") + 1]
-    assert any(line.startswith("2. Lower `priority_threshold` (now 50)") for line in lines)
-    assert any(line.startswith("3. Lower `standard_threshold` (now 20)") for line in lines)
-    rescore(ctx)  # the score job runs several times a day: the same week's alert is not posted again
-    assert len(slack.posts) == 1
-
-
-def test_tier_share_check_skips_small_queues_and_passes_a_good_mix():
-    ctx = make_context(make_settings((Q4,)), now=NOW)
-    slack = _with_slack(ctx)
-    ctx.store.tables["accounts"] = [account(account_id=f"c{i}", domain=f"c{i}.com") for i in range(19)]
-    assert rescore(ctx)["tier_share"] is None
-    assert not slack.posts
-
-    points = sig("Points", "apollo_org", "open_roles >= 1", 1)
-    big = sig("Big", "apollo_org", "open_roles >= 50", 40)
-    ctx = make_context(make_settings((points, big), priority_threshold=41, standard_threshold=1), now=NOW)
-    slack = _with_slack(ctx)
+def test_score_done_counts_how_often_each_signal_fired(capsys):
+    """W2-2: the summary (the heartbeat's detail) and the score_done log line carry how many accounts each signal
+    fired on, most first. A 20-account world: 12 with 30 staff (Team of 10–49), 8 with 120, of which 5 have 3 open
+    roles (Hiring and growth) and 3 none; so Team of 10–49 12, Hiring and growth 5, and nothing else."""
+    team = sig("Team of 10–49", "apollo_org", "employees >= 10 AND employees <= 49", 15, days=365)
+    growth = sig("Hiring and growth", "apollo_org", "open_roles >= 3", 15, days=90)
+    ctx = make_context(make_settings((team, growth)), now=NOW)
     rows, events = [], []
-    for i in range(30):
-        rows.append(account(account_id=f"m{i}", domain=f"m{i}.com"))
-        roles = 60 if i < 10 else (5 if i < 20 else 0)
-        events.append(fact("apollo_org", "open_roles", roles, account_id=f"m{i}"))
-    # outside this month's queue: first seen last month, or not queued/verified
-    rows.append(account(account_id="old", domain="old.com", first_seen=NOW - timedelta(days=40)))
-    rows.append(account(account_id="new", domain="new.com", status="new"))
+    for i in range(20):
+        rows.append(account(account_id=f"c{i}", domain=f"c{i}.com", employees=30 if i < 12 else 120,
+                            size_band="20-49" if i < 12 else "100-249"))
+        events.append(fact("apollo_org", "employees", 30 if i < 12 else 120, account_id=f"c{i}"))
+        if 12 <= i < 17:
+            events.append(fact("apollo_org", "open_roles", 3, account_id=f"c{i}"))
     ctx.store.tables["accounts"], ctx.store.tables["signal_events"] = rows, events
     summary = rescore(ctx)
-    assert summary["tier_share"] == {"Priority": 0.333, "Standard": 0.333, "Control": 0.333}
-    assert summary["tier_share_alert"] is False
-    assert not slack.posts
-
-
-def test_tier_share_alert_in_dry_run_goes_to_the_dev_channel():
-    pytest.importorskip("us_outbound.clients.slack")
-    transport = _slack_routes(FakeTransport())
-    ctx = make_context(make_settings((Q4,)), now=NOW, transport=transport)
-    ctx.store.tables["accounts"] = [account(account_id=f"c{i}", domain=f"c{i}.com") for i in range(20)]
-    rescore(ctx)
-    [post] = [r for r in transport.requests if r.url.endswith("chat.postMessage")]
-    assert post.json["channel"] == "C_DEV"
-    assert post.json["text"].startswith(dry_run_note("#us-outbound") + "\n")
-    assert "list of companies to email is unbalanced" in post.json["text"]
+    assert summary["fired"] == {"Team of 10–49": 12, "Hiring and growth": 5}
+    assert list(summary["fired"]) == ["Team of 10–49", "Hiring and growth"]
+    assert summary["tiers"] == {"Queue": 20, "Held": 0, "Excluded": 0}
+    done = [line for line in capsys.readouterr().out.splitlines() if '"score_done"' in line]
+    assert len(done) == 1 and '"fired": {"Team of 10–49": 12, "Hiring and growth": 5}' in done[0]
 
 
 def test_rescore_writes_only_to_the_us_outbound_schema():
@@ -578,7 +550,7 @@ def test_rescore_writes_only_to_the_us_outbound_schema():
 
 @pytest.mark.parametrize("status", ["new", "queued", "verified", "enrolled", "engaged"])
 def test_rescore_covers_every_open_status(status):
-    ctx = make_context(make_settings((Q4,)), now=NOW)
+    ctx = make_context(make_settings((LEADER,)), now=NOW)
     ctx.store.tables["accounts"] = [account(status=status)]
     assert rescore(ctx)["accounts"] == 1
 

@@ -1,5 +1,10 @@
 # Phase 0: plan facts
 
+> A record of its day (W2-4, 20 Oct 2026): the commands it names are as they were then. `us-outbound --help`
+> lists today's; README.md "Commands" says which were folded or removed.
+
+> **Removed in W2-1 (20 Oct 2026; Harry's decisions of 19 Oct).** The commands `us-outbound golive`, `approvals list | send | reject`, `phase0 check` and `clay check-email` no longer exist and do not parse; send approvals and `auto_send`, Clay and second contacts went with them (git history keeps the code). `us-outbound status` prints golive's three live checks (Copy, Campaigns, Watchdog). The Clay rows below are history. This page is the record of what was done then; for the system as it runs now see [daily.md](daily.md) and [roadmap.md](roadmap.md).
+
 Read-only checks run on 29 Sep 2026 through the connected HubSpot, Clay, Apollo, Slack, Google Drive, Webflow and BigQuery tools. Nothing was created or changed, and no Apollo or Clay credits were spent. Rows marked "Confirmed absent" or "Open" are as of 29 Sep unless they say otherwise; the infrastructure rows were brought up to date on 4 Oct.
 
 Status key:

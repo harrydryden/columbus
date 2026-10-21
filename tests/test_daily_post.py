@@ -13,6 +13,7 @@ from us_outbound.clients.slack import dry_run_note
 DRY = dry_run_note("#us-outbound") + "\n"
 
 TUE_9 = datetime(2026, 10, 27, 9, 0, tzinfo=UTC)  # 09:00 UK (GMT), Tue 27 Oct
+SAT_9 = datetime(2026, 10, 24, 8, 0, tzinfo=UTC)  # 09:00 UK (BST), Sat 24 Oct: the clocks go back on Sun 25
 MON = datetime(2026, 10, 26, 15, 0, tzinfo=UTC)  # Monday, inside the send window
 
 
@@ -56,6 +57,28 @@ def world(now=TUE_9, live=True, drafts=(), **kw):
     return ctx, t
 
 
+def test_parked_companies_have_their_own_line_and_are_not_waiting_for_verification():
+    """W1-4: a parked company is out of the queue while a setting keeps it out, so it is not "being prepared"; the
+    pipeline gives it its own line by why: 2 for an industry off, 1 for the label check failing. 1 new account
+    (Standard) is the one that needs its facts checked."""
+    ctx, t = world()
+    ctx.store.insert("accounts", [
+        {"account_id": "p1", "status": "parked", "status_reason": "industry_off", "tier": "Excluded"},
+        {"account_id": "p2", "status": "parked", "status_reason": "industry_off", "tier": "Excluded"},
+        {"account_id": "p3", "status": "parked", "status_reason": "label_failed", "tier": "Excluded"},
+        {"account_id": "n1", "status": "new", "tier": "Standard"},
+    ])
+    daily_post.run(ctx)
+    [post] = [r for r in t.requests if r.url.endswith("chat.postMessage")]
+    text = post.json["text"].splitlines()
+    i = text.index("*Pipeline*")
+    assert text[i + 2] == "Being prepared: 0 need a contact · 1 need their facts checked"
+    assert text[i + 3] == "Parked: 3 (industry off 2, label check failing 1)"
+    lines, nums = daily_post.build(ctx)
+    assert "  Parked: 3 (industry off 2, label check failing 1)" in lines
+    assert (nums["waiting_for_verification"], nums["parked"]) == (1, 3)
+
+
 def test_a_campaign_that_is_not_active_has_no_capacity_and_the_post_says_why():
     ctx, _ = world(drafts=("Hannah Spalding",))
     lines, _ = daily_post.build(ctx)
@@ -66,7 +89,7 @@ def test_a_campaign_that_is_not_active_has_no_capacity_and_the_post_says_why():
 
 def test_the_short_post_says_what_needs_harry_yesterday_today_the_pipeline_and_what_to_watch():
     """Harry, 9 Oct 2026: "a more readable pithier version of the daily report"; 12 Oct 2026: clear to anyone, even
-    new to the system. The 09:00 job posts this; the full post is `us-outbound daily --full`."""
+    new to the system. The 09:00 job posts this; the full post is `us-outbound report daily --full`."""
     ctx, t = world()
     out = daily_post.run(ctx)
     [post] = [r for r in t.requests if r.url.endswith("chat.postMessage")]
@@ -75,10 +98,11 @@ def test_the_short_post_says_what_needs_harry_yesterday_today_the_pipeline_and_w
         "1. Answer 1 prospect reply (waiting 30 hours): ✅ or `edit: <text>` in its thread in #us-outbound",
         "2. 1 safety pause on (bounce or complaint limit hit): `railway ssh -- us-outbound killrules show`",
         "3. Weekly hand-check: 2 companies still need a decision on the "
-        "<https://docs.google.com/spreadsheets/d/sheet-test/edit|Hand-check tab>",
+        "<https://docs.google.com/spreadsheets/d/sheet-test/edit|Hand-check tab>; new leads wait for it",
         "",
         "*Yesterday (Mon 26 Oct)*",
-        "Sent 8 emails (5 first, 3 follow-ups) · 3 replies (1 interested) · 1 bounce · 1 unsubscribe · 1 demo booked",
+        "Sent 8 emails (5 first, 3 follow-ups) · 3 companies replied (1 interested) · 1 bounce · 1 unsubscribe · "
+        "1 demo booked",
         "Found 0 companies and 0 contacts",
         "Interested: Acme Creative (positive reply to hannah@meetspill.org)",
         "• Brightfin (objection): “We already have an EAP through our broker and the team seems happy with it.”",
@@ -99,26 +123,30 @@ def test_the_short_post_says_what_needs_harry_yesterday_today_the_pipeline_and_w
         "*Worth a look*",
         "• Safety pause set off: emails found by clay: 4 of 100 sends bounced",
         "",
-        "Fine: mailboxes and campaigns. Full report: `railway ssh -- us-outbound daily --full`",
+        "Fine: mailboxes and campaigns. Full report: `railway ssh -- us-outbound report daily --full`",
     ]
     assert (out["sent"], out["replies"], out["positive"]) == (8, 3, 1)  # the summary keeps the same numbers (human replies)
 
 
-def test_the_short_post_flags_a_loud_mailbox_and_covers_friday_to_sunday_on_monday():
-    ctx, _ = world(now=datetime(2026, 10, 26, 9, 0, tzinfo=UTC))
+def test_the_short_post_flags_a_loud_mailbox_and_covers_friday_only_on_saturday():
+    ctx, _ = world(now=SAT_9)
     day = daily_post.gather(ctx)
     day.mailboxes.append(("sam@meetspill.org", 0, 40, 2))
     lines = daily_post.compact(ctx, day)
-    assert lines[0] == ":warning: *Daily summary, Mon 26 Oct: 3 things need you*"
-    assert "*Fri 23 to Sun 25 Oct*" in lines
+    # The reply waiting and the kill-rule hold; the hand-check item is next week's (2026-W44), so not asked for.
+    assert lines[0] == ":warning: *Daily summary, Sat 24 Oct: 2 things need you*"
+    assert "*Yesterday (Fri 23 Oct)*" in lines and lines[lines.index("*Yesterday (Fri 23 Oct)*") + 1] == "No emails sent"
     assert ("• sam@meetspill.org: 2 of its last 40 emails bounced (5%); over 3% of 100 it is paused automatically"
             in lines)
-    assert lines[-1] == "Fine: campaigns. Full report: `railway ssh -- us-outbound daily --full`"
+    assert lines[-1] == "Fine: campaigns. Full report: `railway ssh -- us-outbound report daily --full`"
 
 
 def test_the_short_post_with_nothing_waiting_says_so_first_and_shows_today_s_number():
     ctx, _ = world()
     ctx.store.delete("hitl_items", {"kind": ["reply_approval", "hand_check", "kill_rule"]})
+    # This week's hand-check is done (hand_check_gate yes, the default: SPEC 11 as built), so nothing holds the day.
+    ctx.store.insert("hitl_items", [{"item_id": "h-done", "kind": "hand_check", "status": "handled",
+                                     "created_at": TUE_9 - timedelta(days=1), "payload": {"iso_week": "2026-W44"}}])
     with_general(ctx, live_sending=True, optout_tested=True)
     lines = daily_post.compact(ctx, daily_post.gather(ctx))
     assert lines[0] == ":bar_chart: *Daily summary, Tue 27 Oct: nothing needs you today*"
@@ -130,7 +158,7 @@ def test_the_short_post_with_nothing_waiting_says_so_first_and_shows_today_s_num
     assert not any(x.startswith("Test mode") for x in lines)
 
 
-def test_the_needs_lines_say_where_to_act_for_cards_and_the_doubtful_only_hand_check():
+def test_the_needs_lines_say_where_to_act_and_a_send_approval_left_open_needs_nobody():
     ctx, _ = world()
     ctx.store.delete("hitl_items", {"kind": ["reply_approval", "kill_rule"]})
     ctx.store.update("hitl_items", {"item_id": "h1"}, {"payload": {"iso_week": "2026-W44", "per_group": 0,
@@ -140,11 +168,12 @@ def test_the_needs_lines_say_where_to_act_for_cards_and_the_doubtful_only_hand_c
          "payload": {"state": "waiting", "owner": "Hannah Spalding", "send_day": "2026-10-27", "expires_on": "2026-10-28"}},
     ])
     lines = daily_post.compact(ctx, daily_post.gather(ctx))
+    # The send approval (left open from before W2-1) asks nothing: the reply desk closes it.
     assert lines[:3] == [
-        ":warning: *Daily summary, Tue 27 Oct: 2 things need you*",
-        "1. Approve 1 email (waiting 5 hours; a card lapses after its next send day): ✅ or ❌ on each card in #us-outbound",
-        "2. Weekly hand-check: 2 companies still need a decision on the "
-        "<https://docs.google.com/spreadsheets/d/sheet-test/edit|Hand-check tab>",
+        ":warning: *Daily summary, Tue 27 Oct: 1 thing needs you*",
+        "1. Weekly hand-check: 2 companies still need a decision on the "
+        "<https://docs.google.com/spreadsheets/d/sheet-test/edit|Hand-check tab>; new leads wait for it",
+        "",
     ]
 
 
@@ -152,7 +181,7 @@ def test_the_post_covers_yesterday_the_limiter_mailboxes_kill_rules_and_approval
     ctx, t = world()
     out = daily_post.run(ctx)
     [post] = [r for r in t.requests if r.url.endswith("chat.postMessage")]
-    lines, _ = daily_post.build(ctx)  # the full post: `us-outbound daily --full`
+    lines, _ = daily_post.build(ctx)  # the full post: `us-outbound report daily --full`
     assert lines[0] == "*Daily post, Tue 27 Oct*"
     assert lines[1] == ("Yesterday: 8 sent · 3 replies (1 positive) · 1 unsubscribe · 0 companies, 0 contacts found"
                         " · 0 ready to send")
@@ -160,7 +189,7 @@ def test_the_post_covers_yesterday_the_limiter_mailboxes_kill_rules_and_approval
                         "this week's hand-check (the Hand-check tab on the settings sheet)")
     assert "*Sent and outcomes* · Yesterday, Mon 26 Oct (UK)" in lines
     assert "  Sent: 8 (step 1 5, step 2 3)" in lines  # Sunday's send is not yesterday's
-    assert "  Replies: 3 (not classified 1, objection 1, positive 1) · out of office 1" in lines
+    assert "  Replies: 3 companies (not classified 1, objection 1, positive 1) · out of office 1" in lines
     assert "  Positive or referral: 1 · Acme Creative (positive, hannah@meetspill.org)" in lines
     assert "  Bounces: 1 · Unsubscribes: 1 · Demos booked: 1 · Demos held: 0" in lines
     assert ("  • Brightfin (objection): “We already have an EAP through our broker and the team seems happy with it.”"
@@ -175,7 +204,7 @@ def test_the_post_covers_yesterday_the_limiter_mailboxes_kill_rules_and_approval
     assert any(line.startswith("  Apollo: 0 of 2,000 credits used this month") for line in lines)
     assert ("  • hannah@meetspill.org (Active): 5 sent; bounces 1 of its last 6 sends (16.7%); ramp week 1 "
             "(first send Sun 25 Oct): 10 a day of its 30; 20 from Sun 01 Nov") in lines
-    assert "Funding (Apollo enrich, Technology & Startups): no account enriched yet (apollo_enrich, weekdays 04:10)." in lines
+    assert "Funding (Apollo enrich, Technology & Startups): no account enriched yet (apollo_enrich, weekdays 05:00)." in lines
     assert "Site visits (spill.chat): not read yet (site_visits, daily 06:00)." in lines  # sources/site_visits.py
     assert "Kill rules fired: emails found by clay: 4 of 100 sends bounced" in lines
     assert "  Holds in force: 1 (`us-outbound killrules show`)" in lines
@@ -201,10 +230,73 @@ def test_the_post_has_one_retention_line_when_today_s_run_deleted_anything():
     assert nums["retention"]["leads"] == 5
 
 
-def test_monday_s_post_covers_friday_to_sunday():
-    ctx, _ = world(now=datetime(2026, 10, 26, 9, 0, tzinfo=UTC))
-    start, end, label = daily_post.period(ctx)
-    assert label == "Since Fri 23 Oct" and (end - start) == timedelta(days=3)
+def test_each_post_covers_the_day_before_only():
+    """metrics-audit L1: Friday's numbers went out on Saturday, Sunday and Monday. The job runs Tuesday to Saturday,
+    and each post covers yesterday (UK) alone: no day is in two posts."""
+    def utc_(day, hour):
+        return datetime(2026, 10, day, hour, 0, tzinfo=UTC)
+
+    for now, label, start, end in (
+        # Fri 23 Oct, midnight BST to midnight BST.
+        (SAT_9, "Yesterday, Fri 23 Oct", utc_(22, 23), utc_(23, 23)),
+        # Mon 26 Oct, midnight GMT to midnight GMT: not Friday to Monday.
+        (TUE_9, "Yesterday, Mon 26 Oct", utc_(26, 0), utc_(27, 0)),
+        # By hand on a Monday (`us-outbound daily`): Sunday alone, not back to Friday; it is 25 hours long, as the
+        # clocks go back at 02:00 that night.
+        (utc_(26, 9), "Yesterday, Sun 25 Oct", utc_(24, 23), utc_(26, 0)),
+    ):
+        ctx, _ = world(now=now)
+        assert daily_post.period(ctx) == (start, end, label)
+
+
+def test_the_post_runs_tuesday_to_saturday_and_saturday_covers_friday():
+    """RS §2 W1-7: Sat 24 Oct posts (Friday); Sun 25 and Mon 26 have no post; Tue 27 covers Mon 26 only; and the
+    heartbeat check at Mon 26 Oct 10:00 does not call the post missed."""
+    from us_outbound.ops import health, schedule, scheduler
+
+    [cron] = schedule.crons("daily_post")
+    assert cron == "0 9 * * 2-6"
+    c = scheduler.Cron.parse(cron)
+    fri = datetime(2026, 10, 23, 10, 0, tzinfo=UTC)
+    sat = scheduler.next_run(c, fri)
+    assert sat == SAT_9  # Sat 24 Oct 09:00 BST
+    assert scheduler.next_run(c, sat) == TUE_9  # nothing on Sun 25 or Mon 26: next is Tue 27 Oct 09:00 GMT
+    # Saturday 09:00 BST (08:00 UTC) to Monday 10:00 GMT (10:00 UTC) is 50 hours of wall time (the clocks went back on
+    # Sunday), well inside the 74 hours EXPECTED allows; Saturday to Tuesday 09:00 GMT is 73 hours, inside it too.
+    beat = {"job": "daily_post", "status": "ok", "started_at": SAT_9, "last_alive_at": SAT_9, "runs": 1}
+    mon_10 = datetime(2026, 10, 26, 10, 0, tzinfo=UTC)
+    assert health.overdue_minutes("daily_post", beat, mon_10) == 50 * 60 - 74 * 60 < 0
+    assert health.overdue_minutes("daily_post", beat, TUE_9) == 73 * 60 - 74 * 60 < 0
+    ctx, t = world(now=mon_10)
+    ctx.store.insert("heartbeats", [{"run_id": "dp", "job": "daily_post", "status": "ok", "dry_run": False,
+                                     "started_at": SAT_9, "finished_at": SAT_9 + timedelta(minutes=1)}])
+    assert "daily_post" not in health.check_heartbeats(ctx, ["daily_post"])
+
+
+def test_one_company_writing_three_times_is_one_reply_in_both_reports():
+    """metrics-audit H3: sync_outcomes writes one replied event per email, so one interested prospect writing three
+    times read "3 replies (3 interested)". Replies and positive replies are companies; reply_emails keeps the 3."""
+    from tests.test_readout import ev as readout_ev, world as readout_world
+    from us_outbound.learn import readout
+
+    ctx, _ = world()
+    ctx.store.delete("events", {"type": "replied"})
+    ctx.store.insert("events", [ev(40 + i, "replied", account_id="a1", reply_class="positive", mailbox=HANNAH)
+                                for i in range(3)])
+    lines, nums = daily_post.build(ctx)
+    assert (nums["replies"], nums["positive"], nums["reply_emails"]) == (1, 1, 3)
+    assert "  Replies: 1 company (positive 1), in 3 emails" in lines
+    assert "  Positive or referral: 1 · Acme Creative (positive, hannah@meetspill.org)" in lines  # listed once
+    short = daily_post.compact(ctx, daily_post.gather(ctx))
+    assert any(x.startswith("Sent 8 emails (5 first, 3 follow-ups) · 1 company replied (1 interested; 3 reply emails)")
+               for x in short)
+
+    rctx, _ = readout_world(weekly=[])
+    rctx.store.insert("events", [readout_ev(i, "replied", account_id="a1", reply_class="positive") for i in range(3)])
+    rlines, rnums = readout.build(rctx)
+    week = rnums["last_week"]
+    assert (week["replies"], week["positive"], week["reply_emails"]) == (1, 1, 3)
+    assert rlines[1].startswith("*Last week:* 0 emails sent · 1 company replied (1 positive; 3 reply emails)")
 
 
 def test_with_no_slack_token_the_post_goes_to_the_log(capsys):
@@ -228,7 +320,7 @@ def test_daily_post_runs_as_a_job_from_the_cli():
     from tests.test_cli import Harness
 
     h = Harness()
-    assert h.run("dry-run", "daily_post") == 0
+    assert h.run("run", "daily_post") == 0
     [beat] = h.beats("daily_post")
     assert beat["status"] == "ok" and beat["detail"]["sent"] == 0 and "text" not in beat["detail"]
 
@@ -246,26 +338,28 @@ def waits(lines):
     return [line for line in lines if line.startswith(("  Enrollment waits", "  Running dry"))]
 
 
-def test_enrollment_waits_on_enrol_s_own_gates_and_the_hand_check_only_with_auto_send_on():
+def test_enrollment_waits_on_enrol_s_own_gates_then_the_hand_check_while_it_gates_the_day():
+    """enrol's own gates first (the positive reply waiting 30 hours), then the weekly hand-check while
+    hand_check_gate is yes (the default; the auto_send = yes it also needed went with W2-1, as the live sheet had it);
+    with hand_check_gate = no (Harry's D5) only its sample waits, so the day does not."""
     ctx, _ = world()
     with_general(ctx, live_sending=True, approver_slack_ids=("U_HARRY",), optout_tested=True)
     lines, _ = daily_post.build(ctx)
-    # auto_send = no: the open hand-check does not hold anything back; the positive reply waiting 30 hours does.
     assert waits(lines) == ["  Enrollment waits: 1 positive reply has waited over 24 hours for approval."]
     ctx.store.delete("hitl_items", {"item_id": "r1"})
     lines, _ = daily_post.build(ctx)
-    assert waits(lines) == []
-    with_general(ctx, auto_send=True)  # now enrol waits for the weekly hand-check
-    lines, _ = daily_post.build(ctx)
     assert waits(lines) == ["  Enrollment waits: this week's hand-check (2026-W44) is not approved yet."]
+    with_general(ctx, hand_check_gate=False)
+    lines, _ = daily_post.build(ctx)
+    assert waits(lines) == []
 
 
 def test_with_live_sending_no_the_post_says_enrol_runs_dry():
     ctx, _ = world(live=False)
     ctx.store.delete("hitl_items", {"item_id": "r1"})
     lines, _ = daily_post.build(ctx)
-    assert waits(lines) == ["  Running dry: live_sending is no, so enrol reaches nobody (a few cards go to the dev "
-                            "channel as a preview)."]
+    assert waits(lines) == ["  Enrollment waits: this week's hand-check (2026-W44) is not approved yet.",
+                            "  Running dry: live_sending is no, so enrol reaches nobody."]
 
 
 def test_needs_you_says_nothing_when_nothing_waits():
@@ -273,11 +367,11 @@ def test_needs_you_says_nothing_when_nothing_waits():
     ctx.store.delete("hitl_items", {"kind": ["reply_approval", "hand_check", "kill_rule"]})
     lines, nums = daily_post.build(ctx)
     assert lines[2] == "*Needs you:* nothing"
-    assert nums["needs_you"] == {"send_approvals": 0, "replies": 0, "kill_rule_holds": 0, "hand_checks": 0}
+    assert nums["needs_you"] == {"replies": 0, "kill_rule_holds": 0, "hand_checks": 0}
     assert "Waiting for approval: nothing." in lines
 
 
-def test_reply_items_are_labelled_replies_and_a_lapsed_card_needs_nobody():
+def test_reply_items_are_labelled_replies_and_a_send_approval_left_open_needs_nobody():
     ctx, _ = world()
     ctx.store.insert("hitl_items", [
         {"item_id": "r2", "kind": "reply", "status": "escalated", "created_at": TUE_9 - timedelta(hours=3),
@@ -288,20 +382,335 @@ def test_reply_items_are_labelled_replies_and_a_lapsed_card_needs_nobody():
     ])
     lines, nums = daily_post.build(ctx)
     assert lines[2].startswith("*Needs you:* 2 replies (the oldest has waited 30 hours) · 1 kill-rule hold")
-    assert nums["needs_you"]["send_approvals"] == 0
+    assert "send_approvals" not in nums["needs_you"]
+    # r1, r2 and the hand-check wait; the send approval (closed by the desk's next live run) and the hold do not.
     [line] = [x for x in lines if x.startswith("Waiting for approval:")]
-    assert line.startswith("Waiting for approval: 4 (") and "replies 1" in line and "reply approvals 1" in line
-    assert "send approvals 1" in line and "kill-rule" not in line
+    assert line.startswith("Waiting for approval: 3 (") and "replies 1" in line and "reply approvals 1" in line
+    assert "send" not in line and "kill-rule" not in line
 
 
 def test_the_daily_command_prints_the_short_or_the_full_post_and_posts_nothing(capsys):
     from tests.test_cli import Harness
 
     h = Harness()
-    assert h.run("daily") == 0
+    assert h.run("report", "daily") == 0  # `daily` until W2-4
     out = capsys.readouterr().out
     assert "*Daily summary, " in out and "*Pipeline*" in out and "*Sources*" not in out
-    assert h.run("daily", "--full") == 0
+    assert h.run("report", "daily", "--full") == 0
     out = capsys.readouterr().out
     assert "*Daily post, " in out and "*Sources*" in out
     assert not [r for r in h.transport.requests if r.url.endswith("chat.postMessage")]
+
+
+# -- a failing section never stops the post (W2-3; code-learn-reporting B6) ---------------------------------------
+
+
+def test_a_failing_page_reader_never_stops_the_short_post_and_the_full_post_says_so(monkeypatch):
+    """probe_learn2 §3: pages.post_lines raising (a malformed careers_pages fact) used to fail the 09:00 job with no
+    post, although the short post never shows Sources. Now the short post goes, and `report daily --full` prints the
+    Sources section as "could not be built" with the rest of the post complete."""
+    from us_outbound.sources import pages
+
+    def broken(ctx):
+        raise ValueError("a malformed careers_pages fact")
+
+    monkeypatch.setattr(pages, "post_lines", broken)
+    ctx, t = world()
+    summary = daily_post.run(ctx)
+    [post] = [r.json["text"] for r in t.requests if r.url.endswith("chat.postMessage")]
+    assert "*Daily summary, " in post and summary["sent"] == 8
+    lines, nums = daily_post.build(ctx)
+    at = lines.index("*Sources*")
+    assert lines[at + 1] == "  could not be built (ValueError); the rest of the post is complete."
+    assert nums["sections_failed"] == ["Sources"]
+    assert "*Labels*" in lines and "*Mailboxes*" in lines and "*Kill rules and items waiting*" in lines
+
+
+def test_a_failing_to_improve_section_still_posts_the_rest(monkeypatch):
+    """To improve reads every company's outcome; if it fails, its title says so, the short post leaves it out of
+    "Worth a look", and the rest is posted."""
+    def broken(ctx, rows):
+        raise KeyError("stamps")
+
+    monkeypatch.setattr(daily_post, "to_improve", broken)
+    ctx, t = world()
+    daily_post.run(ctx)
+    [post] = [r.json["text"] for r in t.requests if r.url.endswith("chat.postMessage")]
+    assert "could not be built" not in post and "*Pipeline*" in post
+    lines, nums = daily_post.build(ctx)
+    assert "*To improve*" in lines and nums["sections_failed"] == ["To improve"]
+
+
+# -- W3-1's asks: supply stalled, capture drift or canary failed, leads lost ------------------------------------------
+
+
+def _capture_fact(ctx, fact, reasons, drift=()):
+    ctx.store.upsert("signal_events", [{"event_id": "capture:2026-W44", "account_id": None, "source": "capture",
+                                        "fact": fact, "observed_at": TUE_9 - timedelta(days=1),
+                                        "value": {"reasons": list(reasons), "drift": list(drift)}}])
+
+
+def test_supply_stalled_after_three_send_days_with_nothing_found_while_50_wait():
+    """Tue 27 Oct: the last 3 send days are Mon 26, Fri 23 and Thu 22 Oct. Nothing first seen and no contact created
+    since Thu 22 00:00 UK, with 60 waiting: the ask. 49 waiting, or one company found on Fri 23: none."""
+    ctx, _ = world()
+    assert daily_post.stalled(ctx, 60) == (
+        "Supply stalled: no new company and no new contact on the last 3 send days while 60 companies wait for a check "
+        "or a contact: see what finding new companies and choosing who to email last said with "
+        "`railway ssh -- us-outbound status`")
+    assert daily_post.stalled(ctx, 49) is None
+    assert daily_post.stalled(ctx, 50).startswith("Supply stalled")  # 50 is "at least 50"
+    ctx.store.insert("accounts", [{"account_id": "f1", "status": "new",
+                                   "first_seen": datetime(2026, 10, 23, 4, tzinfo=UTC)}])
+    assert daily_post.stalled(ctx, 60) is None
+    ctx, _ = world()  # a contact found on Thu 22 at 05:30 UK counts as well
+    ctx.store.insert("contacts", [{"contact_id": "c9", "account_id": "a9",
+                                   "created_at": datetime(2026, 10, 22, 4, 30, tzinfo=UTC)}])
+    assert daily_post.stalled(ctx, 60) is None
+
+
+def test_capture_drift_or_a_failed_canary_is_an_ask_and_a_canary_not_set_up_is_not():
+    ctx, _ = world()
+    assert daily_post.capture_ask(ctx) is None  # no check this week: the readout says unverified, no ask
+    _capture_fact(ctx, "capture_unverified", ["drift:replied", "canary_send:off"],
+                  [{"measure": "replied", "instantly": 2, "ours": 0}])
+    assert daily_post.capture_ask(ctx) == (
+        "Capture drift: this week's check found Instantly's counts and ours apart (replied: Instantly 2, ours 0), so "
+        "replies may be going unread: look in Instantly's inbox, then `railway ssh -- us-outbound report capture`")
+    _capture_fact(ctx, "capture_unverified", ["canary:no_answer"])
+    assert daily_post.capture_ask(ctx).startswith("Canary failed (canary:no_answer): the seed inbox's answer")
+    _capture_fact(ctx, "capture_unverified", ["canary:none", "canary_send:off"])  # D10 e not confirmed yet
+    assert daily_post.capture_ask(ctx) is None
+    _capture_fact(ctx, "capture_verified", [])
+    assert daily_post.capture_ask(ctx) is None
+
+
+def test_a_canary_not_sent_is_an_ask_only_once_its_lead_is_given_up():
+    """Monday 26 Oct 09:00's check found the canary added Thu 22 Oct 07:30 not sent: it is under CANARY_GIVE_UP (6
+    days) old, so its lead is kept, unchecked, for the next check: no ask yet. The canary the same run added (Mon 26
+    09:00) is not the one checked. Once a check gives it up (checked_at set), not_sent is the ask."""
+    ctx, _ = world()
+    _capture_fact(ctx, "capture_unverified", ["canary:not_sent"])
+
+    def canary(day: int, hour: int, checked: bool) -> dict:
+        added = datetime(2026, 10, day, hour, 0 if hour == 9 else 30, tzinfo=UTC)
+        return {"event_id": f"capture:canary:202610{day}", "account_id": None, "source": "capture",
+                "fact": "canary_sent", "observed_at": added,
+                "value": {"address": f"seed+canary-202610{day}@spill.chat", "added_at": added.isoformat(),
+                          "checked_at": TUE_9.isoformat() if checked else None}}
+
+    ctx.store.upsert("signal_events", [canary(22, 7, False), canary(26, 9, False)])
+    assert daily_post.capture_ask(ctx) is None
+    ctx.store.upsert("signal_events", [canary(22, 7, True)])
+    assert daily_post.capture_ask(ctx).startswith("Canary failed (canary:not_sent)")
+
+
+def test_leads_lost_to_a_gate_or_to_errors_yesterday():
+    """Yesterday (Mon 26 Oct) enrol was held by the hand-check: the day's share of the weekly cap, ceil(150 ÷ 5) =
+    30, is lost. A run that prepared 20 and enrolled 17 lost 3 to errors. A run with nothing lost: no ask. A run an
+    operator's stop held: no ask (the pause someone chose), though throughput counts the day's share as lost to a
+    gate; the stop rule's pause still asks."""
+    at = datetime(2026, 10, 26, 12, 0, tzinfo=UTC)
+
+    def enrol_run(status, detail):
+        ctx, _ = world()
+        ctx.store.upsert("heartbeats", [{"run_id": "e1", "job": "enrol", "status": status, "dry_run": False,
+                                         "started_at": at, "finished_at": at,
+                                         "detail": {"date": "2026-10-26", **detail}}])
+        start, end, _ = daily_post.period(ctx)
+        return daily_post.lost_ask(ctx, start, end)
+
+    assert enrol_run("skipped", {"reason": "the weekly hand-check is not approved yet"}) == (
+        "Leads lost: enrolment did not run yesterday (the weekly hand-check is not approved yet), about 30 leads: "
+        "`railway ssh -- us-outbound status`")
+    terms = {"weekly_target": 30, "sending_capacity": 20, "ready_accounts": 40, "binding": "sending_capacity"}
+    assert enrol_run("ok", {"number": 20, "enrolled": 17, "number_terms": terms}) == (
+        "Leads lost: 3 leads prepared yesterday and not enrolled (errors): read the error with "
+        "`railway ssh -- us-outbound status`")
+    assert enrol_run("ok", {"number": 20, "enrolled": 20, "number_terms": terms}) is None
+    stopped = ("enrollment is stopped by an operator (stop at 2026-10-23 16:00:00+00:00); run `us-outbound start "
+               "--live` to resume")
+    assert enrol_run("skipped", {"reason": stopped}) is None
+    assert enrol_run("skipped", {"reason": "enrollment is paused by the stop rule (bounce)"}).startswith(
+        "Leads lost: enrolment did not run yesterday (enrollment is paused by the stop rule (bounce)), about 30 leads")
+
+
+def test_the_asks_come_after_the_replies_holds_and_hand_check_in_the_post():
+    ctx, t = world()
+    _capture_fact(ctx, "capture_unverified", ["drift:replied"], [{"measure": "replied", "instantly": 2, "ours": 0}])
+    out = daily_post.run(ctx)
+    [post] = [r for r in t.requests if r.url.endswith("chat.postMessage")]
+    asks = [x for x in post.json["text"].splitlines() if x[:1].isdigit() and ". " in x[:4]]
+    assert asks[-1].startswith(f"{len(asks)}. Capture drift: this week's check found")
+    assert out["asks"] == ["Capture drift"]
+
+
+# -- new in HubSpot at companies we emailed (crm/readback.py step 5; Harry, 20 Oct 2026) ------------------------------
+
+FORM = "#wf-form-Demo-Form .form-3"
+SETTING = '"Create and associate companies with contacts" setting'
+WORKFLOW = "[Sales] Demo Requested via Website"
+
+
+def hubspot_world():
+    """The post of Tue 27 Oct covers Mon 26 Oct (UK). Acme Creative (a1) was first emailed Wed 14 Oct 16:00 UK (a
+    step 1 on 20 Oct changes nothing); Brightfin (a2) Mon 19 Oct. Yesterday Jane at a1 (con-a1: a name and an email
+    the post must never show) filled the demo form and HubSpot made the company from her contact; a workflow made a
+    deal at a2. Left out: a deal at Loop Studio (a3), never emailed, and a contact at Northwind (a4) made at 01:00 UK,
+    before its first email at 05:00 UK the same day."""
+    ctx, t = world()
+    ctx.store.insert("contacts", [{"contact_id": "con-a1", "account_id": "a1", "first_name": "Jane",
+                                   "last_name": "Doe", "email": "jane.doe@acmecreative.com"}])
+    ctx.store.insert("events", [
+        ev(50, "sent", step=1, account_id="a1", contact_id="con-a1", at=datetime(2026, 10, 14, 15, 0, tzinfo=UTC)),
+        ev(51, "sent", step=1, account_id="a1", contact_id="con-a1", at=datetime(2026, 10, 20, 15, 0, tzinfo=UTC)),
+        ev(52, "sent", step=1, account_id="a2", at=datetime(2026, 10, 19, 15, 0, tzinfo=UTC)),
+        ev(53, "sent", step=1, account_id="a4", at=datetime(2026, 10, 26, 5, 0, tzinfo=UTC)),
+        ev(60, "hubspot_contact_created", account_id="a1", contact_id="con-a1", source="form", source_detail=FORM),
+        ev(61, "hubspot_company_created", account_id="a1", source="crm_setting", source_detail=SETTING),
+        ev(62, "deal_created", account_id="a2", source="automation_platform", source_detail=WORKFLOW),
+        ev(63, "deal_created", account_id="a3", source="automation_platform", source_detail=WORKFLOW),
+        ev(64, "hubspot_contact_created", account_id="a4", source="extension",
+           at=datetime(2026, 10, 26, 1, 0, tzinfo=UTC)),
+    ])
+    return ctx, t
+
+
+HUBSPOT_LINES = [
+    "New in HubSpot at companies we emailed:",
+    '• Acme Creative: contact (the person we emailed) (website form "#wf-form-Demo-Form .form-3"), '
+    "company (made from the new contact) · emailed 14 Oct",
+    '• Brightfin: deal (HubSpot workflow "[Sales] Demo Requested via Website") · emailed 19 Oct',
+]
+
+
+def test_new_hubspot_records_at_companies_we_emailed_are_in_the_short_and_the_full_post():
+    """hubspot_world: 1 contact and 1 company at a1, 1 deal at a2, so 2 companies; a3 (never emailed) and a4 (made
+    before its first email) are left out. Each company on one line, in the order its first record came (a1 at 15:00
+    UTC + 60 min, a2 at + 62 min), emailed on its first step 1's UK date. No person: no name, no email address."""
+    ctx, t = hubspot_world()
+    out = daily_post.run(ctx)
+    [post] = [r for r in t.requests if r.url.endswith("chat.postMessage")]
+    text = post.json["text"].splitlines()
+    at = text.index("Visited the US site after we emailed: Brightfin") + 1
+    assert text[at : at + 3] == HUBSPOT_LINES
+    assert text[at + 3] == ""  # then Today's number
+    assert out["hubspot_created"] == {"contacts": 1, "companies": 1, "deals": 1, "companies_emailed": 2}
+    shown = "\n".join(text[at : at + 3])
+    assert "Jane" not in shown and "Doe" not in shown and "@" not in shown and "Loop Studio" not in shown
+    assert "Northwind" not in post.json["text"]  # nor anywhere else in the post
+    lines, nums = daily_post.build(ctx)
+    at = lines.index("Warm accounts (enrolled, visited the US site): Brightfin") + 1
+    assert lines[at : at + 3] == [HUBSPOT_LINES[0], *(f"  {x}" for x in HUBSPOT_LINES[1:])]
+    assert nums["hubspot_created"] == out["hubspot_created"]
+    assert not any(x.startswith("New in HubSpot") for x in daily_post._needs(ctx, daily_post.for_you(ctx)))
+
+
+def test_no_new_hubspot_record_no_line_and_the_list_stops_at_the_limit():
+    """None in the period: no line in either post, and the numbers are 0. Then 12 companies, each emailed on Mon 19
+    Oct, each with a contact made yesterday by a meetings-link booking: LIST_LIMIT (10) lines, then "and 2 more"."""
+    ctx, t = world()
+    day = daily_post.gather(ctx)
+    assert day.hubspot == [] and not any(x.startswith("New in HubSpot") for x in daily_post.compact(ctx, day))
+    assert not any(x.startswith("New in HubSpot") for x in daily_post.full(ctx, day)[0])
+    assert day.nums["hubspot_created"] == {"contacts": 0, "companies": 0, "deals": 0, "companies_emailed": 0}
+    ctx.store.insert("accounts", [{"account_id": f"h{i:02}", "clean_name": f"Company {i:02}", "status": "enrolled"}
+                                  for i in range(12)])
+    ctx.store.insert("events", [ev(100 + i, "sent", step=1, account_id=f"h{i:02}",
+                                   at=datetime(2026, 10, 19, 15, 0, tzinfo=UTC)) for i in range(12)])
+    ctx.store.insert("events", [ev(200 + i, "hubspot_contact_created", account_id=f"h{i:02}", source="meetings")
+                                for i in range(12)])
+    day = daily_post.gather(ctx)
+    assert day.hubspot[:2] == ["Company 00: contact (a colleague) (meeting booking) · emailed 19 Oct",
+                               "Company 01: contact (a colleague) (meeting booking) · emailed 19 Oct"]
+    assert len(day.hubspot) == 11 and day.hubspot[-1] == "and 2 more"
+    assert day.nums["hubspot_created"] == {"contacts": 12, "companies": 0, "deals": 0, "companies_emailed": 12}
+
+
+MIN = timedelta(minutes=1)
+
+
+def _emailed_19_oct(ctx, aid, name):
+    ctx.store.insert("accounts", [{"account_id": aid, "clean_name": name, "status": "enrolled"}])
+    ctx.store.insert("events", [ev(999, "sent", step=1, account_id=aid,
+                                   at=datetime(2026, 10, 19, 15, 0, tzinfo=UTC))])
+
+
+def test_alike_records_at_one_company_are_counted_on_its_line_in_the_order_each_kind_came():
+    """g1, emailed Mon 19 Oct; yesterday, in this order: a colleague by form "F", the company (made from the new
+    contact), two more colleagues by form "F". Three alike contacts are one entry, "3 × ...", kept where the first came
+    (before the company); nums still counts each record: 3 contacts, 1 company, 1 company emailed."""
+    ctx, _ = world()
+    _emailed_19_oct(ctx, "g1", "Grove Partners")
+    ctx.store.insert("events", [
+        ev(1000, "hubspot_contact_created", account_id="g1", source="form", source_detail="F", at=MON + MIN * 40),
+        ev(1001, "hubspot_company_created", account_id="g1", source="crm_setting", at=MON + MIN * 41),
+        ev(1002, "hubspot_contact_created", account_id="g1", source="form", source_detail="F", at=MON + MIN * 42),
+        ev(1003, "hubspot_contact_created", account_id="g1", source="form", source_detail="F", at=MON + MIN * 43),
+    ])
+    day = daily_post.gather(ctx)
+    assert day.hubspot == ['Grove Partners: 3 × contact (a colleague) (website form "F"), '
+                           "company (made from the new contact) · emailed 19 Oct"]
+    assert day.nums["hubspot_created"] == {"contacts": 3, "companies": 1, "deals": 0, "companies_emailed": 1}
+
+
+def test_a_bulk_import_at_one_company_is_one_short_line():
+    """500 contacts an integration made yesterday at g1 (MON + 0..499 seconds), all colleagues: one entry,
+    "500 × contact (a colleague) (an integration)", where one entry each would be a line of about 20,000 characters
+    (Slack cuts a text at 40,000, the whole post with it). nums counts all 500."""
+    ctx, t = world()
+    _emailed_19_oct(ctx, "g1", "Grove Partners")
+    ctx.store.insert("events", [ev(2000 + i, "hubspot_contact_created", account_id="g1", source="integration",
+                                   at=MON + timedelta(seconds=i)) for i in range(500)])
+    day = daily_post.gather(ctx)
+    assert day.hubspot == ["Grove Partners: 500 × contact (a colleague) (an integration) · emailed 19 Oct"]
+    assert len(day.hubspot[0]) < 200
+    assert day.nums["hubspot_created"] == {"contacts": 500, "companies": 0, "deals": 0, "companies_emailed": 1}
+    daily_post.run(ctx)
+    [post] = [r for r in t.requests if r.url.endswith("chat.postMessage")]
+    assert "• Grove Partners: 500 × contact (a colleague) (an integration) · emailed 19 Oct" in post.json["text"]
+
+
+def test_a_company_s_line_lists_at_most_five_kinds_then_how_many_more_records():
+    """g1: 9 colleagues by 7 forms, F1 and F6 twice (F1 first and last), the others once. KINDS_LIMIT (5) kinds are
+    listed: 2 × F1, F2, F3, F4, F5, which is 6 records; 9 - 6 = 3 more records (F6 twice, F7), in 2 more kinds."""
+    ctx, _ = world()
+    _emailed_19_oct(ctx, "g1", "Grove Partners")
+    forms = ["F1", "F2", "F3", "F4", "F5", "F6", "F7", "F6", "F1"]
+    ctx.store.insert("events", [ev(3000 + i, "hubspot_contact_created", account_id="g1", source="form",
+                                   source_detail=f, at=MON + MIN * (40 + i)) for i, f in enumerate(forms)])
+    day = daily_post.gather(ctx)
+    colleague = 'contact (a colleague) (website form "{}")'.format
+    assert day.hubspot == [f"Grove Partners: 2 × {colleague('F1')}, " + ", ".join(colleague(f) for f in forms[1:5])
+                           + " and 3 more records · emailed 19 Oct"]
+    assert day.nums["hubspot_created"]["contacts"] == 9
+
+
+def test_a_record_made_at_the_moment_of_the_first_email_counts():
+    """g1's first step 1 is at MON + 10 min (yesterday). A contact made at that same instant counts (readback's step 5
+    keeps the same boundary); one made a microsecond before is HubSpot's already, left out: 1 contact."""
+    ctx, _ = world()
+    first = MON + timedelta(minutes=10)
+    ctx.store.insert("accounts", [{"account_id": "g1", "clean_name": "Grove Partners", "status": "enrolled"}])
+    ctx.store.insert("events", [
+        ev(4000, "sent", step=1, account_id="g1", at=first),
+        ev(4001, "hubspot_contact_created", account_id="g1", source="meetings", at=first),
+        ev(4002, "hubspot_company_created", account_id="g1", source="crm_setting",
+           at=first - timedelta(microseconds=1)),
+    ])
+    day = daily_post.gather(ctx)
+    assert day.hubspot == ["Grove Partners: contact (a colleague) (meeting booking) · emailed 26 Oct"]
+    assert day.nums["hubspot_created"] == {"contacts": 1, "companies": 0, "deals": 0, "companies_emailed": 1}
+
+
+def test_how_a_record_was_made_reads_in_plain_words():
+    """Each source in plain words; a form or workflow with no name drops the quotes; an unknown label keeps its words;
+    nothing when HubSpot said nothing."""
+    where = daily_post._where
+    assert where("form", None) == "website form"
+    assert where("automation_platform", "  [Sales]   Demo booked ") == 'HubSpot workflow "[Sales] Demo booked"'
+    assert where("columbus", None) == "by Columbus after their reply"
+    assert where("crm_ui", "x") == "added by hand"
+    assert where("BCC_TO_CRM", None) == "bcc to crm"
+    assert where(None, None) == ""
+    assert daily_post._what({"type": "deal_created"}) == "deal"
